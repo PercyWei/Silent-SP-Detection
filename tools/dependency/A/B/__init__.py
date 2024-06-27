@@ -1,0 +1,6 @@
+
+
+
+class G:
+    pass
+
