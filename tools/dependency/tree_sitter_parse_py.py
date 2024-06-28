@@ -120,8 +120,8 @@ def _find_import_path_in_import_from_stat_node(import_from_statement_node: tsNod
             List[List[str]]: 'suffix_import_paths', a List containing import path like after 'import' in 'from ... import xx, xx'
     """
     assert len(import_from_statement_node.children) >= 4
-    assert import_from_statement_node.children[0].grammar_name == 'from'
-    assert import_from_statement_node.children[2].grammar_name == 'import'
+    assert import_from_statement_node.children[0].type == 'from'
+    assert import_from_statement_node.children[2].type == 'import'
 
     # For 'prefix_import_path' after 'from' in 'from xx import ...'
     if import_from_statement_node.children[1].grammar_name == 'relative_import':
