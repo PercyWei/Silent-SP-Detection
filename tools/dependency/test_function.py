@@ -2,14 +2,16 @@ import json
 import os
 from typing import *
 
-from tools.dependency.joern_parse import (joern_parse_source_code, readFullCPG, readDot, readCPGDot,
-                                          select_node_useful_info)
-from tools.dependency.tree_sitter_parse import (build_library, parse, prepare_specified_lang_parser,
-                                                get_project_all_lang_files_info)
+from joern_parse import (joern_parse_source_code, readFullCPG, readDot, readCPGDot,
+                         select_node_useful_info)
+from tree_sitter_parse import (build_library, parse, prepare_specified_lang_parser,
+                               get_project_all_lang_files_info)
 
 from utils.dependency import build_project_structure
 from utils.utils import execute_command
 from utils.logging import logger
+
+from narrow_ast_visitors import TreeSitterImportVisitor
 
 
 class ASTNode:
@@ -391,7 +393,6 @@ def find_py_files(project_dpath: str):
 
 
 def test_build_project_structure(projects_dpath):
-
     def judge_entry_exist(current_level_path: str, current_levels: Dict):
         for entry, children in current_levels.items():
             entry_path = os.path.join(current_level_path, entry)
@@ -418,7 +419,7 @@ def test_build_project_structure(projects_dpath):
                 print(' ' * 4 + error_path)
 
 
-def test_parse_judge_project_import_of_py(projects_dpath, tree_sitter_so_fpath):
+def test_parse_judge_project_import_of_py(projects_dpath, so_fpath):
     projects = os.listdir(projects_dpath)
     for project in projects:
         project_dpath = os.path.join(projects_dpath, project)
@@ -436,10 +437,10 @@ def test_parse_judge_project_import_of_py(projects_dpath, tree_sitter_so_fpath):
                 rel_py_fpath_list = py_file.split('/')
                 if rel_py_fpath_list[0] == '':
                     rel_py_fpath_list = rel_py_fpath_list[1:]
-                parse('python', tree_sitter_so_fpath, abs_py_fpath, project_structure, rel_py_fpath_list)
+                parse('python', so_fpath, abs_py_fpath, project_structure, rel_py_fpath_list)
 
 
-def test_get_project_all_lang_files_info(projects_dpath, tree_sitter_so_fpath):
+def test_get_project_all_lang_files_info(projects_dpath, so_fpath):
     projects = os.listdir(projects_dpath)
     for project in projects:
         project_dpath = os.path.join(projects_dpath, project)
@@ -452,20 +453,78 @@ def test_get_project_all_lang_files_info(projects_dpath, tree_sitter_so_fpath):
             logger.info("#" * 100)
             logger.info(f"Project: {project}\n" + json.dumps(project_structure, indent=4))
 
-            all_lang_files_info = get_project_all_lang_files_info(tree_sitter_so_fpath, project_dpath, project_structure)
+            all_lang_files_info = get_project_all_lang_files_info(so_fpath, project_dpath, project_structure)
             logger.info("=" * 100 + json.dumps(all_lang_files_info, indent=4))
 
 
-def tree_sitter_nodes_demo(lang: str, tree_sitter_so_fpath: str, demo_fpath: str):
-
+def tree_sitter_nodes_demo(lang: str, so_fpath: str, demo_fpath: str):
     with open(demo_fpath, 'r', encoding='utf-8') as f:
         source_code = f.read()
 
-    parser = prepare_specified_lang_parser(lang, tree_sitter_so_fpath)
+    parser = prepare_specified_lang_parser(lang, so_fpath)
     tree = parser.parse(bytes(source_code, "utf-8"))
     root_node = tree.root_node
     print(type(root_node))
     print(root_node)
+
+
+def test_narrow_repo_functions(py_fpath, so_fpath):
+    with open(py_fpath, 'r', encoding='utf-8') as f:
+        source_code = f.read()
+
+    parser = prepare_specified_lang_parser('python', so_fpath)
+    tree = parser.parse(bytes(source_code, "utf-8"))
+    root_node = tree.root_node
+
+    # TEST import
+    # all_imports = []
+    # for child in root_node.children:
+    #     if child.type == 'import_from_statement' or child.type == 'import_statement':
+    #         import_visitor = TreeSitterImportVisitor()
+    #         import_visitor.visit(child)
+    #
+    #         current_imports = import_visitor.get_imports()
+    #         all_imports.append(current_imports)
+    #
+    # print(json.dumps(all_imports, indent=4))
+
+    # TEST if_statement
+    # all_if_stmt_node = []
+    #
+    # def find_if_stmt_node(node):
+    #     for child in node.children:
+    #         if child.type == 'if_statement':
+    #             all_if_stmt_node.append(child)
+    #
+    #         find_if_stmt_node(child)
+    #
+    # find_if_stmt_node(root_node)
+    # for node in all_if_stmt_node:
+    #     condition = node.child_by_field_name('condition')
+    #     consequence = node.child_by_field_name('consequence')
+    #     alternative = node.child_by_field_name('alternative')
+    #     alternatives = []
+    #     for i, child in enumerate(node.children):
+    #         field_name = node.field_name_for_child(i)
+    #         if field_name == 'alternative':
+    #             alternatives.append(child)
+
+    call_nodes = []
+
+    def find_call_node(node):
+        for child in node.children:
+            if child.type == 'call':
+                call_nodes.append(child)
+
+            find_call_node(child)
+
+    find_call_node(root_node)
+
+    for node in call_nodes:
+        if node.child_by_field_name('arguments').type == 'generator_expression':
+            current_node = node
+            print('ok')
+    print('ok')
 
 
 if __name__ == '__main__':
@@ -538,7 +597,7 @@ if __name__ == '__main__':
     # build_library(tree_sitter_root_dpath)
 
     # [TEST 7] tools/dependency/tree_sitter_parse/parse function test
-    so_fpath = os.path.join(tree_sitter_root_dpath, "build", "my-languages.so")
+    tree_sitter_so_fpath = os.path.join(tree_sitter_root_dpath, "build", "my-languages.so")
     # for source_filepath in source_filepaths:
     #     if source_filepath.endswith('.java'):
     #         lang = 'java'
@@ -567,6 +626,8 @@ if __name__ == '__main__':
     # tree_sitter_nodes_demo(demo_lang, so_fpath, demo_file_path)
 
     # [TEST 10] utils/dependency/get_project_all_lang_files_info function test
-    test_get_project_all_lang_files_info(clone_projects, so_fpath)
+    # test_get_project_all_lang_files_info(clone_projects, so_fpath)
 
-
+    # [TEST 11] narrow repo functions test
+    py_file_path = "/root/projects/VDTest/tools/dependency/test_data/source_code_data/ansible_ansible/hacking.azp.get_recent_coverage_runs.py/get_recent_coverage_runs.py"
+    test_narrow_repo_functions(py_file_path, tree_sitter_so_fpath)

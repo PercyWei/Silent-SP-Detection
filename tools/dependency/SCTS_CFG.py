@@ -1,5 +1,5 @@
 # This code is copied from https://github.com/rebibabo/SCTS
-# Original file: CFG.py
+# Original file: SCTS_CFG.py
 # Original author: rebibabo
 
 import os
