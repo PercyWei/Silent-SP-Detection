@@ -1,17 +1,21 @@
 import json
 import os
 from typing import *
+from tree_sitter import Node as tsNode
 
 from joern_parse import (joern_parse_source_code, readFullCPG, readDot, readCPGDot,
                          select_node_useful_info)
-from tree_sitter_parse import (build_library, parse, prepare_specified_lang_parser,
-                               get_project_all_lang_files_info)
+from tree_sitter_parse import parse, get_project_all_lang_files_info, remove_comments
+
+from util import prepare_specified_lang_parser
+from C.ast_parser import ASTParser
+from C.cfg_parser import CFGParser
+from C.preprocess import PreProcessError, preprocess, preprocess_error
+
 
 from utils.dependency import build_project_structure
 from utils.utils import execute_command
 from utils.logging import logger
-
-from narrow_ast_visitors import TreeSitterImportVisitor
 
 
 class ASTNode:
@@ -381,11 +385,11 @@ def picture_all_dot(dot_dpath):
                 raise RuntimeError
 
 
-def find_py_files(project_dpath: str):
+def find_specified_files(project_dpath: str, file_extension: str = '.py'):
     py_files = []
     for root, _, files in os.walk(project_dpath):
         for file in files:
-            if file.endswith('.py'):
+            if file.endswith(file_extension):
                 rel_py_path = os.path.relpath(os.path.join(root, file), project_dpath)
                 py_files.append(rel_py_path)
 
@@ -424,7 +428,7 @@ def test_parse_judge_project_import_of_py(projects_dpath, so_fpath):
     for project in projects:
         project_dpath = os.path.join(projects_dpath, project)
 
-        py_files = find_py_files(project_dpath)
+        py_files = find_specified_files(project_dpath)
         if len(py_files) > 0:
             project_structure = build_project_structure(project_dpath)
             logger.info("#" * 100)
@@ -445,7 +449,7 @@ def test_get_project_all_lang_files_info(projects_dpath, so_fpath):
     for project in projects:
         project_dpath = os.path.join(projects_dpath, project)
 
-        py_files = find_py_files(project_dpath)
+        py_files = find_specified_files(project_dpath)
         if len(py_files) > 0:
             project_structure = build_project_structure(project_dpath)
 
@@ -455,6 +459,104 @@ def test_get_project_all_lang_files_info(projects_dpath, so_fpath):
 
             all_lang_files_info = get_project_all_lang_files_info(so_fpath, project_dpath, project_structure)
             logger.info("=" * 100 + json.dumps(all_lang_files_info, indent=4))
+
+
+def test_all_c_files(projects_dpath, so_fpath):
+    projects = os.listdir(projects_dpath)
+    parser = prepare_specified_lang_parser('c', so_fpath)
+
+    for project in projects:
+        project_dpath = os.path.join(projects_dpath, project)
+
+        c_files = find_specified_files(project_dpath, '.c')
+        success = 0
+        if len(c_files) > 0:
+            for c_file in c_files:
+                abs_c_fpath = os.path.join(project_dpath,c_file)
+
+                # try:
+                #     with open(abs_c_fpath, 'r', encoding="utf-8") as f:
+                #         source_code = f.read()
+                #
+                #     root_node = parser.parse(bytes(source_code, "utf-8")).root_node
+                #
+                #     # Check function_definition
+                #     all_function_definition = []
+                #     all_not_top_function_definition = []
+                #
+                #     def find_all_function_definition(node: tsNode, root):
+                #         for child in node.children:
+                #             if child.type == 'function_definition':
+                #                 if not root:
+                #                     all_not_top_function_definition.append(child)
+                #             find_all_function_definition(child, False)
+                #
+                #     find_all_function_definition(root_node, True)
+                #     if len(all_not_top_function_definition) != 0:
+                #         if abs_c_fpath != "/root/projects/clone_projects/it-novum_openITCOCKPIT/app/Plugin/CakePdf/Vendor/dompdf/lib/ttf2ufm/ttf2ufm-src/t1asm.c":
+                #             print(abs_c_fpath)
+                #             for func_def in all_not_top_function_definition:
+                #                 print(func_def.start_point)
+                #             raise RuntimeError
+                #     else:
+                #         success += 1
+                #         print(f'{success}: {abs_c_fpath}')
+                #
+                #     prefix: preproc_if, preproc_ifdef, preproc_else, preproc_elif, preproc_elifdef
+                #     suffix: <empty>, _in_field_declaration_list, _in_enumerator_list, _in_enumerator_list_no_comma
+                #
+                #     # Check preproc
+                #     all_preproc = []
+                #
+                #     def find_all_preproc(node: tsNode):
+                #         for child in node.children:
+                #             if child.type.startswith('preproc'):
+                #                 all_preproc.append(child)
+                #             find_all_preproc(child)
+                #
+                #     find_all_preproc(root_node)
+                #
+                #     if len(all_preproc) != 0:
+                #         print(abs_c_fpath)
+                #         print('-' * 100)
+                #
+                #     Check ERROR
+                #     all_error = []
+                #
+                #     def find_all_preproc(node: tsNode):
+                #         for child in node.children:
+                #             if child.type == 'ERROR':
+                #                 all_error.append(child)
+                #                 continue
+                #             find_all_preproc(child)
+                #
+                #     find_all_preproc(root_node)
+                #
+                #     if len(all_error) != 0:
+                #         print(abs_c_fpath)
+                #         print('-' * 100)
+                #
+                #     Check preprocess
+
+                try:
+                    with open(abs_c_fpath, 'r', encoding="utf-8") as f:
+                        c = f.read()
+                    print(abs_c_fpath)
+                    logger.info('=' * 100)
+                    logger.info(abs_c_fpath)
+
+                    root_node = parser.parse(bytes(c, "utf-8")).root_node
+                    b_updt_c = remove_comments(root_node, bytes(c, "utf-8"))
+
+                    root_node = parser.parse(b_updt_c).root_node
+                    updt_c = b_updt_c.decode()
+
+                    preprocess_error(root_node, updt_c.splitlines(False))
+                    # preprocess(updt_c.splitlines(False))
+                except UnicodeDecodeError:
+                    continue
+                except PreProcessError:
+                    continue
 
 
 def tree_sitter_nodes_demo(lang: str, so_fpath: str, demo_fpath: str):
@@ -629,5 +731,13 @@ if __name__ == '__main__':
     # test_get_project_all_lang_files_info(clone_projects, so_fpath)
 
     # [TEST 11] narrow repo functions test
-    py_file_path = "/root/projects/VDTest/tools/dependency/test_data/source_code_data/ansible_ansible/hacking.azp.get_recent_coverage_runs.py/get_recent_coverage_runs.py"
-    test_narrow_repo_functions(py_file_path, tree_sitter_so_fpath)
+    # py_file_path = "/root/projects/VDTest/tools/dependency/test_data/source_code_data/ansible_ansible/hacking.azp.get_recent_coverage_runs.py/get_recent_coverage_runs.py"
+    # test_narrow_repo_functions(py_file_path, tree_sitter_so_fpath)
+
+    # [TEST 12] CFG/C functions test
+    # c_fpath = "/root/projects/VDTest/tools/dependency/test_data/source_code_data/krb5_krb5/src.appl.gss-sample.gss-client.c/gss-client.c"
+    # ast = ASTParser.parse(c_fpath, strict=False)
+    # print(list(ast.successors(0)))
+
+    # [TEST 13]
+    test_all_c_files(clone_projects, tree_sitter_so_fpath)

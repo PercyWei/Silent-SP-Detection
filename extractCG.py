@@ -51,7 +51,7 @@ def extract_func_calls_of_target_func(root_node, current_file, target_function=N
                 find_function = node
                 break
 
-        for child in node.get_children():
+        for child in node.get_node_ast_children():
             search_nodes.append(child)
 
     if find_function:
