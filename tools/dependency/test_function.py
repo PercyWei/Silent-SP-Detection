@@ -551,7 +551,7 @@ def test_all_c_files(projects_dpath, so_fpath):
                     root_node = parser.parse(b_updt_c).root_node
                     updt_c = b_updt_c.decode()
 
-                    preprocess_error(root_node, updt_c.splitlines(False))
+                    preprocess_error(parser, root_node, updt_c.splitlines(False))
                     # preprocess(updt_c.splitlines(False))
                 except UnicodeDecodeError:
                     continue

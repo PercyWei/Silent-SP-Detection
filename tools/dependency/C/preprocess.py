@@ -3,7 +3,7 @@ import json
 import queue
 
 from typing import *
-from tree_sitter import Node as tsNode
+from tree_sitter import Node as tsNode, Parser
 
 from tools.dependency.util import find_error_nodes
 from utils.logging import logger
@@ -11,16 +11,6 @@ from utils.logging import logger
 
 preprocIf_cmds = ['#if', '#ifdef', '#ifndef', '#else', '#elif', '#elifdef', '#elifndef', '#endif']
 preprocIf_cmd_re = re.compile(r'^\s*#\s*(ifdef|ifndef|if|endif|else|elifdef|elifndef|elif)(\s*(.*))$')
-
-identifier = r'\w+'
-value = r'\S+'
-function_names = 'defined'
-function = function_names + r'\(' + identifier + r'\)'
-expr = '(?:' + value + '|' + function + ')'
-
-ifdef_cond_re = re.compile(r'(' + identifier + ')')
-if_define_cond_re = re.compile(r'defined\(\w+\)')
-
 
 
 class AddIfError(Exception):
@@ -294,7 +284,7 @@ def construct_preprocIf_info(cmd: Optional[str] = None,
                              cond: Optional[str] = None,
                              line_range: Optional[Tuple] = None,
                              level: Optional[int] = None,
-                             end_line_id: Optional[int] = None):
+                             end_line_id: Optional[int] = None) -> Dict:
     return {
         'cmd': cmd,
         'cond': cond,
@@ -312,7 +302,11 @@ def iterate_to_find_preprocIfs(source_code: List[str]) -> Tuple[Dict, Dict]:
         source_code:
     Returns:
         all_preprocIfs:
+            key: line id
+            value: preprocIf info, details can be found in 'construct_preprocIf_info' function
         all_endifs:
+            key: #endif line id
+            value: #endif level
     """
     all_preprocIfs = {}
     all_endifs = {}
@@ -381,8 +375,18 @@ def iterate_to_find_preprocIfs(source_code: List[str]) -> Tuple[Dict, Dict]:
     return all_preprocIfs, all_endifs
 
 
-def preprocess(source_code: List[str], verbose: bool = False):
+def preprocess(source_code: List[str], verbose: bool = False) -> Tuple[Dict, List]:
+    """
+    Iterate the source code and find all preprocIfs and group them.
 
+    Args:
+        source_code:
+        verbose: How the log is recorded
+    Returns:
+        all_preprocIfs (Dict):
+        all_pif_groups (List):
+            list_item: A list containing line ids of the preprocIfs in the same group
+    """
     all_preprocIfs, all_endifs = iterate_to_find_preprocIfs(source_code)
 
     def find_match_endif_line_id(current_pif_line_id: int, current_pif_level: int) -> int:
@@ -445,20 +449,9 @@ def preprocess(source_code: List[str], verbose: bool = False):
 
     # Iterate all preprocIf groups to find range of preprocIf
     for pif_group in all_pif_groups:
-        group_conds = []
-        if pif_group[0] in ('#ifndef', '#ifdef'):
-            def_flag = True
-        elif pif_group[0] == '#if':
-            def_flag = False
-        else:
-            logger.error(f"Illegal group beginning preprocIf: {pif_group[0]}!")
-            logger.error(f"All preprocIf groups: \n{json.dumps(all_pif_groups, indent=4)}")
-            raise PreProcessError()
-
         for i, pif_line_id in enumerate(pif_group):
             pif_info = all_preprocIfs[pif_line_id]
             cmd = pif_info['cmd']
-            cond = pif_info['cond']
 
             if i != len(pif_group) - 1:
                 assert cmd != '#endif'
@@ -493,17 +486,51 @@ def preprocess(source_code: List[str], verbose: bool = False):
     return all_preprocIfs, all_pif_groups
 
 
-def preprocess_error(root_code: tsNode, source_code: List[str]):
+def parse_preprocIfs(parser: Parser, source_code: List[str], preprocIf_groups: List[List[int]]):
+    """
+    Parse preprocIf structure using tree-sitter
+
+    Args:
+        parser:
+        source_code:
+        preprocIf_groups:
+    """
+    for pif_group in preprocIf_groups:
+
+        group_snippet = []
+
+        for i, pif_line_id in enumerate(pif_group):
+            pif_line = source_code[pif_line_id]
+            pif_line = pif_line.lstrip()
+
+            def filler_stmt(num: int, indent: int = 0) -> str:
+                return ' ' * indent + f'int cond = {num};'
+
+            group_snippet.append(pif_line)
+            if i != len(pif_group) - 1:
+                group_snippet.append(filler_stmt(i))
+
+        print('\n'.join(group_snippet))
+
+        root_node = parser.parse(bytes('\n'.join(group_snippet), encoding='utf-8')).root_node
+        # TODO
+        pass
+
+
+def preprocess_error(parser: Parser, root_code: tsNode, source_code: List[str]):
     error_nodes = find_error_nodes(root_code)
 
     if len(error_nodes) != 0:
-        for error_node in error_nodes:
+        all_preprocIfs, all_pif_groups = preprocess(source_code)
 
-            error_start = error_node.start_point[0]
-            error_end = error_node.end_point[0]
+        parse_preprocIfs(parser, source_code, all_pif_groups)
 
-            all_preprocIfs, all_conditions, all_pif_groups = preprocess(source_code)
-            for pif_line_id, pif_info in all_preprocIfs:
-                if error_start <= pif_line_id <= error_end:
-                    # TODO
-                    pass
+        # TODO: Find preprocIfs in ERROR nodes and process
+        # for error_node in error_nodes:
+        #
+        #     error_start = error_node.start_point[0]
+        #     error_end = error_node.end_point[0]
+        #
+        #     for pif_line_id, pif_info in all_preprocIfs:
+        #         if error_start <= pif_line_id <= error_end:
+        #             pass
