@@ -12,6 +12,16 @@ from utils.logging import logger
 preprocIf_cmds = ['#if', '#ifdef', '#ifndef', '#else', '#elif', '#elifdef', '#elifndef', '#endif']
 preprocIf_cmd_re = re.compile(r'^\s*#\s*(ifdef|ifndef|if|endif|else|elifdef|elifndef|elif)(\s*(.*))$')
 
+identifier = r'\w+'
+value = r'\S+'
+function_names = 'defined'
+function = function_names + r'\(' + identifier + r'\)'
+expr = '(?:' + value + '|' + function + ')'
+
+ifdef_cond_re = re.compile(r'(' + identifier + ')')
+if_define_cond_re = re.compile(r'defined\(\w+\)')
+
+
 
 class AddIfError(Exception):
     pass
@@ -374,7 +384,6 @@ def iterate_to_find_preprocIfs(source_code: List[str]) -> Tuple[Dict, Dict]:
 def preprocess(source_code: List[str], verbose: bool = False):
 
     all_preprocIfs, all_endifs = iterate_to_find_preprocIfs(source_code)
-    all_conditions = {}
 
     def find_match_endif_line_id(current_pif_line_id: int, current_pif_level: int) -> int:
         for endif_line_id, endif_level in all_endifs.items():
@@ -434,11 +443,18 @@ def preprocess(source_code: List[str], verbose: bool = False):
 
     fine_range_by_endif()
 
-    # Iterate all preprocIf groups for:
-    #     1. Find range of preprocIf
-    #     2. Collect all conditions and corresponding ranges
+    # Iterate all preprocIf groups to find range of preprocIf
     for pif_group in all_pif_groups:
         group_conds = []
+        if pif_group[0] in ('#ifndef', '#ifdef'):
+            def_flag = True
+        elif pif_group[0] == '#if':
+            def_flag = False
+        else:
+            logger.error(f"Illegal group beginning preprocIf: {pif_group[0]}!")
+            logger.error(f"All preprocIf groups: \n{json.dumps(all_pif_groups, indent=4)}")
+            raise PreProcessError()
+
         for i, pif_line_id in enumerate(pif_group):
             pif_info = all_preprocIfs[pif_line_id]
             cmd = pif_info['cmd']
@@ -455,25 +471,6 @@ def preprocess(source_code: List[str], verbose: bool = False):
 
                 pif_info['line_range'] = pif_range
                 all_preprocIfs[pif_line_id] = pif_info
-
-                # Collect conditions
-                if cmd != '#else':
-                    assert cond is not None
-                    if cmd in ('#ifndef', '#elifndef'):
-                        cond = '<NOT><DEFINE>: (' + cond + ')'
-                    elif cmd == '#ifdef':
-                        cond = '<DEFINE>: (' + cond + ')'
-                    group_conds.append(cond)
-                else:
-                    assert i == len(pif_group) - 2 and cond is None
-                    group_conds = ['(' + c + ')' for c in group_conds]
-                    cond = '<NOT>: (' + ' <AND> '.join(group_conds) + ')' if len(group_conds) > 1 else \
-                        '<NOT>: ' + group_conds[0]
-
-                if cond in all_conditions:
-                    all_conditions[cond].append(pif_range)
-                else:
-                    all_conditions[cond] = [pif_range]
             else:
                 assert cmd == '#endif'
 
@@ -493,11 +490,7 @@ def preprocess(source_code: List[str], verbose: bool = False):
         record += '\n' + '-' * 25 + f' {i} ' + '-' * 25 + f'\n{snippet}\n'
     logger.info(record)
 
-    print(json.dumps(all_pif_groups, indent=4))
-    print('-' *100)
-    print(json.dumps(all_conditions, indent=4))
-
-    return all_preprocIfs, all_conditions, all_pif_groups
+    return all_preprocIfs, all_pif_groups
 
 
 def preprocess_error(root_code: tsNode, source_code: List[str]):
