@@ -21,15 +21,14 @@ def calculate_date_range(commit_date):
 
 def execute_command(command: List[str], **run_params) -> Tuple:
     """
-        Helper function to execute a command and return the result.
+    Helper function to execute a command and return the result.
 
-        Args:
-            command : The command to execute.
-            run_params: Params to pass to the `subprocess.run`.
-
-        Returns:
-            1. stdout (str): The stdout of the command, `None` if the command failed.
-            2. stderr (str): The stderr of the command, `None` if the command succeed.
+    Args:
+        command : The command to execute.
+        run_params: Params to pass to the `subprocess.run`.
+    Returns:
+        1. stdout (str): The stdout of the command, `None` if the command failed.
+        2. stderr (str): The stderr of the command, `None` if the command succeed.
     """
     try:
         result = subprocess.run(command, check=True, text=True,

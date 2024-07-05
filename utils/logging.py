@@ -4,8 +4,13 @@ import logging
 import time
 import datetime
 
+from os import get_terminal_size
+from rich.console import Console
+from rich.markdown import Markdown
+from rich.panel import Panel
 
-def get_timestamp():
+
+def get_timestamp() -> str:
     return datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S')
 
 
@@ -80,4 +85,3 @@ def log_debug(_logger, msg: str):
 
 
 logger = get_global_logger()
-

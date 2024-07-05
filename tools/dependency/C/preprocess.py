@@ -510,8 +510,6 @@ def parse_preprocIfs(parser: Parser, source_code: List[str], preprocIf_groups: L
             if i != len(pif_group) - 1:
                 group_snippet.append(filler_stmt(i))
 
-        print('\n'.join(group_snippet))
-
         root_node = parser.parse(bytes('\n'.join(group_snippet), encoding='utf-8')).root_node
         # TODO
         pass
