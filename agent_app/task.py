@@ -1,12 +1,12 @@
 # This code is modified from https://github.com/nus-apr/auto-code-rover
-# Original file: app/task.py
+# Original file: agent_app/task.py
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
-from app.utils import cd, repo_reset_and_clean_checkout
+from agent_app.utils import cd, repo_reset_and_clean_checkout
 
 
 class Task(ABC):

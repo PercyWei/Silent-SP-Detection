@@ -1,5 +1,5 @@
 # This code is modified from https://github.com/nus-apr/auto-code-rover
-# Original file: app/utils.py
+# Original file: agent_app/utils.py
 
 import os
 import contextlib
@@ -10,7 +10,7 @@ import subprocess
 from typing import *
 
 
-from app.log import log_and_print
+from agent_app.log import log_and_print
 
 
 def get_timestamp() -> str:

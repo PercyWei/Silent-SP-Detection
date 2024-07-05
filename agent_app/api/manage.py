@@ -1,5 +1,5 @@
 # This code is modified from https://github.com/nus-apr/auto-code-rover
-# Original file: app/api/manage.py
+# Original file: agent_app/api/manage.py
 
 import os
 
@@ -7,8 +7,8 @@ import os
 from typing import *
 
 
-from app.task import Task
-from app.search.search_manage import SearchManager
+from agent_app.task import Task
+from agent_app.search.search_manage import SearchManager
 
 
 class ProjectApiManager:

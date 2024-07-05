@@ -1,5 +1,5 @@
 # This code is modified from https://github.com/nus-apr/auto-code-rover
-# Original file: app/model/common.py
+# Original file: agent_app/model/common.py
 
 import sys
 import threading
@@ -7,7 +7,7 @@ import threading
 from abc import ABC, abstractmethod
 from typing import *
 
-from app.log import log_and_cprint
+from agent_app.log import log_and_cprint
 
 # Variables for each process. Since models are singleton objects, their references are copied
 # to each process, but they all point to the same objects. For safe updating costs per process,

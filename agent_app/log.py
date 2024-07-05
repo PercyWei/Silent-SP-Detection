@@ -1,5 +1,5 @@
 # This code is modified from https://github.com/nus-apr/auto-code-rover
-# Original file: app/log.py
+# Original file: agent_app/log.py
 
 import os
 
@@ -8,7 +8,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
 
-from app.utils import get_timestamp
+from agent_app.utils import get_timestamp
 
 
 def terminal_width():

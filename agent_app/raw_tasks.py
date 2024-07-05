@@ -1,12 +1,12 @@
 # This code is modified from https://github.com/nus-apr/auto-code-rover
-# Original file: app/raw_tasks.py
+# Original file: agent_app/raw_tasks.py
 
 import os
 import json
 from abc import ABC, abstractmethod
 
-from app.task import Task, PlainTask
-from app.utils import cd, get_commit_content
+from agent_app.task import Task, PlainTask
+from agent_app.utils import cd, get_commit_content
 
 
 class RawTask(ABC):

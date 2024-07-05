@@ -1,5 +1,5 @@
 # This code is modified from https://github.com/nus-apr/auto-code-rover
-# Original file: app/globals.py
+# Original file: agent_app/globals.py
 
 """
 Values of global configuration variables.

@@ -493,7 +493,7 @@ def test_all_c_files(projects_dpath, so_fpath):
                 #
                 #     find_all_function_definition(root_node, True)
                 #     if len(all_not_top_function_definition) != 0:
-                #         if abs_c_fpath != "/root/projects/clone_projects/it-novum_openITCOCKPIT/app/Plugin/CakePdf/Vendor/dompdf/lib/ttf2ufm/ttf2ufm-src/t1asm.c":
+                #         if abs_c_fpath != "/root/projects/clone_projects/it-novum_openITCOCKPIT/agent_app/Plugin/CakePdf/Vendor/dompdf/lib/ttf2ufm/ttf2ufm-src/t1asm.c":
                 #             print(abs_c_fpath)
                 #             for func_def in all_not_top_function_definition:
                 #                 print(func_def.start_point)

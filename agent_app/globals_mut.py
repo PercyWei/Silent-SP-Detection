@@ -1,5 +1,5 @@
 # This code is modified from https://github.com/nus-apr/auto-code-rover
-# Original file: app/globals_mut.py
+# Original file: agent_app/globals_mut.py
 
 """
 A global store, for values that cna be mutated in multiprocessing, along with their related values.

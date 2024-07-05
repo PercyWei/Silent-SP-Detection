@@ -1,5 +1,5 @@
 # This code is modified from https://github.com/nus-apr/auto-code-rover
-# Original file: app/model/gpt.py
+# Original file: agent_app/model/gpt.py
 
 import os
 import sys
@@ -22,10 +22,10 @@ from openai.types.chat.chat_completion_tool_choice_option_param import (
 from openai.types.chat.completion_create_params import ResponseFormat
 from tenacity import retry, stop_after_attempt, wait_random_exponential
 
-from app.data_structures import FunctionCallIntent
-from app.model import common
-from app.model.common import Model
-from app.log import log_and_print
+from agent_app.data_structures import FunctionCallIntent
+from agent_app.model import common
+from agent_app.model.common import Model
+from agent_app.log import log_and_print
 
 
 openai.api_base = "https://apikeyplus.com/v1"

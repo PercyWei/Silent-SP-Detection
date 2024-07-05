@@ -1,5 +1,5 @@
 # This code is modified from https://github.com/nus-apr/auto-code-rover
-# Original file: app/search/search_manage.py
+# Original file: agent_app/search/search_manage.py
 
 
 from typing import *

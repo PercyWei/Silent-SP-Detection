@@ -1,5 +1,5 @@
 # This code is modified from https://github.com/nus-apr/auto-code-rover
-# Original file: app/main.py
+# Original file: agent_app/main.py
 
 import os
 
@@ -11,13 +11,13 @@ from concurrent.futures import ProcessPoolExecutor
 
 from loguru import logger
 
-from app import globals, globals_mut, log
-from app.model import common
-from app.model.register import register_all_models
-from app.raw_tasks import RawTask, RawLocalTask
-from app.task import Task
-from app.log import print_with_time, log_and_always_print
-from app.utils import get_timestamp, create_dir_if_not_exists
+from agent_app import globals, globals_mut, log
+from agent_app.model import common
+from agent_app.model.register import register_all_models
+from agent_app.raw_tasks import RawTask, RawLocalTask
+from agent_app.task import Task
+from agent_app.log import print_with_time, log_and_always_print
+from agent_app.utils import get_timestamp, create_dir_if_not_exists
 
 
 
