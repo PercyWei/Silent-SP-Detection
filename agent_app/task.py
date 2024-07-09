@@ -15,6 +15,11 @@ class Task(ABC):
     def project_path(self) -> str:
         raise NotImplementedError("abstract method")
 
+    @property
+    @abstractmethod
+    def commit_id(self) -> str:
+        raise NotImplementedError("abstract method")
+
     @abstractmethod
     def get_commit_content(self) -> str:
         raise NotImplementedError("abstract method")
@@ -44,6 +49,13 @@ class PlainTask(Task):
     def project_path(self) -> str:
         return self.local_repo_dpath
 
+    @property
+    def commit_id(self) -> str:
+        return self.commit_hash
+
+    def get_commit_content(self) -> str:
+        return self.commit_content
+
     def setup_project(self) -> None:
         with cd(self.project_path):
             repo_reset_and_clean_checkout(self.commit_hash)
@@ -51,6 +63,3 @@ class PlainTask(Task):
     def reset_project(self) -> None:
         with cd(self.project_path):
             repo_reset_and_clean_checkout(self.commit_hash)
-
-    def get_commit_content(self) -> str:
-        return self.commit_content

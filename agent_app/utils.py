@@ -2,6 +2,7 @@
 # Original file: agent_app/utils.py
 
 import os
+import ast
 import contextlib
 import datetime
 import glob
@@ -11,10 +12,6 @@ from typing import *
 
 
 from agent_app.log import log_and_print
-
-
-def get_timestamp() -> str:
-    return datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S')
 
 
 @contextlib.contextmanager
@@ -117,7 +114,35 @@ def repo_reset_and_clean_checkout(commit_hash: str) -> None:
     run_command(submodule_init_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
+def parse_function_invocation(invocation_str: str) -> Tuple[str, List[str]]:
+    try:
+        tree = ast.parse(invocation_str)
+        expr = tree.body[0]
+        assert isinstance(expr, ast.Expr)
+        call = expr.value
+        assert isinstance(call, ast.Call)
+        func = call.func
+        assert isinstance(func, ast.Name)
+        function_name = func.id
+        raw_arguments = [ast.unparse(arg) for arg in call.args]
+        # clean up spaces or quotes, just in case
+        arguments = [arg.strip().strip("'").strip('"') for arg in raw_arguments]
 
+        try:
+            new_arguments = [ast.literal_eval(x) for x in raw_arguments]
+            if new_arguments != arguments:
+                log_and_print(
+                    f"Refactored invocation argument parsing gives different result on "
+                    f"{invocation_str!r}: old result is {arguments!r}, new result is {new_arguments!r}"
+                )
+        except Exception as e:
+            log_and_print(
+                f"Refactored invocation argument parsing failed on {invocation_str!r}: {e!s}"
+            )
+    except Exception as e:
+        raise ValueError(f"Invalid function invocation: {invocation_str}") from e
+
+    return function_name, arguments
 
 
 

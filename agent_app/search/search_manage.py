@@ -90,5 +90,5 @@ class SearchManager:
 
         return class_index, class_func_index, function_index, parsed_py_files
 
-
+    # FIXME: search functions need update
 

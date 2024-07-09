@@ -67,8 +67,7 @@ class Model(ABC):
             "output_cost_per_token": self.cost_per_output,
             "total_input_tokens": thread_cost.process_input_tokens,
             "total_output_tokens": thread_cost.process_output_tokens,
-            "total_tokens": thread_cost.process_input_tokens
-            + thread_cost.process_output_tokens,
+            "total_tokens": thread_cost.process_input_tokens + thread_cost.process_output_tokens,
             "total_cost": thread_cost.process_cost,
         }
 

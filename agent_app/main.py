@@ -1,24 +1,85 @@
 # This code is modified from https://github.com/nus-apr/auto-code-rover
 # Original file: agent_app/main.py
 
+import csv
 import os
+import json
 
 from typing import *
 from os.path import abspath
+from argparse import ArgumentParser
 from datetime import datetime
 from itertools import chain
 from concurrent.futures import ProcessPoolExecutor
 
 from loguru import logger
 
-from agent_app import globals, globals_mut, log
+from agent_app import globals, globals_mut, inference, log
+from agent_app.api.manage import ProjectApiManager
 from agent_app.model import common
 from agent_app.model.register import register_all_models
 from agent_app.raw_tasks import RawTask, RawLocalTask
 from agent_app.task import Task
-from agent_app.log import print_with_time, log_and_always_print
-from agent_app.utils import get_timestamp, create_dir_if_not_exists
+from agent_app.log import get_timestamp, print_with_time, log_and_always_print
+from agent_app.utils import create_dir_if_not_exists
 
+
+def get_args():
+    parser = ArgumentParser()
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        help="Path to the directory that stores the run results.",
+    )
+    parser.add_argument(
+        "--local-repos-dir",
+        type=str,
+        help="Path to the directory that stores the local repos.",
+    )
+    parser.add_argument(
+        "--tasks-map-file",
+        type=str,
+        help="Path to json file that contains the tasks information.",
+    )
+    parser.add_argument(
+        "--no-print",
+        action="store_true",
+        default=False,
+        help="Do not print most messages to stdout.",
+    )
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="gpt-3.5-turbo-0125",
+        choices=list(common.MODEL_HUB.keys()),
+        help="The model to use. Currently only OpenAI models are supported.",
+    )
+    parser.add_argument(
+        "--model-temperature",
+        type=float,
+        default=0.0,
+        help="The model temperature to use, for OpenAI models.",
+    )
+    parser.add_argument(
+        "--conv-round-limit",
+        type=int,
+        default=15,
+        help="Conversation round limit for the main agent.",
+    )
+    parser.add_argument(
+        "--enable-layered",
+        action="store_true",
+        default=True,
+        help="Enable layered code search.",
+    )
+    parser.add_argument(
+        "--num-processes",
+        type=str,
+        default=1,
+        help="Number of processes to run the tasks in parallel.",
+    )
+
+    return parser.parse_args()
 
 
 def run_task_groups(
@@ -52,14 +113,11 @@ def run_task_groups(
         print_with_time("Running in multi-process mode.")
         run_task_groups_parallel(task_groups, num_processes)
 
-    if globals.only_save_sbfl_result:
-        log.print_with_time("Only saving SBFL results. Exiting.")
-        return
-
+    # FIXME: Need Update
     if organize_output:
         # post-process completed experiments to get input file to SWE-bench
         log.print_with_time("Post-processing completed experiment results.")
-        swe_input_file = organize_and_form_input(globals.output_dir)
+        swe_input_file = organize_and_form_input(globals.output_dpath)
         log.print_with_time(f"SWE-Bench input file created: {swe_input_file}")
 
 
@@ -68,7 +126,7 @@ def run_tasks_serial(tasks: List[RawTask]) -> None:
     Single-process Mode: Run all tasks sequentially.
 
     Args:
-        tasks: List of RawTasks to process
+        tasks: List of RawTasks to process.
     """
     for task in tasks:
         run_task_in_subprocess(task)
@@ -82,8 +140,38 @@ def run_task_groups_parallel(task_groups: Mapping[str, Sequence[RawTask]], num_p
         task_groups:
         num_processes:
     """
-    # TODO
-    pass
+    num_task_groups = len(task_groups)
+    globals_mut.init_total_num_task_groups(num_task_groups)
+    num_processes = min(num_processes, num_task_groups)
+
+    task_group_ids_items: List[Tuple[str, Sequence[RawTask]]] = sorted(
+        task_groups.items(), key=lambda x: len(x[1]), reverse=True
+    )
+    print_with_time(f"Sorted task groups: {[x[0] for x in task_group_ids_items]}")
+    try:
+        # Use ProcessPoolExecutor instead of multiprocessing.Pool to support nested sub-processing
+
+        group_ids, group_tasks = zip(*task_group_ids_items)
+        with ProcessPoolExecutor(num_processes) as executor:
+            executor.map(run_task_group, group_ids, group_tasks)
+    finally:
+        print_with_time("Finishing all tasks in the pool.")
+
+
+def run_task_group(task_group_id: str, task_group_items: List[RawTask]) -> None:
+    """
+    Run all tasks in a task group sequentially.
+    Main entry to parallel processing.
+    """
+    log.print_with_time(f"Starting process for task group {task_group_id}. Number of tasks: {len(task_group_items)}.")
+    for task in task_group_items:
+        # Within a group, the runs are always sequential
+        run_task_in_subprocess(task)
+        log.print_with_time(globals_mut.inc_task_return_msg())
+
+    log.print_with_time(
+        f"{globals_mut.inc_task_group_return_msg()} Finished task group {task_group_id}."
+    )
 
 
 def run_task_in_subprocess(task: RawTask) -> None:
@@ -91,20 +179,20 @@ def run_task_in_subprocess(task: RawTask) -> None:
         executor.submit(run_raw_task, task)
 
 
-def run_raw_task(task: RawTask, print_callback: Optional[Callable[[dict], None]] = None) -> bool:
+def run_raw_task(task: RawTask, print_callback: Optional[Callable[[Dict], None]] = None) -> bool:
     """
     High-level entry for running one task.
 
     Args:
-        task: The Task instance to run
+        task (RawTask): The Task instance to run
         print_callback: Optional callback function for printing task info
     Returns:
-        Whether the task completed successfully.
+        bool: Whether the task completed successfully.
     """
     task_id = task.task_id
 
     start_time_s = get_timestamp()
-    task_output_dpath = os.path.join(globals.output_dir, f"{task_id}_{start_time_s}")
+    task_output_dpath = os.path.join(globals.output_dpath, f"{task_id}_{start_time_s}")
     create_dir_if_not_exists(task_output_dpath)
 
     task.dump_meta_data(task_output_dpath)
@@ -127,6 +215,7 @@ def run_raw_task(task: RawTask, print_callback: Optional[Callable[[dict], None]]
 
     log_and_always_print(run_status_message)
 
+    # FIXME: Need update
     final_patch_path = get_final_patch_path(task_output_dpath)
     if final_patch_path is not None:
         log.log_and_always_print(
@@ -146,7 +235,7 @@ def run_raw_task(task: RawTask, print_callback: Optional[Callable[[dict], None]]
 def do_inference(
     python_task: Task,
     task_output_dir: str,
-    print_callback: Callable[[dict], None] | None = None,
+    print_callback: Optional[Callable[[Dict], None]] = None,
 ) -> bool:
 
     create_dir_if_not_exists(task_output_dir)
@@ -167,9 +256,9 @@ def do_inference(
 
     try:
         run_ok = inference.run_one_task(
-            api_manager.output_dir,
+            api_manager.output_dpath,
             api_manager,
-            python_task.get_issue_statement(),
+            python_task.get_commit_content(),
             print_callback,
         )
 
@@ -178,20 +267,69 @@ def do_inference(
 
         end_time = datetime.now()
 
-        dump_cost(start_time, end_time, task_output_dir)
+        dump_cost(python_task.commit_id, start_time, end_time, task_output_dir)
     finally:
         python_task.reset_project()
 
     return run_ok
 
 
+def dump_cost(commit_hash: str, start_time: datetime, end_time: datetime, task_output_dir: str):
+    model_stats = common.SELECTED_MODEL.get_overall_exec_stats()
+    stats = {
+        "commit": commit_hash,
+        "start_epoch": start_time.timestamp(),
+        "end_epoch": end_time.timestamp(),
+        "elapsed_seconds": (end_time - start_time).total_seconds(),
+    }
+    stats.update(model_stats)
+
+    with open(os.path.join(task_output_dir, "cost.json"), "w") as f:
+        json.dump(stats, f, indent=4)
+
+
+def construct_tasks(tasks_map_file: str, local_repos_dpath: str) -> List[RawLocalTask]:
+    all_tasks = []
+
+    with open(tasks_map_file) as f:
+        tasks_map = json.load(f)
+
+    for i, task_info in enumerate(tasks_map):
+        task_id = str(i)
+        repo_name = task_info["repo"]
+        assert len(repo_name.split('/')) == 2
+        local_repo_dpath = os.path.join(local_repos_dpath, '_'.join(repo_name.split('/')))
+        commit_hash = task_info["commit_id"]
+        cwe_id = task_info["cwe_id"]
+        task = RawLocalTask(task_id, repo_name, local_repo_dpath, commit_hash, cwe_id)
+        all_tasks.append(task)
+
+    return all_tasks
+
+
+def group_local_tasks_by_repo(tasks: List[RawLocalTask]) -> Dict[str, List[RawLocalTask]]:
+    groups = {}
+    for task in tasks:
+        key = task.setup_info["env_name"]
+        if key not in groups:
+            groups[key] = []
+        groups[key].append(task)
+    return groups
+
+
 def main(args):
-    ## common options
-    globals.output_dir = args.output_dir
-    if globals.output_dir is not None:
-        globals.output_dir = abspath(globals.output_dir)
+    ## Set options
+    # common
+    globals.output_dpath = args.output_dir
+    if globals.output_dpath is not None:
+        globals.output_dpath = abspath(globals.output_dpath)
+
+    globals.local_repos_dpath = args.local_repos_dir
+    if globals.local_repos_dpath is not None:
+        globals.output_dpath = abspath(globals.output_dpath)
+
     num_processes: int = int(args.num_processes)
-    # set whether brief or verbose log
+    # brief or verbose log
     print_stdout: bool = not args.no_print
     log.print_stdout = print_stdout
     # model related
@@ -201,15 +339,18 @@ def main(args):
     # acr related
     globals.conv_round_limit = args.conv_round_limit
     globals.enable_layered = args.enable_layered
-    globals.enable_validation = args.enable_validation
+
+    ## Construct tasks
+    all_tasks: List[RawLocalTask] = construct_tasks(args.tasks_map_file, args.local_repos_dir)
+
+    task_groups = group_local_tasks_by_repo(all_tasks)
 
     ## Run tasks
-
-
+    run_task_groups(task_groups, num_processes, organize_output=True)
 
 
 if __name__ == '__main__':
-
+    logger.remove()
     register_all_models()
-
-
+    margs = get_args()
+    main(margs)
