@@ -21,7 +21,7 @@ from agent_app.model.register import register_all_models
 from agent_app.raw_tasks import RawTask, RawLocalTask
 from agent_app.task import Task
 from agent_app.log import get_timestamp, print_with_time, log_and_always_print
-from agent_app.utils import create_dir_if_not_exists
+from agent_app.util import create_dir_if_not_exists
 
 
 def get_args():

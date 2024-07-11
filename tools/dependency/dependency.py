@@ -8,9 +8,9 @@ from typing import *
 from typing import Union
 from bs4 import BeautifulSoup
 
-from utils.logging import start_with_logger
-from utils.commit import checkout_commit, clone_repo
-from utils.utils import execute_command, traverse_directory
+from old_utils.logging import start_with_logger
+from old_utils.commit import checkout_commit, clone_repo
+from old_utils.utils import execute_command, traverse_directory
 
 
 def find_dot_path(logger) -> str:

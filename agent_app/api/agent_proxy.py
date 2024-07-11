@@ -14,7 +14,7 @@ from agent_app.model import common
 from agent_app.search.search_manage import SearchManager
 from agent_app.data_structures import MessageThread
 from agent_app.post_process import ExtractStatus, is_valid_json
-from agent_app.utils import parse_function_invocation
+from agent_app.util import parse_function_invocation
 
 # TODO: Need update
 PROXY_PROMPT = """

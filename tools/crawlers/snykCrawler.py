@@ -7,7 +7,7 @@ from selenium.common.exceptions import NoSuchElementException, TimeoutException
 import os
 import time
 
-from utils import selenium_driver_setup, selenium_driver_close
+from old_utils import selenium_driver_setup, selenium_driver_close
 
 
 if __name__ == '__main__':

@@ -7,9 +7,9 @@ from typing import *
 import tree_sitter
 from tree_sitter import Parser, Language, Node as tsNode
 
-from utils.logging import logger
-from utils.dependency import build_project_structure, traversal_proj_struct_find_spec_file_extension_files
-from utils.utils import set_value_in_dict
+from old_utils.logging import logger
+from old_utils.dependency import build_project_structure, traversal_proj_struct_find_spec_file_extension_files
+from old_utils.utils import set_value_in_dict
 from tree_sitter_parse_py import (_find_import_path_in_import_stat_node,
                                   _find_import_path_in_import_from_stat_node,
                                   _find_import_path_in_future_import_stat_node,

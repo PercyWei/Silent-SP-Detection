@@ -3,7 +3,7 @@ import json
 import os
 from typing import *
 
-from utils.logging import start_with_logger
+from old_utils.logging import start_with_logger
 
 
 def csv2cweTree(csv_path, save_filepath, save=False):

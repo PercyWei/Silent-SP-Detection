@@ -5,7 +5,7 @@ from tree_sitter import Node as tsNode
 
 # from ..util import Counter, prepare_specified_lang_parser, TraversalFindFaultLines
 from tools.dependency.util import Counter, prepare_specified_lang_parser, TraversalFindFaultLines
-from utils.logging import logger
+from old_utils.logging import logger
 
 
 def assert_boolean_expression(n):

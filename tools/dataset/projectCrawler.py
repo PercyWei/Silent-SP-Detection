@@ -3,7 +3,7 @@ import os
 import subprocess
 from typing import *
 
-from utils.logging import start_with_logger
+from old_utils.logging import start_with_logger
 
 
 def crawl_cve_project_with_commit(auth_repo: str, cve_id: str, commit_id: str, repo_save_dpath: str, logger):

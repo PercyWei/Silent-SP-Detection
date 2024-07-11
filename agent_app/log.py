@@ -11,13 +11,7 @@ from rich.panel import Panel
 
 from loguru import logger
 
-
-def get_timestamp() -> str:
-    return datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S')
-
-
-def terminal_width():
-    return os.get_terminal_size().columns
+from logs import get_timestamp, terminal_width
 
 
 WIDTH = min(120, terminal_width() - 10)

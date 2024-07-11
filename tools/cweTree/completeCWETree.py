@@ -2,7 +2,7 @@ import argparse
 import json
 from typing import *
 
-from utils.logging import start_with_logger
+from old_utils.logging import start_with_logger
 
 
 def combine_minor_view(

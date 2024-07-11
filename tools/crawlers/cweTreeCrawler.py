@@ -5,8 +5,8 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 
-from utils.crawler import selenium_driver_setup, selenium_driver_close
-from utils.logging import start_with_logger
+from old_utils.crawler import selenium_driver_setup, selenium_driver_close
+from old_utils.logging import start_with_logger
 
 
 def filter_duplicate_cwe_items(cweTree: Dict) -> Dict:

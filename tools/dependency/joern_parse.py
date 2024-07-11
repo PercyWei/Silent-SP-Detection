@@ -4,8 +4,8 @@ import json
 import re
 from typing import *
 
-from utils.utils import execute_command
-from utils.logging import logger
+from old_utils.utils import execute_command
+from old_utils.logging import logger
 
 
 withName = ['METHOD', 'NAMESPACE', 'NAMESPACE_BLOCK', 'METHOD_PARAMETER_IN', 'METHOD_PARAMETER_OUT',

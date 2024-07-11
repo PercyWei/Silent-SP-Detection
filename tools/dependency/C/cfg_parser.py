@@ -10,7 +10,7 @@ from tree_sitter import Node as tsNode
 from .ast_parser import ASTParser
 # from ..util import Counter
 from tools.dependency.util import Counter
-from utils.logging import logger
+from old_utils.logging import logger
 
 
 class CFGVisitor:

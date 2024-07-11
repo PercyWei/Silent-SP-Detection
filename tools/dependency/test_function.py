@@ -13,9 +13,9 @@ from C.cfg_parser import CFGParser
 from C.preprocess import PreProcessError, preprocess, preprocess_error
 
 
-from utils.dependency import build_project_structure
-from utils.utils import execute_command
-from utils.logging import logger
+from old_utils.dependency import build_project_structure
+from old_utils.utils import execute_command
+from old_utils.logging import logger
 
 
 class ASTNode:
@@ -715,7 +715,7 @@ if __name__ == '__main__':
     #
     #     break
 
-    # [TEST 8] utils/dependency/build_project_structure function test
+    # [TEST 8] old_utils/dependency/build_project_structure function test
     clone_projects = "/root/projects/clone_projects"
     # test_build_project_structure(clone_projects)
 
@@ -727,7 +727,7 @@ if __name__ == '__main__':
     # demo_file_path = '/root/projects/VDTest/tools/dependency/test_data/tree_sitter_node_demo_example.py'
     # tree_sitter_nodes_demo(demo_lang, so_fpath, demo_file_path)
 
-    # [TEST 10] utils/dependency/get_project_all_lang_files_info function test
+    # [TEST 10] old_utils/dependency/get_project_all_lang_files_info function test
     # test_get_project_all_lang_files_info(clone_projects, so_fpath)
 
     # [TEST 11] narrow repo functions test

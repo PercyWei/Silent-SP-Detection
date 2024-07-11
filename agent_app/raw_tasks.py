@@ -6,7 +6,7 @@ import json
 from abc import ABC, abstractmethod
 
 from agent_app.task import Task, PlainTask
-from agent_app.utils import cd, get_commit_content
+from agent_app.util import cd, get_commit_content
 
 
 class RawTask(ABC):

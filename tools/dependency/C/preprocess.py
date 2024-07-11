@@ -6,7 +6,7 @@ from typing import *
 from tree_sitter import Node as tsNode, Parser
 
 from tools.dependency.util import find_error_nodes
-from utils.logging import logger
+from old_utils.logging import logger
 
 
 preprocIf_cmds = ['#if', '#ifdef', '#ifndef', '#else', '#elif', '#elifdef', '#elifndef', '#endif']

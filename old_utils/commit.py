@@ -4,7 +4,7 @@ import shutil
 import subprocess
 from typing import *
 
-from utils.utils import execute_command
+from old_utils.utils import execute_command
 
 
 def clone_repo(logger, auth_repo: str, repo_dpath: str, timeout: int = 30, token: str = '') -> Optional[bool]:

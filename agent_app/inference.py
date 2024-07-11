@@ -21,7 +21,7 @@ from agent_app.log import (
     print_banner, print_acr, print_retrieval, print_commit_content,
     log_and_print, log_and_cprint
 )
-from agent_app.utils import parse_function_invocation
+from agent_app.util import parse_function_invocation
 
 # FIXME: the system prompt should be different for stratified/state machine.
 SYSTEM_PROMPT = """

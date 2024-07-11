@@ -6,7 +6,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
-from agent_app.utils import cd, repo_reset_and_clean_checkout
+from agent_app.util import cd, repo_reset_and_clean_checkout
 
 
 class Task(ABC):

@@ -8,9 +8,9 @@ import subprocess
 import shutil
 from typing import *
 
-from utils.logging import start_with_logger, log_debug
-from utils.commit import clone_repo, checkout_commit
-from utils.utils import calculate_date_range
+from old_utils.logging import start_with_logger, log_debug
+from old_utils.commit import clone_repo, checkout_commit
+from old_utils.utils import calculate_date_range
 
 
 def get_api_rate_limit(logger, token):

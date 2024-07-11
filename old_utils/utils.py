@@ -2,21 +2,7 @@ import os
 import re
 import shutil
 import subprocess
-from datetime import datetime, timedelta
 from typing import *
-
-
-def calculate_date_range(commit_date):
-    date_format = "%Y-%m-%dT%H:%M:%SZ"
-    commit_datetime = datetime.strptime(commit_date, date_format)
-
-    start_date = commit_datetime - timedelta(days=1)
-    end_date = commit_datetime + timedelta(days=1)
-
-    start_date_str = datetime.strftime(start_date, date_format)
-    end_date_str = datetime.strftime(end_date, date_format)
-
-    return start_date_str, end_date_str
 
 
 def execute_command(command: List[str], **run_params) -> Tuple:

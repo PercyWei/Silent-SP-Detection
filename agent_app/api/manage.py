@@ -17,7 +17,8 @@ from agent_app.task import Task
 from agent_app.log import log_exception
 
 
-class
+class Action:
+    pass
 
 
 class StateMachine:
@@ -30,13 +31,11 @@ class StateMachine:
         "end"
     ]
 
-    actions
-
     def __init__(self):
         self.curr_state: str = "start"
 
     def available_api_functions(self):
-
+        pass
 
     def switch_state(self, next_state: str):
         if self.curr_state == "start":

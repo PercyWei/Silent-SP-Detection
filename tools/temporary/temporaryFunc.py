@@ -5,7 +5,7 @@ import pandas as pd
 import csv
 
 
-from utils.logging import start_with_logger
+from old_utils.logging import start_with_logger
 
 
 def read_TreeVul_clone_check_log(TreeVul_clone_check_log_fpath):
