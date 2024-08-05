@@ -8,13 +8,11 @@ Post-process the output of the inference workflow.
 import os
 import json
 
-
 from typing import *
 from enum import Enum
 
 
-
-# Track status of patch extraction
+# Track status of silent security patch identification
 class ExtractStatus(str, Enum):
     APPLICABLE_PATCH = "APPLICABLE_PATCH"
     MATCHED_BUT_EMPTY_ORIGIN = "MATCHED_BUT_EMPTY_ORIGIN"
@@ -53,7 +51,6 @@ class ExtractStatus(str, Enum):
         return sorted(statuses)[-1]
 
 
-
 def is_valid_json(json_str: str) -> Tuple[ExtractStatus, Union[List, Dict, None]]:
     """
     Check whether a json string is valid.
@@ -69,5 +66,3 @@ def is_valid_json(json_str: str) -> Tuple[ExtractStatus, Union[List, Dict, None]
     except json.decoder.JSONDecodeError:
         return ExtractStatus.NOT_VALID_JSON, None
     return ExtractStatus.IS_VALID_JSON, data
-
-

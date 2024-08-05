@@ -28,9 +28,6 @@ from agent_app.model.common import Model
 from agent_app.log import log_and_print
 
 
-openai.api_base = "https://apikeyplus.com/v1"
-
-
 class OpenaiModel(Model):
     """
     Base class for creating Singleton instances of OpenAI models.
@@ -65,15 +62,23 @@ class OpenaiModel(Model):
         Check API key, and initialize OpenAI client.
         """
         if self.client is None:
-            key = self.check_api_key()
-            self.client = OpenAI(api_key=key)
+            api_key = self.check_api_key()
+            api_base = self.check_api_base()
+            self.client = OpenAI(api_key=api_key, base_url=api_base)
 
     def check_api_key(self) -> str:
-        key = os.getenv("OPENAI_KEY")
-        if not key:
+        api_key = os.getenv("OPENAI_KEY")
+        if not api_key:
             print("Please set the OPENAI_KEY env var")
             sys.exit(1)
-        return key
+        return api_key
+
+    def check_api_base(self) -> str:
+        api_base = os.getenv("OPENAI_API_BASE")
+        if not api_base:
+            print("Please set the OPENAI_API_BASE env var")
+            sys.exit(1)
+        return api_base
 
     @staticmethod
     def extract_resp_content(chat_completion_message: ChatCompletionMessage) -> str:

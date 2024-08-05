@@ -5,9 +5,45 @@ import json
 
 from typing import *
 from pprint import pformat
+from enum import Enum
+from dataclasses import dataclass
 
 from openai.types.chat import ChatCompletionMessageToolCall
 from openai.types.chat.chat_completion_message_tool_call import Function as OpenaiFunction
+
+
+class State(str, Enum):
+    START_STATE = "start"
+    HYPOTHESIS_CHECK_STATE = "hypothesis_check"
+    CONTEXT_RETRIEVAL_STATE = "context_retrieval"
+    HYPOTHESIS_VERIFY_STATE = "hypothesis_verify"
+    END_STATE = "end"
+
+    @staticmethod
+    def attributes():
+        return [k.value for k in State]
+
+
+class CommitType(str, Enum):
+    VulnerabilityPatch = "vulnerability_patch"
+    NonVulnerabilityPatch = "non_vulnerability_patch"
+
+    @staticmethod
+    def attributes():
+        return [e.value for e in CommitType]
+
+
+@dataclass
+class Hypothesis:
+    """Dataclass to hold hypothesis."""
+    commit_type: CommitType
+    vulnerability_type: str
+    confidence_score: int
+
+    def __str__(self):
+        return (f"-commit type: {self.commit_type}; "
+                f"-vulnerability type: {self.vulnerability_type}; "
+                f"-confidence_score: {self.confidence_score}")
 
 
 class FunctionCallIntent:

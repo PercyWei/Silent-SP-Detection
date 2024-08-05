@@ -3,7 +3,7 @@ import json
 import os
 from typing import *
 
-from old_utils.logging import start_with_logger
+from loguru import logger
 
 
 def csv2cweTree(csv_path, save_filepath, save=False):
@@ -225,8 +225,6 @@ def update_full_rels(cwe_simple_item_dict: Dict, view_id: str = "1000"):
 
 
 if __name__ == '__main__':
-    logger = start_with_logger(__name__, log_fname="csv2cweTree")
-
     save_dpath = './data/csv'
 
     # cwe1003_csv_path = "./data/1003.csv"

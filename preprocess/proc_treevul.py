@@ -1,3 +1,4 @@
+import re
 import os
 import json
 import time
@@ -10,7 +11,8 @@ from datetime import datetime, timedelta
 from loguru import logger
 
 from preprocess.log import default_add_logger, log_banner, log_and_print, log_and_cprint, cprint
-from preprocess.util import make_hie_dirs, clone_repo, checkout_commit
+from preprocess.util import clone_repo, checkout_commit
+from utils import make_hie_dirs
 
 
 def get_api_rate_limit(token: str):
@@ -1052,3 +1054,47 @@ def count_dataset_file_language(dataset_fpath: str) -> None:
 # default_add_logger(log_file)
 # treevul_valid_scsfCVE = "/root/projects/VDTest/output/TreeVul/TreeVul_valid_scsfCVE.json"
 # count_dataset_file_language(treevul_valid_scsfCVE)
+
+
+"""Simplified Dataset"""
+
+
+def build_simplified_dataset(dataset_fpath: str, output_root: str):
+    with open(dataset_fpath, 'r') as f:
+        dataset = json.load(f)
+
+    # Select
+    new_dataset: List[Dict] = []
+    for commit_id, items in dataset.items():
+        if len(items) == 1:
+            cve_type = "sf"
+        else:
+            cve_type = "mf"
+
+        pl_list = []
+        for item in items:
+            if "PL" in item:
+                pl_list.append(item["PL"])
+        pl_list = list(set(pl_list))
+
+        if len(pl_list) != 0:
+            new_item = {
+                "id": len(new_dataset),
+                "cve_list": items[0]["cve_list"],
+                "cve_type": cve_type,
+                "repo": items[0]["repo"],
+                "cwe_id": items[0]["cwe_list"],
+                "commit_hash": commit_id,
+                "commit_type": 1,
+                "PL_list": pl_list
+            }
+            new_dataset.append(new_item)
+
+    save_fpath = os.path.join(output_root, "sim_TreeVul.json")
+    with open(save_fpath, 'w') as f:
+        json.dump(new_dataset, f, indent=4)
+
+
+# output_dir = "/root/projects/VDTest/output/dataset"
+# treevul_valid_scsfCVE = "/root/projects/VDTest/output/TreeVul/TreeVul_valid_scCVE.json"
+# build_simplified_dataset(treevul_valid_scsfCVE, output_dir)

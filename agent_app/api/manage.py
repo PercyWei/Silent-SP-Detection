@@ -7,102 +7,81 @@ import json
 from typing import *
 from copy import deepcopy
 from docstring_parser import parse
+from enum import Enum
 
 from loguru import logger
 
 from agent_app.api import agent_proxy
+from agent_app.commit.commit_manage import CommitManager
+from agent_app.CWE.cwe_manage import CWEManager
 from agent_app.search.search_manage import SearchManager
-from agent_app.data_structures import FunctionCallIntent, MessageThread
+from agent_app.data_structures import State, FunctionCallIntent, MessageThread
 from agent_app.task import Task
 from agent_app.log import log_exception
 
 
-class Action:
-    pass
+class ProjectStateManager:
+    ################# State machine specific #################
+    # NOTE: this section is for state machine
 
-
-class StateMachine:
-
-    states = [
-        "start",
-        "hypothesis_making",
-        "context_retrieval",
-        "hypothesis_verification",
-        "end"
+    states: List[State] = [
+        State.START_STATE,
+        State.HYPOTHESIS_CHECK_STATE,
+        State.CONTEXT_RETRIEVAL_STATE,
+        State.HYPOTHESIS_VERIFY_STATE,
+        State.END_STATE
     ]
 
-    def __init__(self):
-        self.curr_state: str = "start"
+    next_states: Dict[State, List[State]] = {
+        State.START_STATE: [State.HYPOTHESIS_CHECK_STATE],
+        State.HYPOTHESIS_CHECK_STATE: [State.CONTEXT_RETRIEVAL_STATE, State.END_STATE],
+        State.CONTEXT_RETRIEVAL_STATE: [State.HYPOTHESIS_VERIFY_STATE],
+        State.HYPOTHESIS_VERIFY_STATE: [State.HYPOTHESIS_CHECK_STATE]
+    }
 
-    def available_api_functions(self):
-        pass
-
-    def switch_state(self, next_state: str):
-        if self.curr_state == "start":
-            assert next_state == "hypothesis_making", \
-                f"Next state of 'start' must be 'hypothesis_making', but got '{next_state}'"
-        elif self.curr_state == "hypothesis_making":
-            assert next_state == "information_collection", \
-                f"Next state of 'hypothesis_making' must be 'information_collection', but got '{next_state}'"
-        elif self.curr_state == "information_collection":
-            assert next_state == "hypothesis_verification", \
-                f"Next state of 'information_collection' must be 'hypothesis_verification', but got '{next_state}'"
-        elif self.curr_state == "hypothesis_verification":
-            assert next_state == "hypothesis_verification", \
-                f"Next state of 'information_collection' must be 'hypothesis_verification', but got '{next_state}'"
-
-        self.curr_state = next_state
-
-
-
-class ProjectApiManager:
-    ################# State machine specific ################
-    # NOTE: this section is for state machine; APIs in stratified mode are specified
-    # in agent_api_hypothesis verificationselector.py
-
-    # Original settings in AutoCodeRover
-    # api_functions = [
-    #     "search_class",
-    #     "search_class_in_file",
-    #     "search_method",
-    #     "search_method_in_class",
-    #     "search_method_in_file",
-    #     "search_code",
-    #     "search_code_in_file",
-    #     "write_patch",
-    # ]
-    # TODO: Need Improvement
-    api_functions = [
+    search_api_functions = [
         "search_class",
         "search_class_in_file",
-        "search_method",
-        "search_method_in_class",
         "search_method_in_file",
-        "search_code",
-        "search_code_in_file",
-        "write_patch",
+        "search_method_in_class",
+        "search_method_in_class_in_file"
     ]
 
-
     def __init__(self, task: Task, output_dpath: str):
-        # for logging of this task instance
+        # For logging of this task instance
         self.task = task
 
         # Where to write our output
         self.output_dpath = os.path.abspath(output_dpath)
 
+        # Prepare the repo environment
         self.task.setup_project()
 
-        # Build search manager
-        self.search_manager = SearchManager(self.task.project_path)
+        # Keep track of the current state and the action currently being performed
+        self.curr_state: State = State.START_STATE
 
-        # Keeps track which tools is currently being used
+        ## For state start
+        self.commit_manager = CommitManager(self.task.project_path,
+                                            self.task.commit_hash,
+                                            self.task.commit_content)
+
+        ## For providing CWE information
+        # FIXME: Need update
+        cwe_items_fpath = "/root/projects/VDTest/agent_app/CWE/CWE_1003_items.json"
+        cwe_tree_fpath = "/root/projects/VDTest/agent_app/CWE/CWE_1003_tree.json"
+        self.cwe_manager = CWEManager(cwe_items_fpath, cwe_tree_fpath)
+
+        ## For state context_retrieval
+        # Build search manager
+        self.search_manager = SearchManager(self.task.project_path, self.commit_manager.mod_files)
+
+        # Keep track which tools is currently being used
         self.curr_tool: Optional[str] = None
 
         # Record the sequence of tools used, and their return status
         self.tool_call_sequence: List[Mapping] = []
 
-        # Record layered API calls
+        # Record layered API calls (different rounds)
         self.tool_call_layers: List[List[Mapping]] = []
 
         # Record cost and token information
@@ -114,33 +93,7 @@ class ProjectApiManager:
         """
         Return the list of tools that should be used in the next round.
         """
-
-        search_tools = [
-            "search_class",
-            "search_class_in_file",
-            "search_method",
-            "search_method_in_class",
-            "search_method_in_file",
-            "search_code",
-            "search_code_in_file",
-        ]
-        all_tools = search_tools + ["write_patch"]
-        if not self.curr_tool:
-            # This means we are at the beginning of the conversation
-            # you have to start from doing some search
-            return search_tools
-
-        state_machine = {
-            "search_class": search_tools,
-            "search_class_in_file": search_tools,
-            "search_method": all_tools,
-            "search_method_in_class": all_tools,
-            "search_method_in_file": all_tools,
-            "search_code": all_tools,
-            "search_code_in_file": all_tools,
-            "write_patch": [],
-        }
-        return state_machine[self.curr_tool]
+        return self.search_api_functions
 
     def start_new_tool_call_layer(self):
         self.tool_call_layers.append([])
@@ -226,26 +179,25 @@ class ProjectApiManager:
             summary (str): A summary that should be communicated to the model.
             new_threads (bool): True if the call gets the desired result, False otherwise.
         """
-        # FIXME: Consider if we need 'get_class_full_snippet' function, which is not a api function.
-        if (intent.func_name not in self.api_functions) and \
-                (intent.func_name != "get_class_full_snippet"):
+        if intent.func_name not in self.search_api_functions and intent.func_name != "get_class_full_snippet":
             error = f"Unknown function name {intent.func_name}."
             summary = "You called a tool that does not exist. Please only use the tools provided."
             return error, summary, False
 
         try:
-            # Ready to call a function
+            if intent.func_name == "search_class_in_file":
+                pass
+            elif intent.func_name == "search_method_in_file":
+                pass
+            elif intent.func_name == "search_method_in_class_in_file":
+                pass
+
+            # Call a function
             func_obj = getattr(self, intent.func_name)
             self.curr_tool = intent.func_name
-            # FIXME: Delete function 'write_patch'
-            if intent.func_name in ["write_patch"]:
-                # these two functions require the message thread
-                call_res = func_obj(message_thread, print_callback=print_callback)
-            else:
-                call_res = func_obj(**intent.arg_values)
+            call_res = func_obj(**intent.arg_values)
         except Exception as e:
             # TypeError can happen when the function is called with wrong parameters
-            # we just return the error message as the call result
             log_exception(e)
             error = str(e)
             summary = "The tool returned error message."
@@ -263,19 +215,38 @@ class ProjectApiManager:
 
         return call_res
 
-    def dump_tool_call_sequence_to_file(self):
+    def dump_tool_call_sequence_to_file(self, tool_call_output_dpath: str):
         """Dump the sequence of tool calls to a file."""
-        tool_call_file = os.path.join(self.output_dpath, "tool_call_sequence.json")
+        tool_call_file = os.path.join(tool_call_output_dpath, "tool_call_sequence.json")
         with open(tool_call_file, "w") as f:
             json.dump(self.tool_call_sequence, f, indent=4)
 
-    def dump_tool_call_layers_to_file(self):
+    def dump_tool_call_layers_to_file(self, tool_call_output_dpath: str):
         """Dump the layers of tool calls to a file."""
-        tool_call_file = os.path.join(self.output_dpath, "tool_call_layers.json")
+        tool_call_file = os.path.join(tool_call_output_dpath, "tool_call_layers.json")
         with open(tool_call_file, "w") as f:
             json.dump(self.tool_call_layers, f, indent=4)
 
+    """State switch"""
+
+    def into_state(self, next_state: State):
+        """
+        Change curr_state and curr_action
+        """
+        assert self.curr_state != State.END_STATE and next_state in self.next_states[self.curr_state]
+        self.curr_state = next_state
+
+    def switch_state(self, next_state: State):
+        self.into_state(next_state)
+
+    def reset_state(self):
+        self.curr_state = State.START_STATE
+
     """Search APIs"""
+
+    # Not a search API - just to get full class definition when only the class is specified
+    def get_class_full_snippet(self, class_name: str):
+        return self.search_manager.get_class_full_snippet(class_name)
 
     def search_class(self, class_name: str) -> Tuple[str, str, bool]:
         """Search for a class in the codebase.
@@ -287,53 +258,85 @@ class ProjectApiManager:
             class_name (str): Name of the class to search for.
 
         Returns:
-            str: The class signature if success, an error message otherwise.
-            str: A message summarizing the method.
-            bool:
+            str: The searched class signature if success, an error message otherwise.
+            str: Summary of the tool call.
+            bool: Any class was found.
         """
         return self.search_manager.search_class(class_name)
 
-    def search_method(self, method_name: str) -> Tuple[str, str, bool]:
+    def search_class_in_file(self, class_name: str, file_name: str) -> Tuple[str, str, bool]:
+        """Search for a class in a given file.
+
+        Returns the actual code of the entire class definition.
+
+        Args:
+            class_name (str): Name of the class to search for.
+            file_name (str): The file to search in. Must be a valid python file name.
+
+        Returns:
+            str: The searched class signature if success, an error message otherwise.
+            str: Summary of the tool call.
+            bool: Any class was found.
         """
-        Search for a method in the entire codebase.
+        return self.search_manager.search_class_in_file(class_name, file_name)
+
+    def search_method_in_file(self, method_name: str, file_name: str) -> Tuple[str, str, bool]:
+        """Search for a method in a given file.
 
         Returns the actual code of the method.
 
         Args:
             method_name (str): Name of the method to search for.
+            file_name (str): The file to search in. Must be a valid python file name.
 
         Returns:
-            str: The searched code if success, an error message otherwise.
+            str: The searched method code if success, an error message otherwise.
             str: Summary of the tool call.
-            bool:
+            bool: Any method was found.
         """
-        return self.search_manager.search_method(method_name)
+        return self.search_manager.search_method_in_file(method_name, file_name)
 
-    def search_code(self, code_str: str) -> Tuple[str, str, bool]:
-        """
-        Search for a code snippet in the entire codebase.
+    def search_method_in_class(self, method_name: str, class_name: str) -> Tuple[str, str, bool]:
+        """Search for a method in a given class.
 
-        Returns the method that contains the code snippet, if it is found inside a file.
-        Otherwise, returns the region of code surrounding it.
+        Returns the actual code of the method.
 
         Args:
-            code_str (str): The code snippet to search for.
+            method_name (str): Name of the method to search for.
+            class_name (str): Consider only methods in this class.
 
         Returns:
-            str: The region of code containing the searched code string.
-            str:
-            bool:
+            str: The searched method code if success, an error message otherwise.
+            str: Summary of the tool call.
+            bool: Any method was found.
         """
-        return self.search_manager.search_code(code_str)
+        return self.search_manager.search_method_in_class(method_name, class_name)
+
+    def search_method_in_class_in_file(self, method_name: str, class_name: str, file_name: str) -> Tuple[str, str, bool]:
+        """Search for a method in a given class which is in a given file.
+
+        Returns the actual code of the method.
+
+        Args:
+            method_name (str): Name of the method to search for.
+            class_name (str): Consider only methods in this class.
+            file_name (str): The file to search in. Must be a valid python file name.
+
+        Returns:
+            str: The searched method code if success, an error message otherwise.
+            str: Summary of the tool call.
+            bool: Any method was found.
+        """
+        return self.search_manager.search_method_in_class_in_file(method_name, class_name, file_name)
 
     """Ask agent proxy"""
 
-    def proxy_apis(self, text: str) -> Tuple[Optional[str], str, List[MessageThread]]:
+    def call_proxy_apis(self, text: str) -> Tuple[str | None, str, List[MessageThread]]:
         """Proxy APIs to another agent."""
-        tool_output, new_threads = agent_proxy.run_with_retries(text)  # FIXME: type of `text`
+        tool_output, new_threads = agent_proxy.run_with_retries(text, self.curr_state)  # FIXME: type of `text`
 
         if tool_output is None:
             summary = "The tool returned nothing. The main agent probably did not provide enough clues."
         else:
-            summary = "The tool returned the selected search APIs in json format generated by another agent."
+            summary = "The tool returned the respond in standard json format generated by another agent."
         return tool_output, summary, new_threads

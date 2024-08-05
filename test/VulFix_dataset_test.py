@@ -26,16 +26,28 @@ def main(dataset_fpath: str):
                     return
 
 
+class A:
+    s_a = [1, 2, 3]
+    f_a = [4, 5, 6]
+
+    def get_s(self, pref: str):
+        l = getattr(self, pref+'_a')[0]
+        print(l)
+
+
 if __name__ == '__main__':
-    logger.remove()
-    logger.add(
-        'info.log',
-        mode='w',
-        level='DEBUG',
-        format=(
-            "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level>"
-            " | <level>{message}</level>"
-        )
-    )
-    VulFix_dataset_fpath = "/root/projects/VDTest/dataset/VulFix/ase_dataset_sept_19_2021.csv"
-    main(VulFix_dataset_fpath)
+    # logger.remove()
+    # logger.add(
+    #     'info.log',
+    #     mode='w',
+    #     level='DEBUG',
+    #     format=(
+    #         "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level>"
+    #         " | <level>{message}</level>"
+    #     )
+    # )
+    # VulFix_dataset_fpath = "/root/projects/VDTest/dataset/VulFix/ase_dataset_sept_19_2021.csv"
+    # main(VulFix_dataset_fpath)
+
+    a = A()
+    a.get_s('f')

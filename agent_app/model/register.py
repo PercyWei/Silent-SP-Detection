@@ -19,4 +19,5 @@ def register_all_models() -> None:
     common.register_model(gpt.Gpt4_0613())
 
     # register default model as selected
-    common.SELECTED_MODEL = gpt.Gpt35_Turbo0125()
+    # common.SELECTED_MODEL = gpt.Gpt35_Turbo0125()
+    common.SELECTED_MODEL = gpt.Gpt4o_20240513()

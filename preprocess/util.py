@@ -10,15 +10,6 @@ from preprocess.log import cprint
 from typing import *
 
 
-def make_hie_dirs(root: str, *dirs: str) -> str:
-    """Make hierarchical directories recursively."""
-    new_dpath = os.path.join(root, *dirs)
-    if not os.path.exists(new_dpath):
-        os.makedirs(new_dpath, exist_ok=True)
-
-    return new_dpath
-
-
 def clone_repo(auth_repo: str, repo_dpath: str, timeout: int = 30, token: str = '') -> Optional[bool]:
     """
     Clone a GitHub repository to local.

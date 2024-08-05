@@ -1,12 +1,11 @@
 # This code is modified from https://github.com/nus-apr/auto-code-rover
 # Original file: agent_app/main.py
 
-import csv
 import os
 import json
 
 from typing import *
-from os.path import abspath
+from pathlib import Path
 from argparse import ArgumentParser
 from datetime import datetime
 from itertools import chain
@@ -15,12 +14,12 @@ from concurrent.futures import ProcessPoolExecutor
 from loguru import logger
 
 from agent_app import globals, globals_mut, inference, log
-from agent_app.api.manage import ProjectApiManager
+from agent_app.api.manage import ProjectStateManager
 from agent_app.model import common
 from agent_app.model.register import register_all_models
 from agent_app.raw_tasks import RawTask, RawLocalTask
 from agent_app.task import Task
-from agent_app.log import get_timestamp, print_with_time, log_and_always_print
+from agent_app.log import get_timestamp, print_with_time, log_and_always_print, log_and_cprint, always_cprint
 from agent_app.util import create_dir_if_not_exists
 
 
@@ -29,16 +28,19 @@ def get_args():
     parser.add_argument(
         "--output-dir",
         type=str,
+        required=True,
         help="Path to the directory that stores the run results.",
     )
     parser.add_argument(
         "--local-repos-dir",
         type=str,
+        required=True,
         help="Path to the directory that stores the local repos.",
     )
     parser.add_argument(
         "--tasks-map-file",
         type=str,
+        required=True,
         help="Path to json file that contains the tasks information.",
     )
     parser.add_argument(
@@ -61,16 +63,28 @@ def get_args():
         help="The model temperature to use, for OpenAI models.",
     )
     parser.add_argument(
-        "--conv-round-limit",
+        "--complete-process-limit",
         type=int,
-        default=15,
-        help="Conversation round limit for the main agent.",
+        default=3,
+        help="Complete process limit for each task.",
     )
     parser.add_argument(
-        "--enable-layered",
-        action="store_true",
-        default=True,
-        help="Enable layered code search.",
+        "--state-retry-limit",
+        type=int,
+        default=3,
+        help="Retry limit for the Actor Agent of each state in the process.",
+    )
+    parser.add_argument(
+        "--state-round-limit",
+        type=int,
+        default=10,
+        help="Conversation round limit for the Actor Agent of each state in the process.",
+    )
+    parser.add_argument(
+        "--hypothesis-limit",
+        type=int,
+        default=10,
+        help="Hypothesis proposed limit in the process.",
     )
     parser.add_argument(
         "--num-processes",
@@ -84,8 +98,7 @@ def get_args():
 
 def run_task_groups(
         task_groups: Mapping[str, Sequence[RawTask]],
-        num_processes: int,
-        organize_output: bool = False
+        num_processes: int
 ):
     """
     Main entry for running tasks.
@@ -102,7 +115,6 @@ def run_task_groups(
     for key, tasks in task_groups.items():
         print_with_time(f"\t{key}: {len(tasks)} tasks")
 
-
     if num_processes == 1:
         # Single-process mode
         print_with_time("Running in single-process mode.")
@@ -113,12 +125,8 @@ def run_task_groups(
         print_with_time("Running in multi-process mode.")
         run_task_groups_parallel(task_groups, num_processes)
 
-    # FIXME: Need Update
-    if organize_output:
-        # post-process completed experiments to get input file to SWE-bench
-        log.print_with_time("Post-processing completed experiment results.")
-        swe_input_file = organize_and_form_input(globals.output_dpath)
-        log.print_with_time(f"SWE-Bench input file created: {swe_input_file}")
+    always_cprint(f"Golden match {globals_mut.num_golden_match_tasks.value}/{globals_mut.num_completed_tasks.value}",
+                  style="bold green")
 
 
 def run_tasks_serial(tasks: List[RawTask]) -> None:
@@ -130,6 +138,7 @@ def run_tasks_serial(tasks: List[RawTask]) -> None:
     """
     for task in tasks:
         run_task_in_subprocess(task)
+        log.print_with_time(globals_mut.inc_task_return_msg())
 
 
 def run_task_groups_parallel(task_groups: Mapping[str, Sequence[RawTask]], num_processes: int):
@@ -192,7 +201,7 @@ def run_raw_task(task: RawTask, print_callback: Optional[Callable[[Dict], None]]
     task_id = task.task_id
 
     start_time_s = get_timestamp()
-    task_output_dpath = os.path.join(globals.output_dpath, f"{task_id}_{start_time_s}")
+    task_output_dpath = os.path.join(globals.expr_dpath, f"{task_id}_{start_time_s}")
     create_dir_if_not_exists(task_output_dpath)
 
     task.dump_meta_data(task_output_dpath)
@@ -201,7 +210,7 @@ def run_raw_task(task: RawTask, print_callback: Optional[Callable[[Dict], None]]
 
     run_ok = False
 
-    #
+    # Run a task formally
     try:
         run_ok = do_inference(task.to_task(), task_output_dpath, print_callback)
 
@@ -215,20 +224,6 @@ def run_raw_task(task: RawTask, print_callback: Optional[Callable[[Dict], None]]
 
     log_and_always_print(run_status_message)
 
-    # FIXME: Need update
-    final_patch_path = get_final_patch_path(task_output_dpath)
-    if final_patch_path is not None:
-        log.log_and_always_print(
-            f"Please find the generated patch at: {final_patch_path}"
-        )
-        if isinstance(task, RawSweTask):
-            log.log_and_always_print(
-                "[SWE-bench mode] Note that the patch may be move to other paths in SWE-bench mode. "
-                "Please check the SWE-bench input file containing generated patches for all tasks."
-            )
-    else:
-        log.log_and_always_print("No patch generated. You can try running ACR again.")
-
     return run_ok
 
 
@@ -237,7 +232,6 @@ def do_inference(
     task_output_dir: str,
     print_callback: Optional[Callable[[Dict], None]] = None,
 ) -> bool:
-
     create_dir_if_not_exists(task_output_dir)
     current_task_log_path = os.path.join(task_output_dir, "info.log")
 
@@ -252,22 +246,19 @@ def do_inference(
 
     start_time = datetime.now()
 
-    api_manager = ProjectApiManager(python_task, task_output_dir)
+    state_manager = ProjectStateManager(python_task, task_output_dir)
 
     try:
         run_ok = inference.run_one_task(
-            api_manager.output_dpath,
-            api_manager,
-            python_task.get_commit_content(),
+            python_task.commit_content,
+            state_manager.output_dpath,
+            state_manager,
             print_callback,
         )
 
-        api_manager.dump_tool_call_sequence_to_file()
-        api_manager.dump_tool_call_layers_to_file()
-
         end_time = datetime.now()
 
-        dump_cost(python_task.commit_id, start_time, end_time, task_output_dir)
+        dump_cost(python_task.commit_hash, start_time, end_time, task_output_dir)
     finally:
         python_task.reset_project()
 
@@ -289,20 +280,36 @@ def dump_cost(commit_hash: str, start_time: datetime, end_time: datetime, task_o
 
 
 def construct_tasks(tasks_map_file: str, local_repos_dpath: str) -> List[RawLocalTask]:
+    """
+    Constructs a list of RawLocalTask instances.
+
+    Args:
+        tasks_map_file (str): Path to the tasks map file.
+        local_repos_dpath (str): Path to the local directory for saving local repos cloned from GitHub.
+    """
     all_tasks = []
 
     with open(tasks_map_file) as f:
         tasks_map = json.load(f)
 
-    for i, task_info in enumerate(tasks_map):
-        task_id = str(i)
-        repo_name = task_info["repo"]
-        assert len(repo_name.split('/')) == 2
-        local_repo_dpath = os.path.join(local_repos_dpath, '_'.join(repo_name.split('/')))
-        commit_hash = task_info["commit_id"]
-        cwe_id = task_info["cwe_id"]
-        task = RawLocalTask(task_id, repo_name, local_repo_dpath, commit_hash, cwe_id)
-        all_tasks.append(task)
+    for task_info in tasks_map:
+        task_id = task_info["id"] + "-" + task_info["cve_type"]
+        if "PL" in task_info and task_info["PL"] == "Python":
+            repo_name = task_info["repo"]
+
+            assert len(repo_name.split('/')) == 2
+            local_repo_dpath = os.path.join(local_repos_dpath, repo_name.replace('/', '_'))
+
+            cwe_id = task_info["cwe_id"]
+            commit_hash = task_info["commit_hash"]
+
+            task = RawLocalTask(task_id, repo_name, local_repo_dpath, commit_hash, cwe_id)
+
+            # Select tasks initialised successfully
+            if task.valid:
+                all_tasks.append(task)
+            else:
+                log_and_cprint(f"Task added failed: {task_id}", style="red")
 
     return all_tasks
 
@@ -310,43 +317,53 @@ def construct_tasks(tasks_map_file: str, local_repos_dpath: str) -> List[RawLoca
 def group_local_tasks_by_repo(tasks: List[RawLocalTask]) -> Dict[str, List[RawLocalTask]]:
     groups = {}
     for task in tasks:
-        key = task.setup_info["env_name"]
-        if key not in groups:
-            groups[key] = []
-        groups[key].append(task)
+        repo_name = task.repo_name
+        if repo_name not in groups:
+            groups[repo_name] = []
+        groups[repo_name].append(task)
     return groups
 
 
 def main(args):
-    ## Set options
-    # common
-    globals.output_dpath = args.output_dir
-    if globals.output_dpath is not None:
-        globals.output_dpath = abspath(globals.output_dpath)
+    ############ Set options ############
+    # Required
+    globals.output_dpath = os.path.abspath(args.output_dir)
+    assert os.path.exists(globals.output_dpath)
 
-    globals.local_repos_dpath = args.local_repos_dir
-    if globals.local_repos_dpath is not None:
-        globals.output_dpath = abspath(globals.output_dpath)
+    globals.local_repos_dpath = os.path.abspath(args.local_repos_dir)
+    assert os.path.exists(globals.local_repos_dpath)
 
+    # current expr dpath
+    expr_name = get_timestamp()
+    globals.expr_dpath = os.path.join(globals.output_dpath, expr_name)
+    create_dir_if_not_exists(globals.expr_dpath)
+
+    # number of processes
     num_processes: int = int(args.num_processes)
     # brief or verbose log
     print_stdout: bool = not args.no_print
     log.print_stdout = print_stdout
     # model related
     common.set_model(args.model)
-    # FIXME: make temperature part of the Model class
     common.MODEL_TEMP = args.model_temperature
     # acr related
-    globals.conv_round_limit = args.conv_round_limit
-    globals.enable_layered = args.enable_layered
+    globals.complete_process_limit = args.complete_process_limit
+    globals.state_retry_limit = args.state_retry_limit
+    globals.state_round_limit = args.state_round_limit
+    globals.hypothesis_limit = args.hypothesis_limit
 
-    ## Construct tasks
+    ############ Save args ############
+    json_args = vars(args)
+    json_args["expr_name"] = expr_name
+    expr_args_log = Path(globals.expr_dpath, "expr_args.json")
+    expr_args_log.write_text(json.dumps(json_args, indent=4))
+
+    ############ Construct tasks ############
     all_tasks: List[RawLocalTask] = construct_tasks(args.tasks_map_file, args.local_repos_dir)
-
     task_groups = group_local_tasks_by_repo(all_tasks)
 
-    ## Run tasks
-    run_task_groups(task_groups, num_processes, organize_output=True)
+    ############ Run tasks ############
+    run_task_groups(task_groups, num_processes)
 
 
 if __name__ == '__main__':

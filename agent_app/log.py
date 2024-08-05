@@ -2,6 +2,7 @@
 # Original file: agent_app/log.py
 
 import os
+import json
 import datetime
 
 from typing import *
@@ -41,17 +42,29 @@ def replace_html_tags(content: str):
     """
     # FIXME: Need update!
     replace_dict = {
+        "<...>": "[...]",
+        "<null>": "[null]",
+        "<commit>": "[commit]",
         "<file>": "[file]",
+        "<old_file>": "[old_file]",
+        "<new_file>": "[new_file]",
         "<class>": "[class]",
         "<func>": "[func]",
         "<method>": "[method]",
+        "<hunk>": "[hunk]",
         "<code>": "[code]",
         "<original>": "[original]",
         "<patched>": "[patched]",
+        "</...>": "[/...]",
+        "</null>": "[/null]",
+        "</commit>": "[/commit]",
         "</file>": "[/file]",
+        "</ld_file>": "[/old_file]",
+        "</new_file>": "[/new_file]",
         "</class>": "[/class]",
         "</func>": "[/func]",
         "</method>": "[/method]",
+        "</hunk>": "[/hunk]",
         "</code>": "[/code]",
         "</original>": "[/original]",
         "</patched>": "[/patched]",
@@ -61,24 +74,24 @@ def replace_html_tags(content: str):
     return content
 
 
-def print_acr(msg: str, desc="", print_callback: Optional[Callable[[Dict], None]] = None) -> None:
+def print_user(msg: str, desc="", print_callback: Optional[Callable[[Dict], None]] = None) -> None:
     """
     Print message provided by User
     """
     if not print_stdout:
         return
 
-    msg = replace_html_tags(msg)
-    markdown = Markdown(msg)
+    # msg = replace_html_tags(msg)
+    # markdown = Markdown(msg)
 
-    name = "Silent Patch Identification User"
+    name = "User"
     if desc:
         title = f"{name} ({desc})"
     else:
         title = name
 
     panel = Panel(
-        markdown, title=title, title_align="left", border_style="magenta", width=WIDTH
+        msg, title=title, title_align="left", border_style="magenta", width=WIDTH
     )
     console.print(panel)
 
@@ -92,24 +105,24 @@ def print_acr(msg: str, desc="", print_callback: Optional[Callable[[Dict], None]
         )
 
 
-def print_retrieval(msg: str, desc="", print_callback: Optional[Callable[[Dict], None]] = None) -> None:
+def print_actor(msg: str, desc="", print_callback: Optional[Callable[[Dict], None]] = None) -> None:
     """
-    Print message provided by the Context Retrieval Agent
+    Print message provided by the Actor Agent
     """
     if not print_stdout:
         return
 
-    msg = replace_html_tags(msg)
-    markdown = Markdown(msg)
+    # msg = replace_html_tags(msg)
+    # markdown = Markdown(msg)
 
-    name = "Context Retrieval Agent"
+    name = "Actor Agent"
     if desc:
         title = f"{name} ({desc})"
     else:
         title = name
 
     panel = Panel(
-        markdown, title=title, title_align="left", border_style="blue", width=WIDTH
+        msg, title=title, title_align="left", border_style="blue", width=WIDTH
     )
     console.print(panel)
 
@@ -119,6 +132,39 @@ def print_retrieval(msg: str, desc="", print_callback: Optional[Callable[[Dict],
                 "title": f"{name} ({desc})",
                 "message": msg,
                 "category": "context_retrieval_agent"
+            }
+        )
+
+
+def print_proxy(msg: str, desc="", print_callback: Optional[Callable[[Dict], None]] = None) -> None:
+    """
+    Print message provided by Proxy Agent
+    """
+    if not print_stdout:
+        return
+
+    # msg = replace_html_tags(msg)
+    # markdown = Markdown(msg)
+
+    text = Text(json.dumps(msg, indent=4))
+
+    name = "Proxy Agent"
+    if desc:
+        title = f"{name} ({desc})"
+    else:
+        title = name
+
+    panel = Panel(
+        msg, title=title, title_align="left", border_style="yellow", width=WIDTH
+    )
+    console.print(panel)
+
+    if print_callback:
+        print_callback(
+            {
+                "title": f"{name} ({desc})",
+                "message": msg,
+                "category": "silent_patch_identification"
             }
         )
 
@@ -165,3 +211,8 @@ def print_with_time(msg):
     Print a msg to console with timestamp.
     """
     console.print(f"\n[{get_timestamp()}] {msg}")
+
+
+def always_cprint(msg, **kwargs):
+    console.print(msg, **kwargs)
+

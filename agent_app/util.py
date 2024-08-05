@@ -4,14 +4,16 @@
 import os
 import ast
 import contextlib
+import shutil
 import datetime
 import glob
 import subprocess
 
 from typing import *
+from pathlib import Path
 
-
-from agent_app.log import log_and_print
+from agent_app.log import print_stdout, log_and_print, log_and_cprint, print_with_time, always_cprint
+from utils import run_command as base_run_command
 
 
 @contextlib.contextmanager
@@ -41,18 +43,9 @@ def run_command(command: List[str], raise_error: bool = True, **run_params) -> O
     Returns:
         Result of running the command, or None if the run failed
     """
-    try:
-        result = subprocess.run(command, check=True, **run_params)
-        return result
-    except subprocess.CalledProcessError as e:
-        log_and_print(f"Error running command: {command}, {e}")
-        if raise_error:
-            raise e
-    except Exception as e:
-        log_and_print(f"Error running command: {command}, {e}")
-        if raise_error:
-            raise e
-    return None
+    result, _ = base_run_command(command, print_stdout=print_stdout, raise_error=raise_error, **run_params)
+
+    return result
 
 
 def create_dir_if_not_exists(dpath: str):
@@ -66,14 +59,69 @@ def create_dir_if_not_exists(dpath: str):
         os.makedirs(dpath, exist_ok=True)
 
 
+def to_relative_path(file_path: str, project_root: str) -> str:
+    """Convert an absolute path to a path relative to the project root.
+
+    Args:
+        file_path (str): The absolute path to file.
+        project_root (str): Absolute path to the project root dir.
+
+    Returns:
+        str: The relative path.
+    """
+    if Path(file_path).is_absolute():
+        return str(Path(file_path).relative_to(project_root))
+    else:
+        return file_path
+
+
 """GITHUB REPO AND COMMIT"""
 
 
-def get_commit_content(commit_hash: str) -> Optional[str]:
+def clone_repo(auth_repo: str, local_repo_dpath: str, timeout: int = 300, token: str = '') -> bool:
+    """
+    Clone a GitHub repository to local.
+
+    Args:
+        auth_repo (str): Form like 'auther_name/repo_name'.
+        local_repo_dpath (str): Path to the local dir for saving this repo.
+        timeout (int): Timeout in seconds.
+        token (str): GitHub OAuth token.
+
+    Returns:
+        bool:
+            True: Successfully Clone.
+            False: Unsuccessfully Clone.
+    """
+    repo_url = f"https://{token}@github.com/{auth_repo}.git"
+    clone_command = ["git", "clone", repo_url, local_repo_dpath]
+    res = run_command(clone_command, raise_error=False, timeout=timeout)
+
+    if res is None:
+        # Delete local dir for saving this repo
+        try:
+            shutil.rmtree(local_repo_dpath)
+        except Exception as e:
+            pass
+        return False
+    else:
+        return True
+
+
+def get_head_commit_hash(local_repo_dpath: str | None = None) -> str | None:
+    cmd = ["git", "rev-parse", "HEAD"]
+    res = run_command(cmd, raise_error=False,
+                      cwd=local_repo_dpath, text=True, capture_output=True)
+    if res is None:
+        return None
+    return res.stdout.strip()
+
+
+def get_commit_content(commit_hash: str, local_repo_dpath: str | None = None) -> Optional[str]:
     show_cmd = ["git", "show", commit_hash]
-    result = run_command(show_cmd, raise_error=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    result = run_command(show_cmd, raise_error=False,
+                         cwd=local_repo_dpath, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     if result is None:
-        log_and_print(f"Fail to get commit content: {commit_hash}")
         return None
     return result.stdout
 
@@ -84,18 +132,10 @@ def repo_reset_and_clean_checkout(commit_hash: str) -> None:
     Cleans both the uncommited changes and the untracked files, and submodule changes.
     Assumption: The current directory is the git repository.
     """
-    # NOTE: do these before `git reset`. This is because some of the removed files below
+    # NOTE: Do these before `git reset`. This is because some of the removed files below
     # may actually be in version control. So even if we deleted such files here, they
     # will be brought back by `git reset`.
     # Clean files that might be in .gitignore, but could have been created by previous runs
-    # TODO: If my project has coverage tests?
-    # if os.path.exists(".coverage"):
-    #     os.remove(".coverage")
-    # if os.path.exists("tests/.coveragerc"):
-    #     os.remove("tests/.coveragerc")
-    # other_cov_files = glob.glob(".coverage.TSS.*", recursive=True)
-    # for f in other_cov_files:
-    #     os.remove(f)
 
     reset_cmd = ["git", "reset", "--hard", commit_hash]
     clean_cmd = ["git", "clean", "-fd"]
@@ -108,6 +148,16 @@ def repo_reset_and_clean_checkout(commit_hash: str) -> None:
     # This is a fail-safe combo to reset any changes to the submodule: first unbind all submodules
     # and then make a fresh checkout of them.
     # Reference: https://stackoverflow.com/questions/10906554/how-do-i-revert-my-changes-to-a-git-submodule
+    submodule_unbind_cmd = ["git", "submodule", "deinit", "-f", "."]
+    submodule_init_cmd = ["git", "submodule", "update", "--init"]
+    run_command(submodule_unbind_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    run_command(submodule_init_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def repo_checkout(commit_hash: str) -> None:
+    checkout_cmd = ["git", "checkout", commit_hash]
+    run_command(checkout_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
     submodule_unbind_cmd = ["git", "submodule", "deinit", "-f", "."]
     submodule_init_cmd = ["git", "submodule", "update", "--init"]
     run_command(submodule_unbind_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
