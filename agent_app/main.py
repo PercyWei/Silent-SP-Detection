@@ -14,7 +14,7 @@ from concurrent.futures import ProcessPoolExecutor
 from loguru import logger
 
 from agent_app import globals, globals_mut, inference, log
-from agent_app.api.manage import ProjectStateManager
+from agent_app.api.manage import ProcessManager
 from agent_app.model import common
 from agent_app.model.register import register_all_models
 from agent_app.raw_tasks import RawTask, RawLocalTask
@@ -42,6 +42,12 @@ def get_args():
         type=str,
         required=True,
         help="Path to json file that contains the tasks information.",
+    )
+    parser.add_argument(
+        "--expr-type",
+        choices=['vul', 'safe'],
+        required=True,
+        help="Experiment name.",
     )
     parser.add_argument(
         "--no-print",
@@ -77,13 +83,13 @@ def get_args():
     parser.add_argument(
         "--state-round-limit",
         type=int,
-        default=10,
+        default=6,
         help="Conversation round limit for the Actor Agent of each state in the process.",
     )
     parser.add_argument(
         "--hypothesis-limit",
         type=int,
-        default=10,
+        default=3,
         help="Hypothesis proposed limit in the process.",
     )
     parser.add_argument(
@@ -125,7 +131,7 @@ def run_task_groups(
         print_with_time("Running in multi-process mode.")
         run_task_groups_parallel(task_groups, num_processes)
 
-    always_cprint(f"Golden match {globals_mut.num_golden_match_tasks.value}/{globals_mut.num_completed_tasks.value}",
+    always_cprint(f"Golden match {globals_mut.num_golden_match_tasks.value}/{globals_mut.num_completed_ok_tasks.value}",
                   style="bold green")
 
 
@@ -185,7 +191,10 @@ def run_task_group(task_group_id: str, task_group_items: List[RawTask]) -> None:
 
 def run_task_in_subprocess(task: RawTask) -> None:
     with ProcessPoolExecutor(max_workers=1) as executor:
-        executor.submit(run_raw_task, task)
+        res = executor.submit(run_raw_task, task)
+
+        if res.result():
+            globals_mut.inc_completed_ok_tasks()
 
 
 def run_raw_task(task: RawTask, print_callback: Optional[Callable[[Dict], None]] = None) -> bool:
@@ -204,8 +213,6 @@ def run_raw_task(task: RawTask, print_callback: Optional[Callable[[Dict], None]]
     task_output_dpath = os.path.join(globals.expr_dpath, f"{task_id}_{start_time_s}")
     create_dir_if_not_exists(task_output_dpath)
 
-    task.dump_meta_data(task_output_dpath)
-
     log_and_always_print(f"============= Running task {task_id} =============")
 
     run_ok = False
@@ -221,6 +228,14 @@ def run_raw_task(task: RawTask, print_callback: Optional[Callable[[Dict], None]]
     except Exception as e:
         logger.exception(e)
         run_status_message = f"Task {task_id} failed with exception: {e}."
+    finally:
+        # FIXME: Add other information
+        other_info = {
+            "completion_info": {
+                "complete": run_ok
+            }
+        }
+        task.dump_meta_data(task_output_dpath, other_info)
 
     log_and_always_print(run_status_message)
 
@@ -246,28 +261,40 @@ def do_inference(
 
     start_time = datetime.now()
 
-    state_manager = ProjectStateManager(python_task, task_output_dir)
+    import time
+    start = time.time()
+    state_manager = ProcessManager(python_task, task_output_dir)
+    print(f"Manager preparation: {time.time() - start}")
+
+    # print("=" * 100)
+    # print(f"- Repo: {python_task.repo_name}")
+    # print(f"- Head commit: {python_task.head_commit_hash}")
+    # print(f"- Commit: {python_task.commit_hash}")
+    # print(f"- Valid commit files number: {state_manager.commit_manager.valid_files_num}")
+    # print(f"- Raw commit content: \n{python_task.commit_content}\n\n")
+    # print(f"- Commit prompt: \n{state_manager.commit_manager.commit_files_info_seq()}\n\n")
 
     try:
         run_ok = inference.run_one_task(
             python_task.commit_content,
             state_manager.output_dpath,
             state_manager,
-            print_callback,
+            print_callback
         )
 
         end_time = datetime.now()
 
-        dump_cost(python_task.commit_hash, start_time, end_time, task_output_dir)
+        dump_cost(python_task.repo_name, python_task.commit_hash, start_time, end_time, task_output_dir)
     finally:
         python_task.reset_project()
 
     return run_ok
 
 
-def dump_cost(commit_hash: str, start_time: datetime, end_time: datetime, task_output_dir: str):
+def dump_cost(repo: str, commit_hash: str, start_time: datetime, end_time: datetime, task_output_dir: str):
     model_stats = common.SELECTED_MODEL.get_overall_exec_stats()
     stats = {
+        "repo": repo,
         "commit": commit_hash,
         "start_epoch": start_time.timestamp(),
         "end_epoch": end_time.timestamp(),
@@ -292,24 +319,31 @@ def construct_tasks(tasks_map_file: str, local_repos_dpath: str) -> List[RawLoca
     with open(tasks_map_file) as f:
         tasks_map = json.load(f)
 
-    for task_info in tasks_map:
-        task_id = task_info["id"] + "-" + task_info["cve_type"]
-        if "PL" in task_info and task_info["PL"] == "Python":
-            repo_name = task_info["repo"]
+    for i, task_info in enumerate(tasks_map):
+        if (globals.expr_type == "vul" and task_info["commit_type"] == 1) or \
+                (globals.expr_type == "safe" and task_info["commit_type"] == 0):
+            task_id = f"{i}-" + task_info["source"]
 
+            repo_name = task_info["repo"]
             assert len(repo_name.split('/')) == 2
+
             local_repo_dpath = os.path.join(local_repos_dpath, repo_name.replace('/', '_'))
 
-            cwe_id = task_info["cwe_id"]
-            commit_hash = task_info["commit_hash"]
-
-            task = RawLocalTask(task_id, repo_name, local_repo_dpath, commit_hash, cwe_id)
+            task = RawLocalTask(task_id=task_id,
+                                commit_type=task_info["commit_type"],
+                                cwe_id=task_info["cwe_id"],
+                                repo_name=repo_name,
+                                commit_hash=task_info["commit_hash"],
+                                local_repo_dpath=local_repo_dpath)
 
             # Select tasks initialised successfully
             if task.valid:
                 all_tasks.append(task)
             else:
                 log_and_cprint(f"Task added failed: {task_id}", style="red")
+
+            if len(all_tasks) >= globals.task_limit:
+                break
 
     return all_tasks
 
@@ -334,8 +368,10 @@ def main(args):
     assert os.path.exists(globals.local_repos_dpath)
 
     # current expr dpath
-    expr_name = get_timestamp()
-    globals.expr_dpath = os.path.join(globals.output_dpath, expr_name)
+    globals.expr_type = args.expr_type
+    expr_name = args.expr_type + "_" + get_timestamp()
+    expr_dpath = os.path.join(globals.output_dpath, expr_name)
+    globals.expr_dpath = os.path.abspath(expr_dpath)
     create_dir_if_not_exists(globals.expr_dpath)
 
     # number of processes

@@ -12,8 +12,12 @@ from openai.types.chat import ChatCompletionMessageToolCall
 from openai.types.chat.chat_completion_message_tool_call import Function as OpenaiFunction
 
 
+"""MANAGER"""
+
+
 class State(str, Enum):
     START_STATE = "start"
+    REFLEXION_STATE = "reflexion"
     HYPOTHESIS_CHECK_STATE = "hypothesis_check"
     CONTEXT_RETRIEVAL_STATE = "context_retrieval"
     HYPOTHESIS_VERIFY_STATE = "hypothesis_verify"
@@ -22,6 +26,9 @@ class State(str, Enum):
     @staticmethod
     def attributes():
         return [k.value for k in State]
+
+
+"""COMMIT"""
 
 
 class CommitType(str, Enum):
@@ -33,17 +40,15 @@ class CommitType(str, Enum):
         return [e.value for e in CommitType]
 
 
-@dataclass
-class Hypothesis:
-    """Dataclass to hold hypothesis."""
-    commit_type: CommitType
-    vulnerability_type: str
-    confidence_score: int
+"""SEARCH MANAGE"""
 
-    def __str__(self):
-        return (f"-commit type: {self.commit_type}; "
-                f"-vulnerability type: {self.vulnerability_type}; "
-                f"-confidence_score: {self.confidence_score}")
+
+class SearchStatus(str, Enum):
+    UNKNOWN_SEARCH_API = "UNKNOWN_SEARCH_API"
+    DISPATCH_ERROR = "DISPATCH_ERROR"
+    NON_UNIQUE_FILE = "NON_UNIQUE_FILE"
+    FIND_NONE = "FIND_NONE"
+    FIND_ANY = "FIND_ANY"
 
 
 class FunctionCallIntent:
@@ -71,12 +76,15 @@ class FunctionCallIntent:
     def to_dict(self):
         return {"func_name": self.func_name, "arguments": self.arg_values}
 
-    def to_dict_with_result(self, call_ok: bool):
+    def to_dict_with_result(self, search_status: SearchStatus):
         return {
             "func_name": self.func_name,
             "arguments": self.arg_values,
-            "call_ok": call_ok,
+            "search_status": search_status,
         }
+
+
+"""CONVERSATION"""
 
 
 class MessageThread:

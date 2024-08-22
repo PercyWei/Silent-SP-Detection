@@ -1081,20 +1081,20 @@ def build_simplified_dataset(dataset_fpath: str, output_root: str):
             new_item = {
                 "id": len(new_dataset),
                 "cve_list": items[0]["cve_list"],
-                "cve_type": cve_type,
-                "repo": items[0]["repo"],
-                "cwe_id": items[0]["cwe_list"],
-                "commit_hash": commit_id,
                 "commit_type": 1,
+                "cwe_id": items[0]["cwe_list"],
+                "repo": items[0]["repo"],
+                "commit_hash": commit_id,
+                "file_counts": len(items),
                 "PL_list": pl_list
             }
             new_dataset.append(new_item)
 
-    save_fpath = os.path.join(output_root, "sim_TreeVul.json")
+    save_fpath = os.path.join(output_root, "sim_treevul.json")
     with open(save_fpath, 'w') as f:
         json.dump(new_dataset, f, indent=4)
 
 
-# output_dir = "/root/projects/VDTest/output/dataset"
-# treevul_valid_scsfCVE = "/root/projects/VDTest/output/TreeVul/TreeVul_valid_scCVE.json"
-# build_simplified_dataset(treevul_valid_scsfCVE, output_dir)
+output_dir = "/root/projects/VDTest/output/dataset"
+treevul_valid_scsfCVE = "/root/projects/VDTest/output/TreeVul/TreeVul_valid_scCVE.json"
+build_simplified_dataset(treevul_valid_scsfCVE, output_dir)

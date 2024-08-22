@@ -6,7 +6,6 @@ import sys
 import json
 from typing import *
 
-import openai
 from openai import BadRequestError, OpenAI
 from openai.types.chat import (
     ChatCompletion,
@@ -123,7 +122,6 @@ class OpenaiModel(Model):
 
         return result
 
-    # FIXME: the returned type contains OpenAI specific Types, which should be avoided
     @retry(wait=wait_random_exponential(min=30, max=600), stop=stop_after_attempt(3))
     def call(
         self,
@@ -138,7 +136,7 @@ class OpenaiModel(Model):
         List[FunctionCallIntent],
         float,
         int,
-        int,
+        int
     ]:
         """
         Calls the openai API to generate completions for the given inputs.

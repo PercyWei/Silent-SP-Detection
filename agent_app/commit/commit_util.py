@@ -1,11 +1,15 @@
-import ast
+from __future__ import annotations
+
 import os
 import re
+import ast
+import tokenize
 import json
 import subprocess
 import bisect
 
 from typing import *
+from io import StringIO
 from dataclasses import dataclass, asdict
 from collections import namedtuple
 from enum import Enum
@@ -14,515 +18,22 @@ from loguru import logger
 
 from agent_app.static_analysis.parse import (
     LocationType, Location,
+    line_loc_types, top_level_loc_types, no_children_loc_types, children_loc_types,
+    class_child_loc_types, main_child_loc_types,
     parse_python_file_locations)
 from utils import LineRange, same_line_range, run_command
 
 
-def show_and_save_commit_content(repo_dpath: str, cve_id: str, commit_id: str,
-                                 commit_content_save_root: str) -> Optional[str]:
-    """
-        Extract commit content from local repo cloned.
-        Save code changes in the following format.
-        commit_content_save_root
-            |- CVE_id
-                |- commit_id
-                    |- all_code_changes
-                    |- code_changes_of_changed_file_1
-                    |- code_changes_of_changed_file_2
-                    |- ...
+class SourceFileType(str, Enum):
+    OLD = "before_commit"
+    NEW = "after_commit"
 
-        Args:
-        repo_dpath:
-        cve_id:
-        commit_id:
-        commit_content_save_root:
+    @staticmethod
+    def attributes():
+        return [k.value for k in SourceFileType]
 
-        Returns:
-            commit_content_save_fpath: path to save commit content.
-            None: failed to save commit content.
-    """
-    assert os.path.exists(commit_content_save_root)
 
-    cve_dpath = os.path.join(commit_content_save_root, cve_id)
-    if not os.path.exists(cve_dpath):
-        os.makedirs(cve_dpath, exist_ok=True)
-
-    commit_dpath = os.path.join(cve_dpath, commit_id)
-    if not os.path.exists(commit_dpath):
-        os.makedirs(commit_dpath, exist_ok=True)
-
-    commit_content_fpath = os.path.join(commit_dpath, "commit_content.txt")
-    try:
-        with open(commit_content_fpath, "w") as f:
-            subprocess.run(['git', '-C', repo_dpath, 'show', commit_id], stdout=f, text=True, check=True)
-        logger.info(f"[{cve_id}] Commit_id: {commit_id}, Result: success.")
-
-        return commit_content_fpath
-    except subprocess.CalledProcessError as e:
-        logger.info(f"[{cve_id}] Commit_id: {commit_id}, Result: failed.")
-        logger.error(f"Error msg: {str(e)}")
-
-        return None
-
-
-def extract_commit_content_info(commit_content: str) -> List:
-    """
-        Extract commit content from saved commit file, and only information is extracted without any other processing.
-        A commit is generally organized in the following format:
-
-        +++++++++++++++++++++++ <commit> +++++++++++++++++++++++
-        commit <commit_id>
-        Author: <author>
-        Date: <timestamp>
-
-        <description>
-
-        <changed_file_info / section-1>
-        <changed_file_info / section-2>
-        ...
-        ++++++++++++++++++++++++++++++++++++++++++++++++++++++++
-
-        Each <changed_file_info / section-i> corresponds to info of one changed file,
-        while <changed_file_info / section-1> is generally organized in the following format:
-
-        =========== <changed_file_info / section-i> ===========
-        diff --git <old_file_path> <new_file_path>
-        ((new / deleted) file mode <id1>)
-        index <old_id>..<new_id> (id2)
-        --- <old_file_path>
-        +++ <new_file_path>
-        <changed_code_snippet_info / hunk-1>
-        <changed_code_snippet_info / hunk-2>
-        ...
-        =======================================================
-
-        Each <changed_code_snippet_info / hunk-j> corresponds to info of one changed code snippet,
-        while <changed_code_snippet_info / hunk-j> is generally organized in the following format:
-
-        -------- <changed_code_snippet_info / hunk-j> --------
-        @@ -<old_file_line_start_idx>,<old_file_line_scope> +<new_file_line_start_idx>,<new_file_line_scope> @@ (<function name>)
-        <changed_code_snippet>
-        ------------------------------------------------------
-
-        Args:
-            commit_content (str): The raw commit content.
-                Assumption: This commit content is the full content generated directly from cmd 'git show <commit_id> >'
-
-        Returns:
-            List: The info of commit content.
-                Format:
-                [
-                    # <section-1>
-                    {
-                        "old_fpath": relative path of the file before commit, "/dev/null" for adding new file.
-                        "new_fpath": relative path of the file before commit, "/dev/null" for deleting old file.
-                        "file_type": "added" / "removed" / "modified
-                        "changed_code_snippets_info":
-                        [
-                            # <hunk-1>
-                            {
-                                "old_line_start_idx":
-                                "old_line_scope":
-                                "new_line_start_idx":
-                                "new_line_scope":
-                                "changed_code_snippet":
-                                    [
-                                        <code_line_seq_1>
-                                        <code_line_seq_2>
-                                        ...
-                                    ]
-                            }
-                            # <hunk-2>
-                            {...}
-                            ...
-                        ]
-                    }
-                    # <section-2>
-                    {...}
-                    ...
-                ]
-    """
-    commit_content = commit_content.splitlines(keepends=False)
-
-    exec_file_suffix = [".c",
-                        ".cc",
-                        ".java",
-                        ".py",
-                        ".js",
-                        ".php",
-                        ".h",
-                        ".rb",
-                        ".go",
-                        ".ts", ".tsx"]
-
-    diff_line_pattern = r"diff --git (.+) (.+)"
-    add_file_line_pattern = r"new file mode (\d+)"
-    remove_file_line_pattern = r"deleted file mode (\d+)"
-    index_line_pattern = r"index (\w+)\.\.(\w+)(?: .*)?$"
-    old_fpath_pattern = r"--- (.+)"
-    new_fpath_pattern = r"\+\+\+ (.+)"
-    line_id_pattern = r"@@ -(\d+),(\d+) \+(\d+),(\d+) (.*)$"
-
-    # Match the section start line (diff --git xxx xxx)
-    # diff line id -> (old fpath, new fpath)
-    changed_fpath_lines: Dict[int, Tuple[str, str]] = {}
-    for idx, line in enumerate(commit_content):
-        line = line.rstrip('\n')
-        diff_line_match = re.match(diff_line_pattern, line)
-        if diff_line_match:
-            changed_fpath_lines[idx] = (diff_line_match.group(1), diff_line_match.group(2))
-
-    # Extract code change info section-by-section
-    commit_content_info: List[Dict] = []
-    for i, section_start_line_idx in enumerate(changed_fpath_lines.keys()):
-        # Select only code changes in the executable files
-        old_fpath, new_fpath = changed_fpath_lines[section_start_line_idx]
-        if not (any(old_fpath.endswith(suf) for suf in exec_file_suffix) and
-                any(new_fpath.endswith(suf) for suf in exec_file_suffix)):
-            continue
-
-        # Current section start and end line idx
-        section_end_line_idx = list(changed_fpath_lines.keys())[i + 1] - 1 \
-            if i < len(changed_fpath_lines) - 1 else len(commit_content) - 1
-
-        current_line_idx = section_start_line_idx
-
-        # Match the modification pattern of the file:
-        # File type: added, removed, modified
-        file_type = "modified"
-        add_file_flag = False
-        remove_file_flag = False
-        if re.match(add_file_line_pattern, commit_content[section_start_line_idx + 1]):
-            add_file_flag = True
-            file_type = "added"
-            current_line_idx += 1
-        if re.match(remove_file_line_pattern, commit_content[section_start_line_idx + 1]):
-            remove_file_flag = True
-            file_type = "removed"
-            current_line_idx += 1
-
-        assert not (add_file_flag and remove_file_flag)
-
-        assert re.match(index_line_pattern, commit_content[current_line_idx + 1])
-        current_line_idx += 1
-
-        # Match the file path before and after commit
-        assert re.match(old_fpath_pattern, commit_content[current_line_idx + 1])
-        assert re.match(new_fpath_pattern, commit_content[current_line_idx + 2])
-
-        old_fpath = re.match(old_fpath_pattern, commit_content[current_line_idx + 1]).group(1)
-        new_fpath = re.match(new_fpath_pattern, commit_content[current_line_idx + 2]).group(1)
-        current_line_idx += 2
-
-        if add_file_flag:
-            assert old_fpath == '/dev/null'
-            old_fpath = None
-        if remove_file_flag:
-            assert new_fpath == '/dev/null'
-            new_fpath = None
-
-        if old_fpath is not None:
-            old_fpath = '/'.join(old_fpath.split('/')[1:])
-        if new_fpath is not None:
-            new_fpath = '/'.join(new_fpath.split('/')[1:])
-
-        curr_diff_file_info = {
-            "old_fpath": old_fpath,  # (str | None) old file path / None
-            "new_fpath": new_fpath,  # (str | None) new file path / None
-            "file_type": file_type,  # (str) modified / added / removed
-            "code_diff": []
-        }
-
-        assert re.match(line_id_pattern, commit_content[current_line_idx + 1])
-        current_line_idx += 1
-
-        # Match the hunk start line (@@ -idx_1,scope_1 +idx_2,scope_2 @@ xxx)
-        diff_code_info_start_list = []
-        for idx in range(current_line_idx, section_end_line_idx + 1):
-            if re.match(line_id_pattern, commit_content[idx]):
-                diff_code_info_start_list.append(idx)
-
-        # Extract changed code snippet hunk-by-hunk
-        for j, hunk_start_line_idx in enumerate(diff_code_info_start_list):
-            ## Current section start and end line idx
-            hunk_end_line_idx = diff_code_info_start_list[j + 1] - 1 \
-                if j < len(diff_code_info_start_list) - 1 else section_end_line_idx
-
-            ## Code snippet loc info before and after commit
-            del_line_start_idx, del_line_scope, add_line_start_idx, add_line_scope, rest = (
-                re.match(line_id_pattern, commit_content[hunk_start_line_idx]).groups())
-
-            ## Structure (class / func / ...)
-            struc_name = None
-            struc_type = None
-
-            class_pattern = r"@@ class (\w+)"
-            class_match = re.match(class_pattern, rest)
-            if class_match:
-                struc_name = class_match.group(1)
-                struc_type = 'class'
-
-            def_pattern = r"@@ def (\w+)"
-            def_match = re.match(def_pattern, rest)
-            if def_match:
-                assert struc_name is None
-                struc_name = def_match.group(1)
-                struc_type = 'func'
-
-            ## Changed code snippet
-            diff_code_snippet = commit_content[hunk_start_line_idx + 1: hunk_end_line_idx + 1]
-
-            ## Delete line (in old file) and add line (in new line) ids
-            # (1) changed_code_snippet index
-            diff_line_indexes: List[int] = []
-            # (2) changed_code_snippet index -> (old / new) file line id
-            del_line_index2id: Dict[int, int] = {}
-            add_line_index2id: Dict[int, int] = {}
-
-            cur_old_line_id = int(del_line_start_idx) - 1
-            cur_new_line_id = int(add_line_start_idx) - 1
-            for k, line in enumerate(diff_code_snippet):
-                if line.startswith("+"):
-                    cur_new_line_id += 1
-                    diff_line_indexes.append(k)
-                    add_line_index2id[k] = cur_new_line_id
-                elif line.startswith("-"):
-                    cur_old_line_id += 1
-                    diff_line_indexes.append(k)
-                    del_line_index2id[k] = cur_old_line_id
-                else:
-                    cur_new_line_id += 1
-                    cur_old_line_id += 1
-
-            curr_code_diff = {
-                "diff_line_indexes": diff_line_indexes,  # (List, 0-based)
-                "del_start_line_id": int(del_line_start_idx),  # (int, 1-based)
-                "del_line_scope": int(del_line_scope),  # (int)
-                "del_line_index2id": del_line_index2id,  # (Dict, 0-based -> 1-based)
-                "add_start_line_id": int(add_line_start_idx),  # (int, 1-based)
-                "add_line_scope": int(add_line_scope),  # (int)
-                "add_line_index2id": add_line_index2id,  # (Dict, 0-based -> 1-based)
-                "struc_name": struc_name,  # (str | None)
-                "struc_type": struc_type,  # (str | None)
-                "diff_code_snippet": diff_code_snippet  # (List[str])
-            }
-
-            curr_diff_file_info["code_diff"].append(curr_code_diff)
-
-        commit_content_info.append(curr_diff_file_info)
-
-    return commit_content_info
-
-
-def extract_useful_commit_content_info(commit_content: str) -> List:
-    """
-    Filtering out commits with empty lines before and after a change.
-    like:
-        1.
-        before:
-            -
-            +
-        after:
-            <delete>
-        2.
-        before:
-            -
-            - xx
-            +
-            + xxx
-        after:
-            - xx
-            + xxx
-    """
-
-    def is_blank(_line: str) -> bool:
-        if _line.strip() == '':
-            return True
-        else:
-            return False
-
-    filter_commit_content_info = []
-    commit_content_info = extract_commit_content_info(commit_content)
-    for changed_file_content in commit_content_info:
-        if changed_file_content["file_type"] == "modified":
-            hunks = changed_file_content["changed_code_snippets_info"]
-            hunk_retain_flags: List[bool] = [False] * len(hunks)
-
-            for i, hunk_info in enumerate(hunks):
-                hunk = hunk_info["changed_code_snippet"]
-
-                # TODO: We will delete all empty change lines in a hunk
-                # Find all changed lines ('+ xxx' or '- xxx')
-                changed_lines: Dict[int, str] = {}
-                for j, line in enumerate(hunk):
-                    if line.startswith("+") or line.startswith("-"):
-                        changed_lines[j] = line
-
-                # Separate non-black changed lines and black changed lines
-                retain_changed_lines: Dict[int, str] = {}
-                del_changed_lines_id = []
-                for line_id, line in changed_lines.items():
-                    if not is_blank(line[1:]):
-                        retain_changed_lines[line_id] = line
-                    else:
-                        del_changed_lines_id.append(line_id)
-
-                # Retain the hunk which has > 0 non-black changed lines
-                if len(retain_changed_lines) > 0:
-                    hunk_retain_flags[i] = True
-
-                    # FIXME: We only change "changed_code_snippet" attr about this hunk,
-                    #  other attrs ('old_file_line_start_idx', 'old_file_line_scope',
-                    #  'new_file_line_start_idx', 'new_file_line_scope') should change together
-                    # Retain only the code within three lines above and below the earliest and latest non-blank change lines
-                    min_changed_line_id = min(retain_changed_lines.keys())
-                    max_changed_line_id = max(retain_changed_lines.keys())
-
-                    new_hunk_start = ori_hunk_start = max(0, min_changed_line_id - 3)
-                    new_hunk_end = ori_hunk_end = min(len(hunk) - 1, max_changed_line_id + 3)
-
-                    if ori_hunk_start != 0:
-                        add_num = 0
-                        for line_id in del_changed_lines_id:
-                            if ori_hunk_start <= line_id < min_changed_line_id:
-                                add_num += 1
-                        new_hunk_start = max(0, ori_hunk_start - add_num)
-
-                    if ori_hunk_end != len(hunk) - 1:
-                        add_num = 0
-                        for line_id in del_changed_lines_id:
-                            if max_changed_line_id < line_id <= ori_hunk_end:
-                                add_num += 1
-                        new_hunk_end = min(len(hunk) - 1, ori_hunk_end + add_num)
-
-                    new_hunk: List[str] = []
-                    for line_id, line in enumerate(hunk):
-                        if new_hunk_start <= line_id <= new_hunk_end and line_id not in del_changed_lines_id:
-                            new_hunk.append(line)
-
-                    hunk_info["changed_code_snippet"] = new_hunk
-
-            retain_hunks = []
-            for flag, hunk in zip(hunk_retain_flags, hunks):
-                if flag:
-                    retain_hunks.append(hunk)
-
-            if len(retain_hunks) > 0:
-                changed_file_content["changed_code_snippets_info"] = retain_hunks
-            else:
-                continue
-
-        filter_commit_content_info.append(changed_file_content)
-
-    return filter_commit_content_info
-
-
-"""Filter Blank Lines"""
-
-
-def filter_blank_lines_in_file(code: str) -> Tuple[str, Dict[int, int]]:
-    """
-    Filter blank lines in file.
-
-    Args:
-        code (str): File content.
-    Returns:
-        str: Filtered file.
-        Dict[int, int]: line id in original file (1-based) -> line id in filtered file (1-based).
-    """
-    lines = code.splitlines(keepends=False)
-    nb_lines: List[str] = []
-    line_id_lookup: Dict[int, int] = {}
-
-    for i, line in enumerate(lines):
-        if line.strip() != "":
-            nb_lines.append(line)
-            line_id_lookup[i + 1] = len(nb_lines)
-
-    return "\n".join(nb_lines), line_id_lookup
-
-
-def filter_blank_lines_in_commit(
-        diff_file_info: Dict,
-        old_line_id_lookup: Dict[int, int],
-        new_line_id_lookup: Dict[int, int]
-) -> Tuple[Dict[int, int], Dict[int, int], List[str]]:
-    ## Step 1: Combine all code snippets containing diff lines about this file, and only extract diff lines
-    # NOTE: Use "..." to separate not continous diff lines
-    del_line_index2id: Dict[int, int] = {}  # 0-based -> 1-based, deleted lines in file before commit
-    add_line_index2id: Dict[int, int] = {}  # 0-based -> 1-based, added lines in file after commit
-    diff_code_snippet: List[str] = []
-
-    for diff_code_info in diff_file_info["code_diff"]:
-        last_code_is_diff = False
-        for ind, code in enumerate(diff_code_info["diff_code_snippet"]):
-            if code.startswith("-") or code.startswith("+"):
-                # (1)
-                if last_code_is_diff:
-                    diff_code_snippet.append(code)
-                    last_code_is_diff = True
-                elif len(diff_code_snippet) == 0:
-                    # Do not add "..." in the beginning anyway
-                    diff_code_snippet.append(code)
-                    last_code_is_diff = True
-                else:
-                    diff_code_snippet.append("...")
-                    diff_code_snippet.append(code)
-                    last_code_is_diff = True
-
-                cur_diff_line_ind = len(diff_code_snippet) - 1
-                # (2) and (3)
-                if code.startswith("-"):
-                    del_line_index2id[cur_diff_line_ind] = diff_code_info["del_line_index2id"][ind]
-                else:
-                    add_line_index2id[cur_diff_line_ind] = diff_code_info["add_line_index2id"][ind]
-            else:
-                last_code_is_diff = False
-
-    ## Step 2: Filter blank lines and redundant sep "..."
-    nb_del_line_index2id: Dict[int, int] = {}  # 0-based -> 1-based, deleted lines in file before commit
-    nb_add_line_index2id: Dict[int, int] = {}  # 0-based -> 1-based, added lines in file after commit
-    nb_diff_code_snippet: List[str] = []
-
-    last_is_sep = False
-    for ind, code in enumerate(diff_code_snippet):
-        # Sep
-        if code == "...":
-            if len(nb_diff_code_snippet) == 0:
-                # Do not add "..." in the beginning
-                pass
-            elif last_is_sep:
-                # Do not add "..." after "..."
-                pass
-            else:
-                nb_diff_code_snippet.append(code)
-                last_is_sep = True
-            continue
-
-        # Code
-        if code[1:].strip() != "":
-            nb_diff_code_snippet.append(code)
-            last_is_sep = False
-
-            cur_diff_line_ind = len(nb_diff_code_snippet) - 1
-            if ind in del_line_index2id:
-                line_id = del_line_index2id[ind]
-                nb_line_id = old_line_id_lookup[line_id]
-                nb_del_line_index2id[cur_diff_line_ind] = nb_line_id
-            elif ind in add_line_index2id:
-                line_id = add_line_index2id[ind]
-                nb_line_id = new_line_id_lookup[line_id]
-                nb_add_line_index2id[cur_diff_line_ind] = nb_line_id
-            else:
-                raise RuntimeError
-
-    if nb_diff_code_snippet[-1] == "...":
-        nb_diff_code_snippet.pop(-1)
-
-    return nb_del_line_index2id, nb_add_line_index2id, nb_diff_code_snippet
-
-
-"""Get The File Content Before or After Applying The Commit"""
+"""Get The File Content Before or After Commit"""
 
 
 def get_file_before_commit(local_repo_dpath: str, commit_hash: str, rel_fpath: str) -> str | None:
@@ -569,31 +80,582 @@ def get_file_after_commit(local_repo_dpath: str, commit_hash: str, rel_fpath: st
         return None
 
 
-"""Analyse The Changes to Functions (including async) and Classes Before and After Applying The Commit"""
+"""Extract Raw Commit Content Info"""
 
 
-def is_subset(subset: List, container: List) -> bool:
-    set1 = set(subset)
-    set2 = set(container)
+def extract_commit_content_info(commit_content: str, file_suffix: List[str] | None = None) -> List:
+    """
+        Extract commit content from saved commit file, and only information is extracted without any other processing.
+        A commit is generally organized in the following format:
 
+        +++++++++++++++++++++++ <commit> +++++++++++++++++++++++
+        commit <commit_id>
+        Author: <author>
+        Date: <timestamp>
+
+        <description>
+
+        <changed_file_info / section-1>
+        <changed_file_info / section-2>
+        ...
+        ++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+        Each <changed_file_info / section-i> corresponds to info of one changed file,
+        while <changed_file_info / section-1> is generally organized in the following format:
+
+        =========== <changed_file_info / section-i> ===========
+        diff --git <old_file_path> <new_file_path>
+        ((new / deleted) file mode <id1>)
+        index <old_id>..<new_id> (id2)
+        --- <old_file_path>
+        +++ <new_file_path>
+        <changed_code_snippet_info / hunk-1>
+        <changed_code_snippet_info / hunk-2>
+        ...
+        =======================================================
+
+        Each <changed_code_snippet_info / hunk-j> corresponds to info of one changed code snippet,
+        while <changed_code_snippet_info / hunk-j> is generally organized in the following format:
+
+        -------- <changed_code_snippet_info / hunk-j> --------
+        @@ -<old_file_line_start_idx>,<old_file_line_scope> +<new_file_line_start_idx>,<new_file_line_scope> @@ (<function name>)
+        <changed_code_snippet>
+        ------------------------------------------------------
+
+        Args:
+            commit_content (str): The raw commit content.
+                Assumption: This commit content is the full content generated directly from cmd 'git show <commit_id> >'
+            file_suffix (List[str] | None): Selection of the suffix of files involved in the commit.
+
+        Returns:
+            List: The info of commit content.
+                Format:
+                [
+                    # <section-1>
+                    {
+                        "old_fpath": relative path of the file before commit, "/dev/null" for adding new file.
+                        "new_fpath": relative path of the file before commit, "/dev/null" for deleting old file.
+                        "file_type": "added" / "removed" / "modified
+                        "changed_code_snippets_info":
+                        [
+                            # <hunk-1>
+                            {
+                                "old_line_start_idx":
+                                "old_line_scope":
+                                "new_line_start_idx":
+                                "new_line_scope":
+                                "changed_code_snippet":
+                                    [
+                                        <code_line_seq_1>
+                                        <code_line_seq_2>
+                                        ...
+                                    ]
+                            }
+                            # <hunk-2>
+                            {...}
+                            ...
+                        ]
+                    }
+                    # <section-2>
+                    {...}
+                    ...
+                ]
+    """
+    if file_suffix is None:
+        # file_suffix = [".c", ".cc", ".java", ".py", ".js", ".php", ".h", ".rb", ".go", ".ts", ".tsx"]
+        file_suffix = [".py"]
+
+    diff_line_pattern = r"diff --git (.+) (.+)"
+    add_file_line_pattern = r"new file mode (\d+)"
+    remove_file_line_pattern = r"deleted file mode (\d+)"
+    index_line_pattern = r"index (\w+)\.\.(\w+)(?: .*)?$"
+    old_fpath_pattern = r"--- (.+)"
+    new_fpath_pattern = r"\+\+\+ (.+)"
+    line_id_pattern = r"@@ -(\d+),(\d+) \+(\d+),(\d+) (.*)$"
+
+    commit_content_lines = commit_content.splitlines(keepends=False)
+
+    # Match the section start line (diff --git xxx xxx)
+    # diff line id -> (old fpath, new fpath)
+    changed_fpath_lines: Dict[int, Tuple[str, str]] = {}
+    for idx, line in enumerate(commit_content_lines):
+        line = line.rstrip('\n')
+        diff_line_match = re.match(diff_line_pattern, line)
+        if diff_line_match:
+            changed_fpath_lines[idx] = (diff_line_match.group(1), diff_line_match.group(2))
+
+    # Extract code change info section-by-section
+    commit_content_info: List[Dict] = []
+    for i, section_start_line_idx in enumerate(changed_fpath_lines.keys()):
+        # Select only code changes in the specified files
+        old_fpath, new_fpath = changed_fpath_lines[section_start_line_idx]
+        if not (any(old_fpath.endswith(suf) for suf in file_suffix) and
+                any(new_fpath.endswith(suf) for suf in file_suffix)):
+            continue
+
+        # Current section start and end line idx
+        section_end_line_idx = list(changed_fpath_lines.keys())[i + 1] - 1 \
+            if i < len(changed_fpath_lines) - 1 else len(commit_content_lines) - 1
+
+        current_line_idx = section_start_line_idx
+
+        # Match the modification pattern of the file:
+        # File type: added, removed, modified
+        file_type = "modified"
+        add_file_flag = False
+        remove_file_flag = False
+        if re.match(add_file_line_pattern, commit_content_lines[section_start_line_idx + 1]):
+            add_file_flag = True
+            file_type = "added"
+            current_line_idx += 1
+        if re.match(remove_file_line_pattern, commit_content_lines[section_start_line_idx + 1]):
+            remove_file_flag = True
+            file_type = "removed"
+            current_line_idx += 1
+
+        assert not (add_file_flag and remove_file_flag)
+
+        assert re.match(index_line_pattern, commit_content_lines[current_line_idx + 1])
+        current_line_idx += 1
+
+        # Match the file path before and after commit
+        assert re.match(old_fpath_pattern, commit_content_lines[current_line_idx + 1])
+        assert re.match(new_fpath_pattern, commit_content_lines[current_line_idx + 2])
+
+        old_fpath = re.match(old_fpath_pattern, commit_content_lines[current_line_idx + 1]).group(1)
+        new_fpath = re.match(new_fpath_pattern, commit_content_lines[current_line_idx + 2]).group(1)
+        current_line_idx += 2
+
+        if add_file_flag:
+            assert old_fpath == '/dev/null'
+            old_fpath = None
+        if remove_file_flag:
+            assert new_fpath == '/dev/null'
+            new_fpath = None
+
+        if old_fpath is not None:
+            old_fpath = '/'.join(old_fpath.split('/')[1:])
+        if new_fpath is not None:
+            new_fpath = '/'.join(new_fpath.split('/')[1:])
+
+        curr_diff_file_info = {
+            "old_fpath": old_fpath,  # (str | None) old file path / None
+            "new_fpath": new_fpath,  # (str | None) new file path / None
+            "file_type": file_type,  # (str) modified / added / removed
+            "code_diff": []
+        }
+
+        assert re.match(line_id_pattern, commit_content_lines[current_line_idx + 1])
+        current_line_idx += 1
+
+        # Match the hunk start line (@@ -idx_1,scope_1 +idx_2,scope_2 @@ xxx)
+        diff_code_info_start_list = []
+        for idx in range(current_line_idx, section_end_line_idx + 1):
+            if re.match(line_id_pattern, commit_content_lines[idx]):
+                diff_code_info_start_list.append(idx)
+
+        # Extract changed code snippet hunk-by-hunk
+        for j, hunk_start_line_idx in enumerate(diff_code_info_start_list):
+            ## Current section start and end line idx
+            hunk_end_line_idx = diff_code_info_start_list[j + 1] - 1 \
+                if j < len(diff_code_info_start_list) - 1 else section_end_line_idx
+
+            ## Code snippet loc info before and after commit
+            del_line_start_idx, del_line_scope, add_line_start_idx, add_line_scope, rest = (
+                re.match(line_id_pattern, commit_content_lines[hunk_start_line_idx]).groups())
+
+            ## Changed code snippet
+            diff_code_snippet = commit_content_lines[hunk_start_line_idx + 1: hunk_end_line_idx + 1]
+
+            ## Delete line (in old file) and add line (in new line) ids
+            # (1) changed_code_snippet index
+            diff_line_indexes: List[int] = []
+            # (2) changed_code_snippet index -> (old / new) file line id
+            del_line_index2id: Dict[int, int] = {}
+            add_line_index2id: Dict[int, int] = {}
+
+            cur_old_line_id = int(del_line_start_idx) - 1
+            cur_new_line_id = int(add_line_start_idx) - 1
+            for k, line in enumerate(diff_code_snippet):
+                if line.startswith("+"):
+                    cur_new_line_id += 1
+                    diff_line_indexes.append(k)
+                    add_line_index2id[k] = cur_new_line_id
+                elif line.startswith("-"):
+                    cur_old_line_id += 1
+                    diff_line_indexes.append(k)
+                    del_line_index2id[k] = cur_old_line_id
+                else:
+                    cur_new_line_id += 1
+                    cur_old_line_id += 1
+
+            curr_code_diff = {
+                # For all diff lines
+                "diff_line_indexes": diff_line_indexes,  # (List, 0-based)
+                "diff_code_snippet": diff_code_snippet,  # (List[str])
+                # For diff lines in file before
+                "del_start_line_id": int(del_line_start_idx),  # (int, 1-based)
+                "del_line_scope": int(del_line_scope),  # (int)
+                "del_line_index2id": del_line_index2id,  # (Dict, 0-based -> 1-based)
+                # For diff lines in file after
+                "add_start_line_id": int(add_line_start_idx),  # (int, 1-based)
+                "add_line_scope": int(add_line_scope),  # (int)
+                "add_line_index2id": add_line_index2id  # (Dict, 0-based -> 1-based)
+            }
+
+            curr_diff_file_info["code_diff"].append(curr_code_diff)
+
+        commit_content_info.append(curr_diff_file_info)
+
+    return commit_content_info
+
+
+"""Extract Only Diff Lines in single file"""
+
+
+@dataclass
+class DiffLine:
+    """For recording a diff line."""
+    id: int  # 0-based
+    source: SourceFileType | None
+    lineno: int | None
+    code: str | None
+    sep: bool
+
+
+def _build_sep_for_diff_lines(cur_id: int) -> DiffLine:
+    return DiffLine(id=cur_id, source=None, lineno=None, code=None, sep=True)
+
+
+def _get_diff_line_source_file(diff_line: str) -> SourceFileType:
+    if diff_line.startswith("-"):
+        return SourceFileType.OLD
+    elif diff_line.startswith("+"):
+        return SourceFileType.NEW
+    else:
+        raise Exception("Unexpected diff line")
+
+
+def combine_diff_code_info_within_file(diff_file_info: Dict) -> List[DiffLine]:
+    """
+    Combine diff code within file, using sep to separate discontinuous diff lines.
+
+    NOTE: Only for modified files.
+
+    Args:
+        diff_file_info (Dict): Element of commit info which is obtained from `extract_commit_content_info`
+                               Form:
+                                   {
+                                       "old_fpath": str | None
+                                       "new_fpath": str | None
+                                       "file_type": str
+                                       "code_diff": List
+                                   }
+    Returns:
+        List[DiffLine]: List of diff lines within file.
+    """
+    diff_lines: List[DiffLine] = []
+
+    for diff_code_info in diff_file_info["code_diff"]:
+        last_line_is_diff = False
+
+        cur_diff_code = diff_code_info["diff_code_snippet"]
+        cur_del_line_index2id = diff_code_info["del_line_index2id"]
+        cur_add_line_index2id = diff_code_info["add_line_index2id"]
+
+        for ind, line in enumerate(cur_diff_code):
+            if line.startswith("-") or line.startswith("+"):
+                source = _get_diff_line_source_file(line)
+                line_id = cur_del_line_index2id[ind] if ind in cur_del_line_index2id else cur_add_line_index2id[ind]
+
+                if len(diff_lines) == 0:
+                    # Do not add "..." in the beginning anyway
+                    diff_line = DiffLine(id=len(diff_lines), source=source, lineno=line_id, code=line, sep=False)
+                    diff_lines.append(diff_line)
+                elif last_line_is_diff:
+                    diff_line = DiffLine(id=len(diff_lines), source=source, lineno=line_id, code=line, sep=False)
+                    diff_lines.append(diff_line)
+                else:
+                    sep = _build_sep_for_diff_lines(len(diff_lines))
+                    diff_lines.append(sep)
+
+                    diff_line = DiffLine(id=len(diff_lines), source=source, lineno=line_id, code=line, sep=False)
+                    diff_lines.append(diff_line)
+
+                last_line_is_diff = True
+            else:
+                last_line_is_diff = False
+
+    return diff_lines
+
+
+"""Filter Blank Lines and Comment Lines"""
+
+
+def _is_only_comment(line: str) -> bool:
+    """
+    Check if the given line contains only a comment.
+
+    Args:
+        line (str): Python code line, which does not contain line breaks.
+    Returns:
+        bool: True if the line contains only a comment, False otherwise.
+    """
+    assert re.search(r'#(.*)$', line)
+    return line.strip().startswith('#')
+
+
+def find_comment_lines(code: str) -> List[int]:
+    """
+    Find lines containing comment like "# xxx"
+    NOTE: We do not consider Docstrings here.
+    """
+    comment_lines: List[int] = []
+
+    # Step 1: Find all comment lines
+    code_io = StringIO(code)
+    tokens = tokenize.generate_tokens(code_io.readline)
+    for token in tokens:
+        if token.type == tokenize.COMMENT:
+            comment_lines.append(token.start[0])
+
+    # Step 2: Find all comment lines containing only comment
+    code_lines = code.splitlines(keepends=False)
+
+    single_comment_lines: List[int] = []
+    for comment_line in comment_lines:
+        if _is_only_comment(code_lines[comment_line - 1]):
+            single_comment_lines.append(comment_line)
+
+    return single_comment_lines
+
+
+def filter_blank_lines_in_file(code: str, filter_comment: bool = True) -> Tuple[str, Dict[int, int]]:
+    """
+    Filter blank lines in file.
+
+    Args:
+        code (str): File content.
+        filter_comment (bool): Filter comment.
+            FIXME: Since ast does not consider comment lines while analyzing, so we filter out lines which
+                contain only comments. More detailed comment classification will be considered in the future.
+    Returns:
+        str: Filtered file.
+        Dict[int, int]: line id in original file (1-based) -> line id in filtered file (1-based).
+    """
+    lines = code.splitlines(keepends=False)
+    nb_lines: List[str] = []
+    line_id_lookup: Dict[int, int] = {}
+
+    # Find comment lines if needed, otherwise empty
+    if filter_comment:
+        comment_lines = find_comment_lines(code)
+    else:
+        comment_lines = []
+
+    # Fiter blank lines (and comment lines)
+    for i, line in enumerate(lines):
+        if line.strip() != "" and (i + 1) not in comment_lines:
+            nb_lines.append(line)
+            line_id_lookup[i + 1] = len(nb_lines)
+
+    return "\n".join(nb_lines), line_id_lookup
+
+
+def filter_blank_lines_in_commit(
+        file_diff_lines: List[DiffLine],
+        old_line_id_lookup: Dict[int, int],
+        new_line_id_lookup: Dict[int, int]
+) -> List[DiffLine]:
+    """
+    Filter blank lines and comment lines in commit, including lines deleted / added / unchanged.
+
+    NOTE 1: Only for modified files.
+    NOTE 2: `file_diff_lines` is obtained from `combine_diff_code_info_within_file`.
+    NOTE 3: Whether to filter comment lines depends on the parameters `old_line_id_lookup` and `new_line_id_lookup`,
+            which are obtained by method `filter_blank_lines_in_file`, and in both look-up dict, there are no
+            corresponding key-value pairs for blank lines or comment lines.
+
+    Args:
+        file_diff_lines (List[DiffLine]): List of original diff lines within file.
+        old_line_id_lookup (Dict[int, int]): line id in original file -> line id in filtered file
+        new_line_id_lookup (Dict[int, int]): line id in original file -> line id in filtered file
+    Returns:
+        List[DiffLine]: List of filtered diff lines within file.
+    """
+    nb_file_diff_lines: List[DiffLine] = []
+    last_is_sep = False
+
+    for diff_line in file_diff_lines:
+        # Sep
+        if diff_line.sep:
+            if len(nb_file_diff_lines) == 0 or last_is_sep:
+                # Do not add sep in the beginning or after sep
+                pass
+            else:
+                # Update sep info
+                diff_line.id = len(nb_file_diff_lines)
+
+                nb_file_diff_lines.append(diff_line)
+                last_is_sep = True
+            continue
+
+        # Code
+        if diff_line.source == SourceFileType.OLD and diff_line.lineno in old_line_id_lookup:
+            nb_line_id = old_line_id_lookup[diff_line.lineno]
+
+            # Update diff line info
+            diff_line.id = len(nb_file_diff_lines)
+            diff_line.lineno = nb_line_id
+
+            nb_file_diff_lines.append(diff_line)
+            last_is_sep = False
+        elif diff_line.source == SourceFileType.NEW and diff_line.lineno in new_line_id_lookup:
+            nb_line_id = new_line_id_lookup[diff_line.lineno]
+
+            # Update diff line info
+            diff_line.id = len(nb_file_diff_lines)
+            diff_line.lineno = nb_line_id
+
+            nb_file_diff_lines.append(diff_line)
+            last_is_sep = False
+
+    if nb_file_diff_lines[-1].sep:
+        nb_file_diff_lines.pop(-1)
+
+    return nb_file_diff_lines
+
+
+"""Combine File Content Before and After Commit"""
+
+
+def combine_old_content_and_new_content(
+        old_file_content: str,
+        new_file_content: str,
+        file_diff_lines: List[DiffLine]
+) -> Tuple[str, Dict[int, int], Dict[int, int]]:
+    """
+    Combine old content and new content, reflecting the changes.
+
+    NOTE: Old content, new content and diff lines need to be in the same state.
+          By default, blank lines and comment lines are filtered out.
+    Args:
+        old_file_content (str): Content of code before commit.
+        new_file_content (str): Content of code after commit.
+        file_diff_lines (List[DiffLine]): List of diff lines.
+    Returns:
+        List[str]: List of combined content lines.
+        Dict[int, int]: Lookup dict for old content, line id in original content -> line id in combined content.
+        Dict[int, int]: Lookup dict for new content, line id in original content -> line id in combined content.
+    """
+    diff_lines_groups: List[List[DiffLine]] = []
+    cur_diff_line_group: List[DiffLine] = []
+
+    old_file_lines = old_file_content.splitlines(keepends=False)
+    new_file_lines = new_file_content.splitlines(keepends=False)
+
+    ############### Step I: Group continuous diff lines ###############
+    for diff_line in file_diff_lines:
+        if diff_line.sep:
+            continue
+
+        if len(cur_diff_line_group) == 0:
+            cur_diff_line_group.append(diff_line)
+        elif diff_line.id == cur_diff_line_group[-1].id + 1:
+            cur_diff_line_group.append(diff_line)
+        else:
+            assert diff_line.id == cur_diff_line_group[-1].id + 2
+            diff_lines_groups.append(cur_diff_line_group)
+            cur_diff_line_group = [diff_line]
+
+    if len(cur_diff_line_group) > 0:
+        diff_lines_groups.append(cur_diff_line_group)
+
+    ############### Step II: Add unchanged lines to combine old content and new content ###############
+    old_line_id_lookup_nb2comb: Dict[int, int] = {}  # 1-based, 1-based
+    new_line_id_lookup_nb2comb: Dict[int, int] = {}  # 1-based, 1-based
+
+    ####### (1) Add unchanged lines in the beginning
+    start_diff_line = diff_lines_groups[0][0]
+    assert old_file_lines[:start_diff_line.lineno - 1] == new_file_lines[:start_diff_line.lineno - 1]
+
+    lines_before: List[str] = old_file_lines[:start_diff_line.lineno - 1]
+
+    for i in range(len(lines_before)):
+        old_line_id_lookup_nb2comb[i + 1] = i + 1
+        new_line_id_lookup_nb2comb[i + 1] = i + 1
+
+    ####### (2) Add unchanged lines between diff line groups
+    cur_old_line_id = cur_new_line_id = len(lines_before)
+    lines_between: List[str] = []
+
+    for i, diff_line_group in enumerate(diff_lines_groups):
+        # 1. Add unchanged lines, until reaching the first diff line of the current diff_line_group
+        group_start_diff_line = diff_line_group[0]
+        while (
+                group_start_diff_line.source == SourceFileType.OLD and cur_old_line_id < group_start_diff_line.lineno - 1) or \
+                (
+                        group_start_diff_line.source == SourceFileType.NEW and cur_new_line_id < group_start_diff_line.lineno - 1):
+            cur_old_line_id += 1
+            cur_new_line_id += 1
+            assert old_file_lines[cur_old_line_id - 1] == new_file_lines[cur_new_line_id - 1]
+
+            lines_between.append(old_file_lines[cur_old_line_id - 1])
+
+            old_line_id_lookup_nb2comb[cur_old_line_id] = len(lines_between) + len(lines_before)
+            new_line_id_lookup_nb2comb[cur_new_line_id] = len(lines_between) + len(lines_before)
+
+        # 2. Add diff lines
+        for diff_line in diff_line_group:
+            lines_between.append(diff_line.code)
+
+            if diff_line.source == SourceFileType.OLD:
+                cur_old_line_id += 1
+                old_line_id_lookup_nb2comb[cur_old_line_id] = len(lines_between) + len(lines_before)
+            else:
+                cur_new_line_id += 1
+                new_line_id_lookup_nb2comb[cur_new_line_id] = len(lines_between) + len(lines_before)
+
+    ####### (3) Add unchanged lines in the end
+    assert old_file_lines[cur_old_line_id:] == new_file_lines[cur_new_line_id:]
+
+    lines_after: List[str] = old_file_lines[cur_old_line_id:]
+
+    for i in range(len(lines_after)):
+        old_line_id_lookup_nb2comb[cur_old_line_id + i + 1] = i + 1 + len(lines_between) + len(lines_before)
+        new_line_id_lookup_nb2comb[cur_new_line_id + i + 1] = i + 1 + len(lines_between) + len(lines_before)
+
+    comb_file_content = "\n".join(lines_before + lines_between + lines_after)
+
+    return comb_file_content, old_line_id_lookup_nb2comb, new_line_id_lookup_nb2comb
+
+
+"""Match the Structs of Functions / Classes / ClassFunctions / IfMains"""
+
+LocationPair = namedtuple('LocationPair', ['before', 'after'])
+
+
+def is_subset(list1: List, list2: List) -> bool:
+    """Whether list1 is a subset of list2"""
+    set1 = set(list1)
+    set2 = set(list2)
     return set1.issubset(set2)
 
 
 def has_same_elements(list1: List, list2: List) -> bool:
+    """Whether list1 and list2 have duplicate elements"""
     set1 = set(list1)
     set2 = set(list2)
-
     return not set1.isdisjoint(set2)
 
 
-def is_modified_struct(
-        old_content: List[str], old_diff_line_ids: List[int], old_struct_location: Location,
-        new_content: List[str], new_diff_line_ids: List[int], new_struct_location: Location
+def _is_modified_struct(
+        old_file_lines: List[str], old_diff_line_ids: List[int], old_struct_location: Location,
+        new_file_lines: List[str], new_diff_line_ids: List[int], new_struct_location: Location
 ) -> bool:
     """
     Determine whether the two structs from the file before and after modification are the same.
-    Only support struct CLASS, FUNCTION and CLASSFUNCTION.
-
+    NOTE: Only support struct MAIN, FUNCTION, CLASS, CLASSFUNCTION.
     """
     old_struct_line_ids = old_struct_location.get_full_range()
     old_rest_line_ids = sorted(list(set(old_struct_line_ids) - set(old_diff_line_ids)))
@@ -605,7 +667,7 @@ def is_modified_struct(
         return False
 
     for old_line_id, new_line_id in zip(old_rest_line_ids, new_rest_line_ids):
-        if old_content[old_line_id - 1] != new_content[new_line_id - 1]:
+        if old_file_lines[old_line_id - 1] != new_file_lines[new_line_id - 1]:
             # print(old_line_id)
             # print(new_line_id)
             # print(old_content[old_line_id - 1], new_content[new_line_id - 1])
@@ -614,11 +676,14 @@ def is_modified_struct(
     return True
 
 
-def build_map_from_ori_name_to_now_names(
+def _build_map_from_ori_name_to_now_names(
         structs: List[int],
         locations: Dict[int, Location]
 ) -> Dict[str, Dict[str, int]]:
-    """Build a dictionary that maps struct original name (like "xxx") to now names (like "xxx@num")."""
+    """
+    Build a dictionary that maps original name (like "xxx") to now names (like "xxx@num").
+    NOTE: Only support struct FUNCTION, CLASS, CLASSFUNCTION.
+    """
     # original name -> now name -> location id
     ori_name2no_names: Dict[str, Dict[str, int]] = {}
     for loc_id in structs:
@@ -632,47 +697,80 @@ def build_map_from_ori_name_to_now_names(
     return ori_name2no_names
 
 
-def classify_diff_struct(
-        old_content: List[str], old_diff_line_ids: List[int], old_structs: List[int],
-        old_locations: Dict[int, Location],
-        new_content: List[str], new_diff_line_ids: List[int], new_structs: List[int],
-        new_locations: Dict[int, Location],
-) -> Tuple[List, List, Dict]:
+def _match_ifMain_before_and_after(
+        old_file_lines: List[str], old_locations: Dict[int, Location], old_diff_line_ids: List[int],
+        old_ifMains: List[int],
+        new_file_lines: List[str], new_locations: Dict[int, Location], new_diff_line_ids: List[int],
+        new_ifMains: List[int]
+) -> List[LocationPair]:
     """
-    Classify the types (delete, add, modify) of diff structs (only for CLASS or FUNCTION).
-    Since adding "@<start>" to the class / func name, it is possible that
-    names of not renamed classes / functions may be different between old_structs and new_structs.
+    Match if_main structs in code before and code after.
+
+    NOTE 1: Only for MAIN.
+    NOTE 2: There will not be more than one if_main structure in a code.
     """
-    ## (1) Deleted structs, List of location id
-    del_structs: List[int] = []
-    ## (2) Added structs, List of location id
-    add_structs: List[int] = []
-    ## (3) Three types of modified structs (three types: a. delete + add; b. delete only; c. add only)
-    # location id before modified -> location id after modified
-    mod_structs: Dict[int, int] = {}
+    assert len(old_ifMains) <= 1 and len(new_ifMains) <= 1
+
+    if len(old_ifMains) == 0 and len(new_ifMains) == 0:
+        return []
+
+    if len(old_ifMains) == 1 and len(new_ifMains) == 0:
+        return [LocationPair(before=old_ifMains[0], after=None)]
+
+    if len(old_ifMains) == 0 and len(new_ifMains) == 1:
+        return [LocationPair(before=None, after=new_ifMains[0])]
+
+    old_ifMain_loc = old_locations[old_ifMains[0]]
+    new_ifMain_loc = new_locations[new_ifMains[0]]
+
+    assert _is_modified_struct(
+        old_file_lines, old_diff_line_ids, old_ifMain_loc,
+        new_file_lines, new_diff_line_ids, new_ifMain_loc
+    )
+
+    return [LocationPair(before=old_ifMains[0], after=new_ifMains[0])]
+
+
+def _match_diff_class_or_func(
+        old_file_lines: List[str], old_locations: Dict[int, Location], old_diff_line_ids: List[int],
+        old_structs: List[int],
+        new_file_lines: List[str], new_locations: Dict[int, Location], new_diff_line_ids: List[int],
+        new_structs: List[int]
+) -> List[LocationPair]:
+    """
+    Match the diff structs (structs containing diff lines).
+
+    NOTE 1: Only for CLASS or FUNCTION.
+    NOTE 2: Since we have added "@<start>" to the class / func name, it is possible that names of
+            not renamed classes / funcs may be different between old_structs and new_structs.
+    """
+    # (1) Deleted structs
+    # (2) Added structs
+    # (3) Modified structs (three types: a. delete + add; b. delete only; c. add only)
+    diff_struct_pairs: List[LocationPair] = []
 
     old_mod_structs: List[int] = []
     new_mod_structs: List[int] = []
 
-    # STEP 1: Select del_structs and old_mod_structs from structs in old file (old_structs)
+    ########## STEP 1: Select `del_structs` and `old_mod_structs` from structs in old file ##########
     for loc_id in old_structs:
         range_line_ids = old_locations[loc_id].get_full_range()
         if is_subset(range_line_ids, old_diff_line_ids):
-            del_structs.append(loc_id)
+            diff_struct_pairs.append(LocationPair(before=loc_id, after=None))
         elif has_same_elements(range_line_ids, old_diff_line_ids):
             old_mod_structs.append(loc_id)
 
-    # STEP 2: Select add_structs and new_mod_structs from structs in new file (new_structs)
+    ########## STEP 2: Select `add_structs` and `new_mod_structs` from structs in new file ##########
     for loc_id in new_structs:
         range_line_ids = new_locations[loc_id].get_full_range()
         if is_subset(range_line_ids, new_diff_line_ids):
-            add_structs.append(loc_id)
+            diff_struct_pairs.append(LocationPair(before=None, after=loc_id))
         elif has_same_elements(range_line_ids, new_diff_line_ids):
             new_mod_structs.append(loc_id)
 
-    # STEP 3: Match items in old_mod_structs and new_mod_structs to construct mod_structs
-    old_ori_name2no_names: Dict[str, Dict[str, int]] = build_map_from_ori_name_to_now_names(old_structs, old_locations)
-    new_ori_name2no_names: Dict[str, Dict[str, int]] = build_map_from_ori_name_to_now_names(new_structs, new_locations)
+    ########## STEP 3: Match items in `old_mod_structs` and `new_mod_structs` to construct `mod_structs` ##########
+    old_ori_name2no_names: Dict[str, Dict[str, int]] = _build_map_from_ori_name_to_now_names(old_structs, old_locations)
+    new_ori_name2no_names: Dict[str, Dict[str, int]] = _build_map_from_ori_name_to_now_names(new_structs, new_locations)
 
     def find_match_loc_by_name(
             _searcher_name: str,
@@ -705,11 +803,11 @@ def classify_diff_struct(
             new_loc_id = new_mod_structs[i]
             new_loc = new_locations[new_loc_id]
 
-            if is_modified_struct(
-                    old_content, old_diff_line_ids, old_loc,
-                    new_content, new_diff_line_ids, new_loc):
+            if _is_modified_struct(
+                    old_file_lines, old_diff_line_ids, old_loc,
+                    new_file_lines, new_diff_line_ids, new_loc):
                 # 1) struct modified with both delete and add
-                mod_structs[old_loc_id] = new_loc_id
+                diff_struct_pairs.append(LocationPair(before=old_loc_id, after=new_loc_id))
                 new_mod_structs.pop(i)
                 match = True
                 break
@@ -725,7 +823,7 @@ def classify_diff_struct(
                 _diff_line_ids_for_searcher=old_diff_line_ids,
                 _diff_line_ids_for_target=new_diff_line_ids
             )
-            mod_structs[old_loc_id] = new_loc_id
+            diff_struct_pairs.append(LocationPair(before=old_loc_id, after=new_loc_id))
 
     if new_mod_structs:
         # 3) struct modified with add only
@@ -738,131 +836,151 @@ def classify_diff_struct(
                 _diff_line_ids_for_searcher=new_diff_line_ids,
                 _diff_line_ids_for_target=old_diff_line_ids
             )
-            mod_structs[old_loc_id] = new_loc_id
+            diff_struct_pairs.append(LocationPair(before=old_loc_id, after=new_loc_id))
 
-    return del_structs, add_structs, mod_structs
-
-
-def classify_diff_classFunction(
-        del_classes: List[int], add_classes: List[int], mod_classes: Dict[int, int],
-        old_content: List[str], old_diff_line_ids: List[int], old_classFuncs: Dict[int, List[int]],
-        old_locations: Dict[int, Location],
-        new_content: List[str], new_diff_line_ids: List[int], new_classFuncs: Dict[int, List[int]],
-        new_locations: Dict[int, Location],
-) -> Tuple[Dict, Dict, Dict]:
-    del_classFuncs: Dict[int, List[int]] = {}
-    add_classFuncs: Dict[int, List[int]] = {}
-    mod_classFuncs: Dict[Tuple[int, int], Dict] = {}
-
-    # (1) For deleted classes
-    for class_loc_id in del_classes:
-        del_classFuncs[class_loc_id] = old_classFuncs[class_loc_id]
-
-    # (2) For added classes
-    for class_loc_id in add_classes:
-        add_classFuncs[class_loc_id] = old_classFuncs[class_loc_id]
-
-    # (3) For modified class pairs
-    for old_class_loc_id, new_class_loc_id in mod_classes.items():
-        cur_old_classFuncs: List[int] = old_classFuncs[old_class_loc_id]
-        cur_new_classFuncs: List[int] = new_classFuncs[new_class_loc_id]
-
-        cur_del_classFuncs, cur_add_classFuncs, cur_mod_classFuncs = classify_diff_struct(
-            old_content, old_diff_line_ids, cur_old_classFuncs, old_locations,
-            new_content, new_diff_line_ids, cur_new_classFuncs, new_locations
-        )
-
-        mod_classFuncs[(old_class_loc_id, new_class_loc_id)] = {
-            "del": cur_del_classFuncs,
-            "add": cur_add_classFuncs,
-            "mod": cur_mod_classFuncs,
-        }
-
-    return del_classFuncs, add_classFuncs, mod_classFuncs
+    return diff_struct_pairs
 
 
-def analyse_diff_structs_within_file(
-        old_content: List[str],
-        old_location_parse_res: Tuple[List[int], List[int], Dict, Dict, List[int]],
-        del_line_index2id: Dict[int, int],
-        new_content: List[str],
-        new_location_parse_res: Tuple[List[int], List[int], Dict, Dict, List[int]],
-        add_line_index2id: Dict[int, int]
-) -> Tuple[Dict, Dict, Dict]:
+def _match_diff_classFunction(
+        old_file_lines: List[str], old_locations: Dict[int, Location], old_diff_line_ids: List[int],
+        old_classFuncs: Dict[int, List[int]],
+        new_file_lines: List[str], new_locations: Dict[int, Location], new_diff_line_ids: List[int],
+        new_classFuncs: Dict[int, List[int]],
+        diff_class_pairs: List[LocationPair]
+) -> Dict[LocationPair, List[LocationPair]]:
     """
-    Struct includes class, functions and async functions.
+    Match the diff CLASS_FUNCTION structs.
+
+    NOTE 1: Only for CLASS_FUNCTION.
+    """
+    diff_classFunc_pairs: Dict[LocationPair, List[LocationPair]] = {}
+
+    for diff_class_pair in diff_class_pairs:
+        cur_class_classFunc_pairs: List[LocationPair] = []
+
+        # (1) For deleted classes
+        if diff_class_pair.after is None:
+            assert diff_class_pair.before is not None
+            for classFunc_loc_id in old_classFuncs[diff_class_pair.before]:
+                cur_class_classFunc_pairs.append(LocationPair(before=classFunc_loc_id, after=None))
+
+        # (2) For added classes
+        elif diff_class_pair.before is None:
+            assert diff_class_pair.after is not None
+            for classFunc_loc_id in new_classFuncs[diff_class_pair.after]:
+                cur_class_classFunc_pairs.append(LocationPair(before=None, after=classFunc_loc_id))
+
+        # (3) For modified classes
+        else:
+            cur_old_classFuncs: List[int] = old_classFuncs[diff_class_pair.before]
+            cur_new_classFuncs: List[int] = new_classFuncs[diff_class_pair.after]
+
+            cur_class_classFunc_pairs = _match_diff_class_or_func(
+                old_file_lines, old_locations, old_diff_line_ids, cur_old_classFuncs,
+                new_file_lines, new_locations, new_diff_line_ids, cur_new_classFuncs
+            )
+
+        diff_classFunc_pairs[diff_class_pair] = cur_class_classFunc_pairs
+
+    return diff_classFunc_pairs
+
+
+def _split_del_and_add_line_ids(diff_lines: List[DiffLine]) -> Tuple[List[int], List[int]]:
+    del_line_ids: List[int] = []
+    add_line_ids: List[int] = []
+
+    for diff_line in diff_lines:
+        if not diff_line.sep and diff_line.source == SourceFileType.OLD:
+            del_line_ids.append(diff_line.lineno)
+        if not diff_line.sep and diff_line.source == SourceFileType.NEW:
+            add_line_ids.append(diff_line.lineno)
+
+    return del_line_ids, add_line_ids
+
+
+@dataclass(frozen=True)
+class AllDiffStructInfo:
+    """
+    For recording all diff structs in single file.
+
+    NOTE: Only for modified files.
+    """
+    if_mains: List[LocationPair]
+    classes: List[LocationPair]
+    functions: List[LocationPair]
+    class_functions: Dict[LocationPair, List[LocationPair]]
+
+
+def match_diff_structs_within_file(
+        diff_lines: List[DiffLine],
+        old_file_content: str, old_location_parse_res: Tuple[Dict[int, Location], Dict[int, int], Dict],
+        new_file_content: str, new_location_parse_res: Tuple[Dict[int, Location], Dict[int, int], Dict]
+) -> AllDiffStructInfo:
+    """
+    Match the structs in code before and after commit.
+
+    NOTE 1: Only for modified files.
+    NOTE 2: Only for MAIN (if_main), FUNCTION, CLASS and CLASSFUNCTION.
 
     Args:
-        old_content: File content before applying the commit, split into list.
+        diff_lines (List[DiffLine]): List of diff lines.
+        old_file_content: File content before applying the commit.
         old_location_parse_res: Result from `agent_app.static_analysis.parse.parse_python_file_locations`
-        del_line_index2id:
-        new_content: File content after applying the commit, split into list.
+        new_file_content: File content after applying the commit.
         new_location_parse_res: Result from `agent_app.static_analysis.parse.parse_python_file_locations`
-        add_line_index2id:
     Returns:
-        Dict: Diff classes info.
-        Dict: Diff functions info.
-        Dict: Diff class functions info.
+        AllDiffStructInfo:
     """
-    old_classes, old_funcs, old_classFuncs, old_locations, _ = old_location_parse_res
-    new_classes, new_funcs, new_classFuncs, new_locations, _ = new_location_parse_res
+    old_file_lines: List[str] = old_file_content.splitlines(keepends=False)
+    new_file_lines: List[str] = new_file_content.splitlines(keepends=False)
 
-    del_line_ids: List[int] = list(del_line_index2id.values())
-    add_line_ids: List[int] = list(add_line_index2id.values())
+    old_locations, _, old_structs_info = old_location_parse_res
+    new_locations, _, new_structs_info = new_location_parse_res
 
-    # (1) Distinguish the types of class modifications
-    del_classes, add_classes, mod_classes = classify_diff_struct(
-        old_content, del_line_ids, old_classes, old_locations,
-        new_content, add_line_ids, new_classes, new_locations
+    del_line_ids, add_line_ids = _split_del_and_add_line_ids(diff_lines)
+
+    # (1) Distinguish the types of if_main modifications
+    diff_ifMain_pairs = _match_ifMain_before_and_after(
+        old_file_lines, old_locations, del_line_ids, old_structs_info["if_mains"],
+        new_file_lines, new_locations, add_line_ids, new_structs_info["if_mains"]
     )
 
     # (2) Distinguish the types of function modifications
-    del_funcs, add_funcs, mod_funcs = classify_diff_struct(
-        old_content, del_line_ids, old_funcs, old_locations,
-        new_content, add_line_ids, new_funcs, new_locations
+    diff_func_pairs = _match_diff_class_or_func(
+        old_file_lines, old_locations, del_line_ids, old_structs_info["funcs"],
+        new_file_lines, new_locations, add_line_ids, new_structs_info["funcs"]
     )
 
-    # (3) Distinguish the types of class function modifications
-    del_classFuncs, add_classFuncs, mod_classFuncs = classify_diff_classFunction(
-        del_classes, add_classes, mod_classes,
-        old_content, del_line_ids, old_classFuncs, old_locations,
-        new_content, add_line_ids, new_classFuncs, new_locations
+    # (2) Distinguish the types of class modifications
+    diff_class_pairs = _match_diff_class_or_func(
+        old_file_lines, old_locations, del_line_ids, old_structs_info["classes"],
+        new_file_lines, new_locations, add_line_ids, new_structs_info["classes"]
     )
 
-    diff_classes_info = {
-        "del": del_classes,
-        "add": add_classes,
-        "mod": mod_classes
-    }
+    # (4) Distinguish the types of class function modifications
+    diff_classFunc_pairs = _match_diff_classFunction(
+        old_file_lines, old_locations, del_line_ids, old_structs_info["classes_funcs"],
+        new_file_lines, new_locations, add_line_ids, new_structs_info["classes_funcs"],
+        diff_class_pairs
+    )
 
-    diff_funcs_info = {
-        "del": del_funcs,
-        "add": add_funcs,
-        "mod": mod_funcs
-    }
+    res = AllDiffStructInfo(
+        if_mains=diff_ifMain_pairs,
+        functions=diff_func_pairs,
+        classes=diff_class_pairs,
+        class_functions=diff_classFunc_pairs
+    )
 
-    diff_classFuncs_info = {
-        "del": del_classFuncs,
-        "add": add_classFuncs,
-        "mod": mod_classFuncs
-    }
-
-    return diff_classes_info, diff_funcs_info, diff_classFuncs_info
+    return res
 
 
-class FileType(str, Enum):
-    OLD = "before_commit"
-    NEW = "after_commit"
-
-    @staticmethod
-    def attributes():
-        return [k.value for k in FileType]
+"""Group Diff Lines"""
 
 
 @dataclass
 class DiffLocation(Location):
     # Indicate whether the file where the Location in is before commit or after commit.
-    file_type: FileType
+    file_type: SourceFileType
 
 
 class DiffLocationNotFoundError(Exception):
@@ -881,278 +999,250 @@ class DiffLocationNotFoundError(Exception):
         return print_msg
 
 
-def loc_to_diff_loc(loc: Location, file_type: FileType) -> DiffLocation:
-    assert file_type in FileType.attributes()
+def loc_to_diff_loc(loc: Location, file_type: SourceFileType) -> DiffLocation:
+    assert file_type in SourceFileType.attributes()
     return DiffLocation(**asdict(loc), file_type=file_type)
 
 
-def get_diff_loc_by_line_ind(
-        line_ind: int,
-        old_locations: Dict[int, Location], old_line_loc_ids: List[int],
-        new_locations: Dict[int, Location], new_line_loc_ids: List[int],
-        del_line_index2id: Dict[int, int], add_line_index2id: Dict[int, int]
+def get_diff_loc_of_diff_line(
+        diff_line: DiffLine,
+        old_locations: Dict[int, Location], old_line_id2loc_id: Dict[int, int],
+        new_locations: Dict[int, Location], new_line_id2loc_id: Dict[int, int]
 ) -> DiffLocation:
-    if line_ind in del_line_index2id:
-        line_id = del_line_index2id[line_ind]
-        loc_id = old_line_loc_ids[line_id - 1]
-        return loc_to_diff_loc(old_locations[loc_id], FileType.OLD)
-    elif line_ind in add_line_index2id:
-        line_id = add_line_index2id[line_ind]
-        loc_id = new_line_loc_ids[line_id - 1]
-        return loc_to_diff_loc(new_locations[loc_id], FileType.NEW)
+    if diff_line.source == SourceFileType.OLD:
+        loc_id = old_line_id2loc_id[diff_line.lineno]
+        loc = old_locations[loc_id]
     else:
-        raise RuntimeError
+        loc_id = new_line_id2loc_id[diff_line.lineno]
+        loc = new_locations[loc_id]
+    assert loc.type in line_loc_types
+    return loc_to_diff_loc(loc, diff_line.source)
 
 
-## For struct Global, Function, ClassGlobal, ClassFunction
-# - struct_type: LocationType
-# - indexes: List[int]
-IndStructType = namedtuple("IndStructType", ["struct_type", "indexes"])
-## For struct Class
-# - struct_type: LocationType
-# - children: List[IndStructType]
-IndClassType = namedtuple("IndClassType", ["struct_type", "children"])
-## For top level items of root (Global, Function, Class)
-IndType = IndStructType | IndClassType
+@dataclass
+class DiffLineGroup:
+    """
+    For recording diff lines in the same struct.
+    NOTE: Only contain diff lines.
+    """
+    loc_type: LocationType
+    lines: List[DiffLine] | None
+    children: List[DiffLineGroup] | None
+
+
+def _get_struct_with_no_children_line_group(
+        loc_type: LocationType,
+        diff_lines: List[DiffLine] | None = None
+) -> DiffLineGroup:
+    """
+    Construct a LineGroup for struct with no children.
+
+    NOTE: Only for GLOBAL / FUNCTION / CLASSGLOBAL / CLASSFUNCTION / MAINGLOBAL
+    """
+    assert loc_type in no_children_loc_types
+    diff_lines = diff_lines if diff_lines is not None else []
+
+    return DiffLineGroup(loc_type=loc_type, lines=diff_lines, children=None)
+
+
+def _get_struct_with_children_line_group(
+        loc_type: LocationType,
+        children: List[DiffLineGroup] | None = None
+) -> DiffLineGroup:
+    """
+    Construct a LineGroup for struct with children.
+
+    NOTE: Only for CLASS / MAIN
+    """
+    assert loc_type in children_loc_types
+    children = children if children is not None else []
+
+    if not children:
+        for child in children:
+            if loc_type == LocationType.CLASS:
+                assert child.loc_type in class_child_loc_types
+            else:
+                assert child.loc_type in main_child_loc_types
+
+    return DiffLineGroup(loc_type=loc_type, lines=None, children=children)
 
 
 def group_diff_lines_by_struct_within_file(
-        old_locations: Dict[int, Location], old_line_loc_ids: List[int],
-        new_locations: Dict[int, Location], new_line_loc_ids: List[int],
-        del_line_index2id: Dict[int, int],
-        add_line_index2id: Dict[int, int],
-        diff_code_snippet: List[str],
-        diff_classes_info: Dict,
-        diff_funcs_info: Dict,
-        diff_classFuncs_info: Dict
-):
+        old_locations: Dict[int, Location], old_line_loc_lookup: Dict[int, int],
+        new_locations: Dict[int, Location], new_line_loc_lookup: Dict[int, int],
+        file_diff_lines: List[DiffLine], all_diff_structs_info: AllDiffStructInfo
+) -> List[DiffLineGroup]:
     """
     NOTE 1: Only for modified files.
-    NOTE 2: For all diff lines (not blank) in a file, group them by struct (Global, Function, Class),
-    also, we will refine the Class group by ClassGlobal and ClassFunction.
+    NOTE 2: For all diff lines in single file, group them by struct (Global, Function, Class, Main),
+            also, we will refine the Class group and Main group.
     """
-    ######################## Inner Function ########################
 
-    support_line_type = (LocationType.FUNCTION, LocationType.GLOBAL, LocationType.CLASSGLOBAL, LocationType.CLASSFUNCTION)
-    top_level_item_type = (LocationType.CLASS, LocationType.FUNCTION, LocationType.GLOBAL)
-    class_child_type = (LocationType.CLASSGLOBAL, LocationType.CLASSFUNCTION)
+    ######################## Inner Function For Step I ########################
 
-    def _new_group(_ind: int, _loc_type: LocationType) -> IndType:
-        ind_struct = IndStructType(struct_type=_loc_type, indexes=[_ind])
-        if _loc_type in class_child_type:
-            return IndClassType(struct_type=LocationType.CLASS, children=[ind_struct])
+    def _get_new_group(_line_loc_type: LocationType, _diff_line: DiffLine) -> DiffLineGroup:
+        assert _line_loc_type in no_children_loc_types
+        _group = _get_struct_with_no_children_line_group(_line_loc_type, [_diff_line])
+
+        if _line_loc_type in class_child_loc_types:
+            father_loc_type = LocationType.CLASS
+        elif _line_loc_type in main_child_loc_types:
+            father_loc_type = LocationType.MAIN
         else:
-            return ind_struct
+            return _group
 
-    def _is_same_location(loc_1: Location, loc_2: Location) -> bool:
+        return _get_struct_with_children_line_group(father_loc_type, [_group])
+
+    def _update_cur_group(_cur_group: DiffLineGroup, _line_loc_type: LocationType,
+                          _diff_line: DiffLine) -> DiffLineGroup:
+        if _cur_group.loc_type == LocationType.CLASS:
+            assert _line_loc_type in class_child_loc_types
+
+            _child = _get_struct_with_no_children_line_group(_line_loc_type, [_diff_line])
+            _cur_group.children.append(_child)
+
+        elif _cur_group.loc_type == LocationType.MAIN:
+            assert _line_loc_type in main_child_loc_types
+
+            _child = _get_struct_with_no_children_line_group(_line_loc_type, [_diff_line])
+            _cur_group.children.append(_child)
+
+        else:
+            assert _line_loc_type not in class_child_loc_types and _line_loc_type not in main_child_loc_types
+
+            _cur_group.lines.append(_diff_line)
+
+        return _cur_group
+
+    def _is_same_location(_loc1: Location, _loc2: Location) -> bool:
         """
         NOTE 1: loc_1, loc_2 must be in the same file (old / new).
         NOTE 2: loc_1, loc_2 can be DiffLocation.
         """
-        return loc_1.name == loc_2.name and same_line_range(loc_1.range, loc_2.range)
+        return _loc1.name == _loc2.name and same_line_range(_loc1.range, _loc2.range)
 
     def _in_same_function(
             _last_line_diffloc: DiffLocation,
             _curr_line_diffloc: DiffLocation,
-            _diff_funcs: Dict
+            _diff_func_pairs: List[LocationPair]
     ) -> bool:
         """
-        NOTE: last line and current line are both in Location FUNCTION or CLASSFUNCTION.
+        NOTE: Last line and current line are both in Location FUNCTION or CLASSFUNCTION.
         """
-        _del_funcs: List[int] = _diff_funcs["del"]
-        _add_funcs: List[int] = _diff_funcs["add"]
-        _mod_funcs: Dict[int, int] = _diff_funcs["mod"]
+        _same_func: bool = False
 
-        same_func: bool = False
-
-        ####################### CASE 1 #######################
+        ######## CASE 1 ########
         # Last line and current line are in the same file (old / new)
         if _last_line_diffloc.file_type == _curr_line_diffloc.file_type:
             if _last_line_diffloc.id == _curr_line_diffloc.id:
-                same_func = True
+                _same_func = True
             else:
-                same_func = False
+                _same_func = False
 
-        ####################### CASE 2 #######################
+        ######## CASE 2 ########
         # Last line is in the old file, i.e. a deleted line
         # Current line is in the new file, i.e. an added line
-        elif _last_line_diffloc.file_type == FileType.OLD:
-            # Deleted line (last line) cannot be in an added function
-            assert _last_line_diffloc.id not in _add_funcs
+        elif _last_line_diffloc.file_type == SourceFileType.OLD:
+            _find_flag = False
 
-            if _last_line_diffloc.id in _del_funcs:
-                # Deleted function (last line) cannot have an added line (curr line), thus in different groups
-                same_func = False
-            else:
-                assert _last_line_diffloc.id in _mod_funcs, DiffLocationNotFoundError(_last_line_diffloc)
+            for _diff_func_pair in _diff_func_pairs:
+                if _last_line_diffloc.id == _diff_func_pair.before:
+                    _find_flag = True
 
-                _last_func_after_id = _mod_funcs[_last_line_diffloc.id]
+                    if _diff_func_pair.after is None:
+                        # Deleted function (last line) cannot have an added line (curr line), thus in different groups
+                        _same_func = False
+                    elif _is_same_location(_curr_line_diffloc, new_locations[_diff_func_pair.after]):
+                        _same_func = True
+                    else:
+                        _same_func = False
 
-                if _is_same_location(_curr_line_diffloc, new_locations[_last_func_after_id]):
-                    same_func = True
-                else:
-                    same_func = False
+            assert _find_flag
 
-        ####################### CASE 3 #######################
+        ######## CASE 3 ########
         # Last line is in the new file, i.e. an added line
         # Current line is in the old file, i.e. a deleted line
-        elif _last_line_diffloc.file_type == FileType.NEW:
-            # Added line (last line) cannot be in a deleted function
-            assert _last_line_diffloc.id not in _del_funcs
+        elif _last_line_diffloc.file_type == SourceFileType.NEW:
+            _find_flag = False
 
-            if _last_line_diffloc.id in _add_funcs:
-                # Added function (last line) cannot have a deleted line (curr line), thus in different groups
-                same_func = False
-            else:
-                assert _last_line_diffloc.id in list(_mod_funcs.values()), DiffLocationNotFoundError(_last_line_diffloc)
+            for _diff_func_pair in _diff_func_pairs:
+                if _last_line_diffloc.id == _diff_func_pair.after:
+                    _find_flag = True
 
-                _last_func_before_id = None
-                for _func_before_id, _func_after_id in _mod_funcs.items():
-                    if _func_after_id == _last_line_diffloc.id:
-                        _last_func_before_id = _func_before_id
-                        break
+                    if _diff_func_pair.before is None:
+                        # Added function (last line) cannot have a deleted line (curr line), thus in different groups
+                        _same_func = False
+                    elif _is_same_location(_curr_line_diffloc, old_locations[_diff_func_pair.before]):
+                        _same_func = True
+                    else:
+                        _same_func = False
 
-                if _is_same_location(_curr_line_diffloc, old_locations[_last_func_before_id]):
-                    same_func = True
-                else:
-                    same_func = False
+            assert _find_flag
 
-        return same_func
+        return _same_func
 
-    def _in_same_class(
+    def _in_same_father(
             _last_line_diffloc: DiffLocation,
             _curr_line_diffloc: DiffLocation,
-            _diff_classes: Dict
+            _diff_father_pairs: List[LocationPair]
     ) -> bool:
         """
-        NOTE: last line and current line are both in Location CLASSGLOBAL or CLASSFUNCTION.
+        CASE 1: Last line and current line are both in Location MAINGLOBAL, father indicates MAIN
+        CASE 2: Last line and current line are both in Location CLASSGLOBAL or CLASSFUNCTION, father indicates CLASS.
         """
-        _del_classes: List[int] = _diff_classes["del"]
-        _add_classes: List[int] = _diff_classes["add"]
-        _mod_classes: Dict[int, int] = _diff_classes["mod"]
+        _same_father: bool = False
 
-        same_class: bool = False
-
-        ####################### CASE 1 #######################
+        ######## CASE 1 ########
         # Last line and current line are in the same file (old / new)
         if _last_line_diffloc.file_type == _curr_line_diffloc.file_type:
             if _last_line_diffloc.father == _curr_line_diffloc.father:
-                same_class = True
+                _same_father = True
             else:
-                same_class = False
+                _same_father = False
 
-        ####################### CASE 2 #######################
+        ######## CASE 2 ########
         # Last line is in the old file, i.e. a deleted line
         # Current line is in the new file, i.e. an added line
-        elif _last_line_diffloc.file_type == FileType.OLD:
-            # Deleted line (last line) cannot be in an added class
-            assert _last_line_diffloc.father not in _add_classes
+        elif _last_line_diffloc.file_type == SourceFileType.OLD:
+            _find_flag = False
 
-            if _last_line_diffloc.father in _del_classes:
-                # Deleted class (last line) cannot have an added line (curr line), thus in different groups
-                same_class = False
-            else:
-                assert _last_line_diffloc.father in _mod_classes, DiffLocationNotFoundError(_last_line_diffloc)
+            for _diff_father_pair in _diff_father_pairs:
+                if _last_line_diffloc.father == _diff_father_pair.before:
+                    _find_flag = True
 
-                if _curr_line_diffloc.father == _mod_classes[_last_line_diffloc.father]:
-                    same_class = True
-                else:
-                    same_class = False
+                    if _diff_father_pair.after is None:
+                        # Deleted class / main (last line) cannot have an added line (curr line), thus in different groups
+                        _same_father = False
+                    elif _curr_line_diffloc.father == _diff_father_pair.after:
+                        _same_father = True
+                    else:
+                        _same_father = False
 
-        ####################### CASE 3 #######################
+            assert _find_flag
+
+        ######## CASE 3 ########
         # Last line is in the new file, i.e. an added line
         # Current line is in the old file, i.e. a deleted line
-        elif _last_line_diffloc.file_type == FileType.NEW:
-            # Added line (last line) cannot be in a deleted class
-            assert _last_line_diffloc.id not in _del_classes
+        elif _last_line_diffloc.file_type == SourceFileType.NEW:
+            _find_flag = False
 
-            if _last_line_diffloc.id in _add_classes:
-                # Added function (last line) cannot have a deleted line (curr line), thus in different groups
-                same_class = False
-            else:
-                assert _last_line_diffloc.father in list(_mod_classes.values()), DiffLocationNotFoundError(
-                    _last_line_diffloc)
+            for _diff_father_pair in _diff_father_pairs:
+                if _last_line_diffloc.father == _diff_father_pair.after:
+                    _find_flag = True
 
-                _last_func_before_id = None
-                for _class_before_id, _class_after_id in _mod_classes.items():
-                    if _class_after_id == _last_line_diffloc.father:
-                        _last_func_before_id = _class_before_id
-                        break
+                    if _diff_father_pair.before is None:
+                        # Added class / main (last line) cannot have a deleted line (curr line), thus in different groups
+                        _same_father = False
+                    elif _curr_line_diffloc.father == _diff_father_pair.before:
+                        _same_father = True
+                    else:
+                        _same_father = False
 
-                if _curr_line_diffloc.father == _last_func_before_id:
-                    same_class = True
-                else:
-                    same_class = False
+            assert _find_flag
 
-        return same_class
+        return _same_father
 
-    def _in_same_classFunction(
-            _last_li_ind_struct: IndStructType,
-            _curr_li_ind_struct: IndStructType,
-            _diff_classFuncs: Dict
-    ) -> bool:
-        """
-        NOTE 1: This function is for IndStructType.
-        NOTE 2: last line and current line are in the same class!
-        """
-        _del_class_classFuncs: Dict[int, List[int]] = _diff_classFuncs["del"]
-        _add_class_classFuncs: Dict[int, List[int]] = _diff_classFuncs["add"]
-        _mod_class_classFuncs: Dict[Tuple[int, int], Dict] = _diff_classFuncs["mod"]
-
-        same_classFunc: bool = False
-
-        _last_line_diffloc = get_diff_loc_by_line_ind(
-            _last_li_ind_struct.indexes[0],
-            old_locations, old_line_loc_ids,
-            new_locations, new_line_loc_ids,
-            del_line_index2id, add_line_index2id
-        )
-        _curr_line_diffloc = get_diff_loc_by_line_ind(
-            _curr_li_ind_struct.indexes[0],
-            old_locations, old_line_loc_ids,
-            new_locations, new_line_loc_ids,
-            del_line_index2id, add_line_index2id
-        )
-
-        ####################### CASE 1 #######################
-        # Last line and current line are in the same file (old / new)
-        if _last_line_diffloc.file_type == _curr_line_diffloc.file_type:
-            assert _last_line_diffloc.father == _curr_line_diffloc.father
-
-            if _last_line_diffloc.id == _curr_line_diffloc.id:
-                same_classFunc = True
-            else:
-                same_classFunc = False
-
-        ####################### CASE 2 #######################
-        # Last line is in the old file, i.e. a deleted line
-        # Current line is in the new file, i.e. an added line
-        elif _last_line_diffloc.file_type == FileType.OLD:
-            assert _last_line_diffloc.father not in _del_class_classFuncs
-            assert _last_line_diffloc.father not in _add_class_classFuncs
-            assert (_last_line_diffloc.father, _curr_line_diffloc.father) in _mod_class_classFuncs
-            same_classFunc = _in_same_function(
-                _last_line_diffloc,
-                _curr_line_diffloc,
-                _mod_class_classFuncs[(_last_line_diffloc.father, _curr_line_diffloc.father)]
-            )
-
-        ####################### CASE 3 #######################
-        # Last line is in the new file, i.e. an added line
-        # Current line is in the old file, i.e. a deleted line
-        elif _last_line_diffloc.file_type == FileType.NEW:
-            assert _last_line_diffloc.father not in _del_class_classFuncs
-            assert _last_line_diffloc.father not in _add_class_classFuncs
-            assert (_curr_line_diffloc.father, _last_line_diffloc.father) in _mod_class_classFuncs
-            same_classFunc = _in_same_function(
-                _last_line_diffloc,
-                _curr_line_diffloc,
-                _mod_class_classFuncs[(_curr_line_diffloc.father, _last_line_diffloc.father)]
-            )
-
-        return same_classFunc
-
-    ######################## Inner Function ########################
+    ######################## Inner Function For Step I ########################
 
     # Group diff lines in the same struct
     # - GLOBAL
@@ -1160,187 +1250,727 @@ def group_diff_lines_by_struct_within_file(
     # - CLASS
     # |- CLASSGLOBAL
     # |- CLASSFUNCTION
-    diff_line_index_groups: List[IndType] = []
+    # - MAIN
+    # |- MAINGLOBAL
+    diff_line_groups: List[DiffLineGroup] = []
 
-    ## Step 1: Group all diff lines by struct, when facing CLASSGLOBAL or CLASSFUNCTION,
-    #          only consider whether they are in the same class
+    ######################## Step I: Group all diff lines by struct ########################
+    # NOTE 1: When facing CLASSGLOBAL or CLASSFUNCTION, only consider whether they are in the same CLASS
+    # NOTE 2: When facing MAINGLOBAL, only consider whether they are in the same MAIN
     last_line_diffloc: DiffLocation | None = None
-    cur_group: IndType | None = None
+    cur_group: DiffLineGroup | None = None
 
-    for diff_line_ind, code in enumerate(diff_code_snippet):
-        if code == "...":
+    for diff_line in file_diff_lines:
+        if diff_line.sep:
             continue
 
-        # (1) Find basic info (DiffLocation) of current line:
-        cur_line_diffloc = get_diff_loc_by_line_ind(
-            diff_line_ind,
-            old_locations, old_line_loc_ids,
-            new_locations, new_line_loc_ids,
-            del_line_index2id, add_line_index2id
+        ############## (1) Find location of current line ##############
+        cur_line_diffloc = get_diff_loc_of_diff_line(
+            diff_line, old_locations, old_line_loc_lookup, new_locations, new_line_loc_lookup
         )
-        assert cur_line_diffloc.type in support_line_type
 
-        # (2) Determine if current line and last line are in the same group (struct)
-        # Beginning
+        ############## (2) Group current line and last line ##############
         if last_line_diffloc is None:
-            cur_group = _new_group(diff_line_ind, cur_line_diffloc.type)
-            last_line_diffloc = cur_line_diffloc
-            continue
-
-        # Deciding whether in the same group
-        if last_line_diffloc.type in class_child_type and cur_line_diffloc.type in class_child_type:
-            new_group_flag = not _in_same_class(
-                last_line_diffloc,
-                cur_line_diffloc,
-                diff_classes_info
-            )
-        elif last_line_diffloc.type != cur_line_diffloc.type:
+            # Last line does not exist -> beginning, open a new group
             new_group_flag = True
-        elif last_line_diffloc.type == LocationType.FUNCTION:
-            new_group_flag = not _in_same_function(
-                last_line_diffloc,
-                cur_line_diffloc,
-                diff_funcs_info
-            )
         else:
-            # last_line_loc.type == LocationType.GLOBAL
-            # NOTE: We do not distinguish the corresponding modification relationships between global statements,
-            #       but group all continous global statements into one group
-            #       For example:
-            #         - a = 1
-            #         - s = call()
-            #         + a = 2
-            #         + s = safe_call()
-            #       We do not link "- a = 1" with "+ a = 2" and "- s = call()" with "+ s = safe_call()",
-            #       but divide these four statements into one group in the order they were originally in the commit
-            new_group_flag = False
+            # Last line exists -> determine whether current line and last line are in the same group
+            if last_line_diffloc.type in class_child_loc_types and cur_line_diffloc.type in class_child_loc_types:
+                new_group_flag = not _in_same_father(last_line_diffloc,
+                                                     cur_line_diffloc,
+                                                     all_diff_structs_info.classes)
+            elif last_line_diffloc.type != cur_line_diffloc.type:
+                new_group_flag = True
+            elif last_line_diffloc.type == LocationType.MAIN_GLOBAL:
+                assert _in_same_father(last_line_diffloc,
+                                       cur_line_diffloc,
+                                       all_diff_structs_info.if_mains)
+                new_group_flag = False
+            elif last_line_diffloc.type == LocationType.FUNCTION:
+                new_group_flag = not _in_same_function(last_line_diffloc,
+                                                       cur_line_diffloc,
+                                                       all_diff_structs_info.functions)
+            else:
+                # last_line_loc.type == LocationType.GLOBAL
+                # NOTE: We do not distinguish the corresponding modification relationships between global statements,
+                #       but group all continous global statements into one group
+                #       For example:
+                #         - a = 1
+                #         - s = call()
+                #         + a = 2
+                #         + s = safe_call()
+                #       We do not link "- a = 1" with "+ a = 2" and "- s = call()" with "+ s = safe_call()",
+                #       but divide these four statements into one group in the order they were originally in the commit
+                new_group_flag = False
 
-        # (3) Update
+        ############## (3) Update current group ##############
         if new_group_flag:
             # Add the last group to the groups
-            assert cur_group is not None
-            diff_line_index_groups.append(cur_group)
+            if cur_group is not None:
+                diff_line_groups.append(cur_group)
             # Open a new group
-            cur_group = _new_group(diff_line_ind, cur_line_diffloc.type)
+            cur_group = _get_new_group(cur_line_diffloc.type, diff_line)
         else:
-            if isinstance(cur_group, IndClassType):
-                # Current group is for Class
-                ind_struct = IndStructType(struct_type=cur_line_diffloc.type, indexes=[diff_line_ind])
-                cur_group.children.append(ind_struct)
-            else:
-                # Current group is for Function or Global
-                cur_group.indexes.append(diff_line_ind)
+            cur_group = _update_cur_group(cur_group, cur_line_diffloc.type, diff_line)
 
+        ############## (4) Current line becomes last line ##############
         last_line_diffloc = cur_line_diffloc
 
     if cur_group is not None:
-        diff_line_index_groups.append(cur_group)
+        diff_line_groups.append(cur_group)
 
-    ## Step 2: Group continuous class items by class
-    for i in range(len(diff_line_index_groups)):
-        item = diff_line_index_groups[i]
-        assert item.struct_type in top_level_item_type
+    ######################## Inner Function For Step II ########################
 
-        if isinstance(item, IndClassType):
-            children: List[IndStructType] = []
+    def _in_same_classFunction(
+            _last_line_diffloc: DiffLocation,
+            _curr_line_diffloc: DiffLocation,
+            _diff_classFunc_pairs: Dict[LocationPair, List[LocationPair]]
+    ) -> bool:
+        """
+        NOTE: Last line and current line are in the same class!
+        """
+        _same_classFunc: bool = False
 
-            last_child: IndStructType | None = None
-            updt_cur_child: IndStructType | None = None
+        ######## CASE 1 ########
+        # Last line and current line are in the same file (old / new)
+        if _last_line_diffloc.file_type == _curr_line_diffloc.file_type:
+            assert _last_line_diffloc.father == _curr_line_diffloc.father
 
-            for child in item.children:
-                assert child.struct_type in class_child_type and len(child.indexes) == 1
+            if _last_line_diffloc.id == _curr_line_diffloc.id:
+                _same_classFunc = True
+            else:
+                _same_classFunc = False
 
-                if last_child is None:
-                    updt_cur_child = child
-                    last_child = child
-                    continue
+        ######## CASE 2 ########
+        # Last line is in the old file, i.e. a deleted line
+        # Current line is in the new file, i.e. an added line
+        elif _last_line_diffloc.file_type == SourceFileType.OLD:
+            _cur_diff_class_pair = LocationPair(before=_last_line_diffloc.father, after=_curr_line_diffloc.father)
+            assert _cur_diff_class_pair in _diff_classFunc_pairs
+            _same_classFunc = _in_same_function(
+                _last_line_diffloc, _curr_line_diffloc, _diff_classFunc_pairs[_cur_diff_class_pair]
+            )
 
-                if last_child.struct_type != child.struct_type:
-                    new_group_flag = True
-                elif last_child.struct_type == LocationType.CLASSFUNCTION:
-                    new_group_flag = not _in_same_classFunction(
-                        last_child,
-                        child,
-                        diff_classFuncs_info
-                    )
+        ######## CASE 3 ########
+        # Last line is in the new file, i.e. an added line
+        # Current line is in the old file, i.e. a deleted line
+        elif _last_line_diffloc.file_type == SourceFileType.NEW:
+            _cur_diff_class_pair = LocationPair(before=_curr_line_diffloc.father, after=_last_line_diffloc.father)
+            assert _cur_diff_class_pair in _diff_classFunc_pairs
+            _same_classFunc = _in_same_function(
+                _last_line_diffloc, _curr_line_diffloc, _diff_classFunc_pairs[_cur_diff_class_pair]
+            )
+
+        return _same_classFunc
+
+    ######################## Inner Function For Step II ########################
+
+    ######################## Step II: Group the children in the same Class / Main ########################
+    for line_group in diff_line_groups:
+        assert line_group.loc_type in top_level_loc_types
+
+        if line_group.loc_type == LocationType.MAIN:
+            updt_children: List[DiffLineGroup] = []
+
+            cur_updt_child: DiffLineGroup | None = None
+
+            ############## (1) Group diff lines in the same MAIN to get new children ##############
+            for cur_ori_child in line_group.children:
+                assert cur_ori_child.loc_type in main_child_loc_types and len(cur_ori_child.lines) == 1
+                # NOTE: Since the child_location type of MAIN is only MAINGLOBAL, so for a MAIN children,
+                #       there is only one group of MAINGLOBAL type, which contains all the diff lines in MAIN.
+                if cur_updt_child is None:
+                    cur_updt_child = cur_ori_child
                 else:
-                    # last_sub_struct.group_name == LocationType.CLASSGLOBAL
-                    new_group_flag = False
+                    cur_updt_child.lines.extend(cur_ori_child.lines)
 
+            if cur_updt_child is not None:
+                updt_children.append(cur_updt_child)
+
+            ############## (2) Update children info of current MAIN line group ##############
+            line_group.children = updt_children
+
+        if line_group.loc_type == LocationType.CLASS:
+            updt_children: List[DiffLineGroup] = []
+
+            cur_updt_child: DiffLineGroup | None = None
+            last_line_diffloc: DiffLocation | None = None
+
+            ############## (1) Group diff lines in the same CLASS to get new children ##############
+            for cur_ori_child in line_group.children:
+                assert cur_ori_child.loc_type in class_child_loc_types and len(cur_ori_child.lines) == 1
+
+                ############## 1) Find location of current line ##############
+                cur_line_diffloc = get_diff_loc_of_diff_line(
+                    cur_ori_child.lines[0], old_locations, old_line_loc_lookup, new_locations, new_line_loc_lookup
+                )
+
+                ############## 2) Group current line and last line in the same class ##############
+                if last_line_diffloc is None:
+                    # Last line does not exist -> beginning, open a new sub_group
+                    new_group_flag = True
+                else:
+                    # Last line exists -> determine whether current line and last line are in the same sub_group
+                    if last_line_diffloc.type != cur_line_diffloc.type:
+                        new_group_flag = True
+                    elif last_line_diffloc.type == LocationType.CLASS_FUNCTION:
+                        new_group_flag = not _in_same_classFunction(last_line_diffloc,
+                                                                    cur_line_diffloc,
+                                                                    all_diff_structs_info.class_functions)
+                    else:
+                        # last_sub_struct.group_name == LocationType.CLASSGLOBAL
+                        new_group_flag = False
+
+                ############## 3) Update current sub_group ##############
                 if new_group_flag:
                     # Add current sub_group
-                    assert updt_cur_child is not None
-                    children.append(updt_cur_child)
+                    if cur_updt_child is not None:
+                        updt_children.append(cur_updt_child)
                     # Open a new sub_group
-                    updt_cur_child = child
+                    cur_updt_child = cur_ori_child
                 else:
-                    updt_cur_child.indexes.append(child.indexes[0])
+                    cur_updt_child.lines.extend(cur_ori_child.lines)
 
-                last_child = child
+                ############## 4) Current line becomes last line ##############
+                last_line_diffloc = cur_line_diffloc
 
-            if updt_cur_child is not None:
-                children.append(updt_cur_child)
+            if cur_updt_child is not None:
+                updt_children.append(cur_updt_child)
 
-            updt_class: IndClassType = IndClassType(struct_type=LocationType.CLASS, children=children)
-            diff_line_index_groups[i] = updt_class
+            ############## (2) Update children info of current CLASS line group ##############
+            line_group.children = updt_children
 
-    return diff_line_index_groups
+    ######################## Inner Function For Step III ########################
 
+    def _split_diff_lines_in_global(_global_line_group: DiffLineGroup) -> List[DiffLineGroup]:
+        """
+        Split discontinuous diff lines in global line group, and return the line group list after separation.
 
-################### For recording the diff struct ###################
-## For struct Global, Function, ClassGlobal and ClassFunction
-# - struct_type: LocationType
-# - struct_name: str
-# - code: str
-DiffStructType = namedtuple("DiffStructType", ["struct_type", "struct_name", "code"])
-## For struct Class
-# - struct_type: LocationType
-# - struct_name: str
-# - children: List[DiffStructType]
-DiffClassType = namedtuple("DiffClassType", ["struct_type", "struct_name", "children"])
-## For top level items of root (Global, Function, Class)
-DiffType = DiffStructType | DiffClassType
+        NOTE: Only for GLOBAL / MAINGLOBAL / CLASSGLOBAL
+        """
+        assert _global_line_group.loc_type in (LocationType.GLOBAL, LocationType.MAIN_GLOBAL, LocationType.CLASS_GLOBAL)
 
+        _cont_diff_lines_groups: List[List[DiffLine]] = []
+        _cur_cont_diff_lines: List[DiffLine] = []
 
-################### For grouping continous lines in the same struct into the same group ###################
-## For struct Global, Function, ClassGlobal and ClassFunction
-# - group_name: LocationType
-# - struct_name: str
-# - all_indexes: List[List[int]]
-ContIndStructType = namedtuple("ContIndStructType", ["struct_type", "struct_name", "all_indexes"])
-## For struct Class
-# - group_name: LocationType
-# - struct_name: str
-# - children: List[ContIndStructType]
-ContIndClassType = namedtuple("ContIndClassType", ["struct_type", "struct_name", "children"])
-## For top level items of root (Global, Function, Class)
-ContIndType = ContIndStructType | ContIndClassType
+        ######## Step 1: Split discontinuous diff lines ########
+        for _diff_line in _global_line_group.lines:
+            if len(_cur_cont_diff_lines) == 0:
+                _cur_cont_diff_lines.append(_diff_line)
+            elif _diff_line.id == _cur_cont_diff_lines[-1].id + 1:
+                _cur_cont_diff_lines.append(_diff_line)
+            else:
+                _cont_diff_lines_groups.append(_cur_cont_diff_lines)
+                _cur_cont_diff_lines = [_diff_line]
 
+        if len(_cur_cont_diff_lines) > 0:
+            _cont_diff_lines_groups.append(_cur_cont_diff_lines)
 
-"""Group continuous lines"""
+        ######## Step 2: Build line group for each set of continuous diff lines ########
+        _global_line_groups: List[DiffLineGroup] = []
+        for _cont_diff_lines in _cont_diff_lines_groups:
+            _global_line_group = _get_struct_with_no_children_line_group(_global_line_group.loc_type, _cont_diff_lines)
+            _global_line_groups.append(_global_line_group)
 
+        return _global_line_groups
 
-def _split_discontinuous_line_indexes(all_indexes: List[int]) -> List[List[int]]:
-    # Procedure: List[int] -> List[List[int]]
-    # Basis for Judgement: Whether lines are continuous in `diff_code_snippet`
-    all_cont_indexes: List[List[int]] = []
-    cur_cont_indexes: List[int] = []
+    def _update_class_diff_line_group(_class_line_group: DiffLineGroup) -> DiffLineGroup:
+        assert _class_line_group.loc_type == LocationType.CLASS
 
-    for ind in all_indexes:
-        if not cur_cont_indexes:
-            cur_cont_indexes = [ind]
-            continue
+        _updt_children: List[DiffLineGroup] = []
 
-        if ind == cur_cont_indexes[-1] + 1:
-            cur_cont_indexes.append(ind)
+        for _child in _class_line_group.children:
+            if _child.loc_type == LocationType.CLASS_GLOBAL:
+                _updt_children.extend(_split_diff_lines_in_global(_child))
+            else:
+                _updt_children.append(_child)
+
+        _class_line_group.children = _updt_children
+
+        return _class_line_group
+
+    def _update_main_diff_line_group(_main_line_group: DiffLineGroup) -> DiffLineGroup:
+        assert _main_line_group.loc_type == LocationType.MAIN
+
+        assert len(_main_line_group.children) == 1
+        _updt_children = _split_diff_lines_in_global(_main_line_group.children[0])
+
+        _main_line_group.children = _updt_children
+
+        return _main_line_group
+
+    ######################## Inner Function For Step III ########################
+
+    ######################## Step III: Split discontinuous diff lines in global  ########################
+    # NOTE: For Global / ClassGlobal / MainGlobal
+    updt_diff_line_groups: List[DiffLineGroup] = []
+
+    for line_group in diff_line_groups:
+        assert line_group.loc_type in top_level_loc_types
+
+        if line_group.loc_type == LocationType.GLOBAL:
+            updt_line_groups = _split_diff_lines_in_global(line_group)
+            updt_diff_line_groups.extend(updt_line_groups)
+
+        elif line_group.loc_type == LocationType.CLASS:
+            updt_line_group = _update_class_diff_line_group(line_group)
+            updt_diff_line_groups.append(updt_line_group)
+
+        elif line_group.loc_type == LocationType.MAIN:
+            updt_line_group = _update_main_diff_line_group(line_group)
+            updt_diff_line_groups.append(updt_line_group)
+
         else:
-            all_cont_indexes.append(cur_cont_indexes)
-            cur_cont_indexes = [ind]
+            updt_diff_line_groups.append(line_group)
 
-    if len(cur_cont_indexes) > 0:
-        all_cont_indexes.append(cur_cont_indexes)
+    return updt_diff_line_groups
 
-    return all_cont_indexes
+
+"""Prepare Description of Modified File"""
+
+
+def diff_line_group_to_seq(
+        diff_line_group: DiffLineGroup,
+        old_locations: Dict[int, Location], old_line_loc_lookup: Dict[int, int],
+        new_locations: Dict[int, Location], new_line_loc_lookup: Dict[int, int]
+) -> str:
+    if diff_line_group.loc_type == LocationType.MAIN:
+        main_seq = ""
+        for child_line_group in diff_line_group.children:
+            child_seq = diff_line_group_to_seq(
+                child_line_group, old_locations, old_line_loc_lookup, new_locations, new_line_loc_lookup
+            )
+            main_seq += child_seq + "\n"
+
+        return main_seq
+
+    elif diff_line_group.loc_type == LocationType.CLASS:
+
+        li = diff_line_group.children[0].lines[0]
+        if li.source == SourceFileType.OLD:
+            loc = old_locations[old_line_loc_lookup[li.lineno]]
+            class_loc = old_locations[loc.father]
+        else:
+            loc = new_locations[new_line_loc_lookup[li.lineno]]
+            class_loc = new_locations[loc.father]
+        class_prefix = f"<class>{class_loc.name.split('@')[0]}</class> "
+
+        class_seq = ""
+        for child_line_group in diff_line_group.children:
+            child_seq = diff_line_group_to_seq(
+                child_line_group, old_locations, old_line_loc_lookup, new_locations, new_line_loc_lookup
+            )
+            child_seq = class_prefix + child_seq
+            class_seq += child_seq + "\n"
+
+        return class_seq
+
+    elif diff_line_group.loc_type == LocationType.FUNCTION or diff_line_group.loc_type == LocationType.CLASS_FUNCTION:
+
+        diff_lines = diff_line_group.lines
+
+        # (1) Get diff code snippet
+        lines: List[str] = []
+        for i in range(len(diff_lines)):
+            if i != 0 and diff_lines[i].id != diff_lines[i - 1].id + 1:
+                lines.append("...")
+            lines.append(diff_lines[i].code)
+
+        code = "\n".join(lines)
+
+        # (2) Get function name
+        if diff_lines[0].source == SourceFileType.OLD:
+            loc = old_locations[old_line_loc_lookup[diff_lines[0].lineno]]
+        else:
+            loc = new_locations[new_line_loc_lookup[diff_lines[0].lineno]]
+        func_name = loc.name.split("@")[0]
+
+        return f"<func>{func_name}<func>\n<code>\n{code}\n</code>\n"
+
+    else:
+        # GLOBAL / CLASS_GLOBAL / MAIN_GLOBAL
+        diff_lines = diff_line_group.lines
+
+        lines: List[str] = []
+        for i in range(len(diff_lines)):
+            if i != 0:
+                assert diff_lines[i].id == diff_lines[i - 1].id + 1
+            lines.append(diff_lines[i].code)
+
+        code = "\n".join(lines)
+
+        return f"<global></global>\n<code>\n{code}\n</code>\n"
+
+
+def get_description_of_modified_file(
+        old_locations: Dict[int, Location], old_line_loc_lookup: Dict[int, int],
+        new_locations: Dict[int, Location], new_line_loc_lookup: Dict[int, int],
+        file_diff_lines: List[DiffLine], all_diff_structs_info: AllDiffStructInfo
+) -> str:
+    """
+    Get description of modified file, including class name, function name and code of each diff code snippet.
+
+    NOTE: Only for modified files.
+    """
+    ########## Step I: Group diff lines by struct type ##########
+    diff_line_groups: List[DiffLineGroup] = group_diff_lines_by_struct_within_file(
+        old_locations, old_line_loc_lookup,
+        new_locations, new_line_loc_lookup,
+        file_diff_lines, all_diff_structs_info
+    )
+
+    ########## Step II: Get description of current modified file ##########
+    diff_file_desc = ""
+    for diff_line_group in diff_line_groups:
+        seq = diff_line_group_to_seq(
+            diff_line_group, old_locations, old_line_loc_lookup, new_locations, new_line_loc_lookup
+        )
+
+        diff_file_desc += seq + "\n"
+
+    return diff_file_desc
+
+
+"""Analyse Structs (class / function / class_function) in Common Code"""
+
+
+def parse_common_content_structs(
+        content: str,
+) -> Tuple[List[Tuple[str, LineRange]], List[Tuple[str, LineRange]], List[Tuple[str, List[Tuple[str, LineRange]]]]]:
+    locations, _, structs_info = parse_python_file_locations(content)
+
+    funcs: List[Tuple[str, LineRange]] = []
+    classes: List[Tuple[str, LineRange]] = []
+    classes_funcs: List[Tuple[str, List[Tuple[str, LineRange]]]] = []
+
+    for loc_id in structs_info["funcs"]:
+        loc = locations[loc_id]
+        funcs.append((loc.name.split("@")[0], loc.range))
+
+    for loc_id in structs_info["classes"]:
+        loc = locations[loc_id]
+        classes.append((loc.name.split("@")[0], loc.range))
+
+    for class_loc_id, classFunc_loc_ids in structs_info["classes_funcs"].items():
+        cur_class_funcs: List[Tuple[str, LineRange]] = []
+        for loc_id in classFunc_loc_ids:
+            loc = locations[loc_id]
+            cur_class_funcs.append((loc.name.split("@")[0], loc.range))
+
+        class_loc = locations[class_loc_id]
+        classes_funcs.append((class_loc.name.split("@")[0], cur_class_funcs))
+
+    return funcs, classes, classes_funcs
+
+
+"""Analyse Structs (class / function / class_function) in Combined Code"""
+
+
+def _align_func_info_in_combined_content(
+        all_old_funcs: List[int], diff_func_pairs: List[LocationPair],
+        old_locations: Dict[int, Location], old_comb_line_id_lookup: Dict[int, int],
+        new_locations: Dict[int, Location], new_comb_line_id_lookup: Dict[int, int]
+) -> List[Tuple[str, LineRange]]:
+    comb_funcs: List[Tuple[str, LineRange]] = []
+
+    ########### Step I: Align diff funcs ###########
+    record_old_funcs: List[int] = []
+
+    for diff_func_pair in diff_func_pairs:
+        old_func_loc_id = diff_func_pair.before
+        new_func_loc_id = diff_func_pair.after
+
+        if new_func_loc_id is None:
+            assert old_func_loc_id is not None
+            old_loc = old_locations[old_func_loc_id]
+            record_old_funcs.append(old_func_loc_id)
+
+            comb_name = old_loc.name.split("@")[0]
+            comb_range = LineRange(start=old_comb_line_id_lookup[old_loc.range.start],
+                                   end=old_comb_line_id_lookup[old_loc.range.end])
+
+        elif old_func_loc_id is None:
+            assert new_func_loc_id is not None
+            new_loc = new_locations[new_func_loc_id]
+
+            comb_name = new_loc.name.split("@")[0]
+            comb_range = LineRange(start=new_comb_line_id_lookup[new_loc.range.start],
+                                   end=new_comb_line_id_lookup[new_loc.range.end])
+
+        else:
+            old_loc = old_locations[old_func_loc_id]
+            new_loc = new_locations[new_func_loc_id]
+            record_old_funcs.append(old_func_loc_id)
+
+            old_name = old_loc.name.split("@")[0]
+            old_start = old_loc.range.start
+            old_end = old_loc.range.end
+
+            new_name = new_loc.name.split("@")[0]
+            new_start = new_loc.range.start
+            new_end = new_loc.range.end
+
+            comb_name = old_name if old_name == new_name else old_name + "@" + new_name
+            comb_start = min(old_comb_line_id_lookup[old_start], new_comb_line_id_lookup[new_start])
+            comb_end = max(old_comb_line_id_lookup[old_end], new_comb_line_id_lookup[new_end])
+            comb_range = LineRange(start=comb_start, end=comb_end)
+
+        comb_funcs.append((comb_name, comb_range))
+
+    ########### Step II: Align unchanged funcs ###########
+    rest_old_funcs: List[int] = list(set(all_old_funcs) - set(record_old_funcs))
+
+    for func_loc_id in rest_old_funcs:
+        func_loc = old_locations[func_loc_id]
+
+        comb_name = func_loc.name.split("@")[0]
+        comb_range = LineRange(start=old_comb_line_id_lookup[func_loc.range.start],
+                               end=old_comb_line_id_lookup[func_loc.range.end])
+
+        comb_funcs.append((comb_name, comb_range))
+
+    return comb_funcs
+
+
+def _align_class_info_in_combined_content(
+        all_old_classes: List[int], diff_class_pairs: List[LocationPair],
+        old_locations: Dict[int, Location], old_comb_line_id_lookup: Dict[int, int],
+        new_locations: Dict[int, Location], new_comb_line_id_lookup: Dict[int, int]
+) -> List[Tuple[str, LineRange]]:
+    comb_classes: List[Tuple[str, LineRange]] = []
+
+    ########### Step I: Align diff classes ###########
+    record_old_classes: List[int] = []
+
+    for diff_class_pair in diff_class_pairs:
+        old_class_loc_id = diff_class_pair.before
+        new_class_loc_id = diff_class_pair.after
+
+        if new_class_loc_id is None:
+            assert old_class_loc_id is not None
+            old_loc = old_locations[old_class_loc_id]
+            record_old_classes.append(old_class_loc_id)
+
+            comb_name = old_loc.name.split("@")[0]
+            comb_range = LineRange(start=old_comb_line_id_lookup[old_loc.range.start],
+                                   end=old_comb_line_id_lookup[old_loc.range.end])
+
+        elif old_class_loc_id is None:
+            assert new_class_loc_id is not None
+            new_loc = new_locations[new_class_loc_id]
+
+            comb_name = new_loc.name.split("@")[0]
+            comb_range = LineRange(start=new_comb_line_id_lookup[new_loc.range.start],
+                                   end=new_comb_line_id_lookup[new_loc.range.end])
+
+        else:
+            old_loc = old_locations[old_class_loc_id]
+            new_loc = new_locations[new_class_loc_id]
+            record_old_classes.append(old_class_loc_id)
+
+            old_name = old_loc.name.split("@")[0]
+            old_start = old_loc.range.start
+            old_end = old_loc.range.end
+
+            new_name = new_loc.name.split("@")[0]
+            new_start = new_loc.range.start
+            new_end = new_loc.range.end
+
+            comb_name = old_name if old_name == new_name else old_name + "@" + new_name
+            comb_start = min(old_comb_line_id_lookup[old_start], new_comb_line_id_lookup[new_start])
+            comb_end = max(old_comb_line_id_lookup[old_end], new_comb_line_id_lookup[new_end])
+            comb_range = LineRange(start=comb_start, end=comb_end)
+
+        comb_classes.append((comb_name, comb_range))
+
+    ########### Step II: Align unchanged classes ###########
+    rest_old_classes: List[int] = list(set(all_old_classes) - set(record_old_classes))
+
+    for class_loc_id in rest_old_classes:
+        class_loc = old_locations[class_loc_id]
+
+        comb_name = class_loc.name.split("@")[0]
+        comb_range = LineRange(start=old_comb_line_id_lookup[class_loc.range.start],
+                               end=old_comb_line_id_lookup[class_loc.range.end])
+
+        comb_classes.append((comb_name, comb_range))
+
+    return comb_classes
+
+
+def _align_class_func_info_in_combined_content(
+        all_old_classFuncs: Dict[int, List[int]], diff_classFuncs_pairs: Dict[LocationPair, List[LocationPair]],
+        old_locations: Dict[int, Location], old_comb_line_id_lookup: Dict[int, int],
+        new_locations: Dict[int, Location], new_comb_line_id_lookup: Dict[int, int]
+) -> List[Tuple[str, List[Tuple[str, LineRange]]]]:
+    comb_classesFuncs: List[Tuple[str, List[Tuple[str, LineRange]]]] = []
+
+    ########### Step I: Align diff and unchanged classFuncs of diff classes ###########
+    record_old_classes: List[int] = []
+
+    for diff_class_pair, cur_diff_classFunc_pairs in diff_classFuncs_pairs.items():
+        if diff_class_pair.before is None:
+            assert diff_class_pair.after is not None
+            comb_classFuncs = _align_func_info_in_combined_content(
+                [], cur_diff_classFunc_pairs,
+                old_locations, old_comb_line_id_lookup, new_locations, new_comb_line_id_lookup
+            )
+
+            new_class_loc = new_locations[diff_class_pair.after]
+            comb_class_name = new_class_loc.name.split("@")[0]
+
+        elif diff_class_pair.after is None:
+            record_old_classes.append(diff_class_pair.before)
+
+            assert diff_class_pair.before is not None
+            comb_classFuncs = _align_func_info_in_combined_content(
+                all_old_classFuncs[diff_class_pair.before], cur_diff_classFunc_pairs,
+                old_locations, old_comb_line_id_lookup, new_locations, new_comb_line_id_lookup
+            )
+
+            old_class_loc = old_locations[diff_class_pair.before]
+            comb_class_name = old_class_loc.name.split("@")[0]
+
+        else:
+            record_old_classes.append(diff_class_pair.before)
+
+            comb_classFuncs = _align_func_info_in_combined_content(
+                all_old_classFuncs[diff_class_pair.before], cur_diff_classFunc_pairs,
+                old_locations, old_comb_line_id_lookup, new_locations, new_comb_line_id_lookup
+            )
+
+            old_class_loc = old_locations[diff_class_pair.before]
+            new_class_loc = new_locations[diff_class_pair.after]
+
+            old_class_name = old_class_loc.name.split("@")[0]
+            new_class_name = new_class_loc.name.split("@")[0]
+
+            comb_class_name = old_class_name if old_class_name == new_class_name else \
+                old_class_name + "@" + new_class_name
+
+        comb_classesFuncs.append((comb_class_name, comb_classFuncs))
+
+    ########### Step II: Align unchanged classFuncs of unchanged classes ###########
+    rest_old_classes: List[int] = list(set(all_old_classFuncs.keys()) - set(record_old_classes))
+
+    for class_loc_id in rest_old_classes:
+        old_class_loc = old_locations[class_loc_id]
+
+        comb_class_name = old_class_loc.name.split("@")[0]
+        comb_classFuncs: List[Tuple[str, LineRange]] = []
+
+        for old_classFunc in all_old_classFuncs[class_loc_id]:
+            old_classFunc_loc = old_locations[old_classFunc]
+
+            comb_classFunc_name = old_classFunc_loc.name.split("@")[0]
+            comb_classFunc_range = LineRange(start=old_comb_line_id_lookup[old_classFunc_loc.range.start],
+                                             end=old_comb_line_id_lookup[old_classFunc_loc.range.end])
+
+            comb_classFuncs.append((comb_classFunc_name, comb_classFunc_range))
+
+        comb_classesFuncs.append((comb_class_name, comb_classFuncs))
+
+    return comb_classesFuncs
+
+
+def parse_combine_content_structs(
+        all_diff_structs_info: AllDiffStructInfo,
+        all_old_funcs: List[int], all_old_classes: List[int], all_old_classFuncs: Dict[int, List[int]],
+        old_locations: Dict[int, Location], old_comb_line_id_lookup: Dict[int, int],
+        new_locations: Dict[int, Location], new_comb_line_id_lookup: Dict[int, int]
+) -> Tuple[List[Tuple[str, LineRange]], List[Tuple[str, LineRange]], List[Tuple[str, List[Tuple[str, LineRange]]]]]:
+    comb_funcs: List[Tuple[str, LineRange]] = _align_func_info_in_combined_content(
+        all_old_funcs, all_diff_structs_info.functions,
+        old_locations, old_comb_line_id_lookup, new_locations, new_comb_line_id_lookup
+    )
+
+    comb_classes: List[Tuple[str, LineRange]] = _align_class_info_in_combined_content(
+        all_old_classes, all_diff_structs_info.classes,
+        old_locations, old_comb_line_id_lookup, new_locations, new_comb_line_id_lookup
+    )
+
+    comb_classesFuncs: List[Tuple[str, List[Tuple[str, LineRange]]]] = _align_class_func_info_in_combined_content(
+        all_old_classFuncs, all_diff_structs_info.class_functions,
+        old_locations, old_comb_line_id_lookup, new_locations, new_comb_line_id_lookup
+    )
+
+    return comb_funcs, comb_classes, comb_classesFuncs
+
+
+"""Main Entry"""
+
+
+def combine_and_parse_modified_file(
+        old_file_content: str, old_locations: Dict[int, Location], old_structs_info: Dict,
+        new_file_content: str, new_locations: Dict[int, Location],
+        file_diff_lines: List[DiffLine],
+        all_diff_structs_info: AllDiffStructInfo
+) -> Tuple[str, Dict[int, int], Dict[int, int], List[Tuple[str, LineRange]], List[Tuple[str, LineRange]], List[
+    Tuple[str, List[Tuple[str, LineRange]]]]]:
+    """
+    Combine code before and after commit, and then analyze the structs of it.
+
+    NOTE: Only for modified files.
+    """
+    ########## Step I: Combine old code and new code ##########
+    comb_file_content, old_comb_line_id_lookup, new_comb_line_id_lookup = \
+        combine_old_content_and_new_content(old_file_content, new_file_content, file_diff_lines)
+
+    ########## Step II: Align the diff structs ##########
+    comb_funcs, comb_classes, comb_classesFuncs = parse_combine_content_structs(
+        all_diff_structs_info,
+        old_structs_info["funcs"], old_structs_info["classes"], old_structs_info["classes_funcs"],
+        old_locations, old_comb_line_id_lookup, new_locations, new_comb_line_id_lookup
+    )
+
+    return (comb_file_content, old_comb_line_id_lookup, new_comb_line_id_lookup,
+            comb_funcs, comb_classes, comb_classesFuncs)
+
+
+def analyse_modified_file(
+        old_ori_content: str,
+        new_ori_content: str,
+        diff_file_info: Dict
+) -> Tuple[str, str, str, str, Dict[int, int], Dict[int, int], List[Tuple[str, LineRange]], List[Tuple[str, LineRange]], List[Tuple[str, List[Tuple[str, LineRange]]]]]:
+    ########### Step I: Get complete diff lines info ###########
+    ori_diff_lines = combine_diff_code_info_within_file(diff_file_info)
+
+    ########### Step II: Filter out blank lines and comment lines ###########
+    ## (1) Code Content
+    old_nb_content, old_nb_line_id_lookup = filter_blank_lines_in_file(old_ori_content)
+    new_nb_content, new_nb_line_id_lookup = filter_blank_lines_in_file(new_ori_content)
+
+    ## (2) Commit Info
+    nb_diff_lines = filter_blank_lines_in_commit(ori_diff_lines, old_nb_line_id_lookup, new_nb_line_id_lookup)
+
+    ########### Step III: Parse locations of old code and new code (filtered) ###########
+    old_res = parse_python_file_locations(old_nb_content)
+    new_res = parse_python_file_locations(new_nb_content)
+
+    ########## Step IV: Match the diff structs ##########
+    all_diff_structs_info = match_diff_structs_within_file(
+        nb_diff_lines, old_nb_content, old_res, new_nb_content, new_res
+    )
+
+    ########## Step V: Get description of current modified file ##########
+    old_locations, old_line_loc_lookup, old_structs_info = old_res
+    new_locations, new_line_loc_lookup, new_structs_info = new_res
+
+    file_diff_desc = get_description_of_modified_file(
+        old_locations, old_line_loc_lookup, new_locations, new_line_loc_lookup, nb_diff_lines, all_diff_structs_info
+    )
+
+    ########## Step VI: Combine and extract the structs ##########
+    comb_nb_content, old_comb_line_id_lookup, new_comb_line_id_lookup, comb_funcs, comb_classes, comb_classesFuncs \
+        = combine_and_parse_modified_file(
+            old_nb_content, old_locations, old_structs_info,
+            new_nb_content, new_locations,
+            nb_diff_lines, all_diff_structs_info
+        )
+
+    return (file_diff_desc, old_nb_content, new_nb_content, comb_nb_content,
+            old_comb_line_id_lookup, new_comb_line_id_lookup,
+            comb_funcs, comb_classes, comb_classesFuncs)
 
 
 """Get full diff code"""
@@ -1348,8 +1978,8 @@ def _split_discontinuous_line_indexes(all_indexes: List[int]) -> List[List[int]]
 
 def _get_full_diff_func_code(
         all_indexes: List[int],
-        old_content: List[str], old_locations: Dict[int, Location], old_line_loc_ids: List[int],
-        new_content: List[str], new_locations: Dict[int, Location], new_line_loc_ids: List[int],
+        old_content: List[str], old_locations: Dict[int, Location], old_line_id2loc_id: Dict[int, int],
+        new_content: List[str], new_locations: Dict[int, Location], new_line_id2loc_id: Dict[int, int],
         del_line_index2id: Dict[int, int], add_line_index2id: Dict[int, int], diff_code_snippet: List[str]
 ) -> str:
     ## Find Function / ClassFunction locations before and after
@@ -1357,15 +1987,15 @@ def _get_full_diff_func_code(
     loc_after = None
 
     for ind in all_indexes:
-        loc = get_diff_loc_by_line_ind(
+        loc = get_diff_loc_of_diff_line(
             ind,
-            old_locations, old_line_loc_ids,
-            new_locations, new_line_loc_ids,
+            old_locations, old_line_id2loc_id,
+            new_locations, new_line_id2loc_id,
             del_line_index2id, add_line_index2id
         )
-        if loc.file_type == FileType.OLD and loc_before is None:
+        if loc.file_type == SourceFileType.OLD and loc_before is None:
             loc_before = loc
-        elif loc.file_type == FileType.NEW and loc_after is None:
+        elif loc.file_type == SourceFileType.NEW and loc_after is None:
             loc_after = loc
 
         if loc_before is not None and loc_after is not None:
@@ -1374,13 +2004,13 @@ def _get_full_diff_func_code(
     assert loc_before is not None or loc_after is not None
 
     if loc_before is not None:
-        assert loc_before.type == LocationType.FUNCTION or loc_before.type == LocationType.CLASSFUNCTION
+        assert loc_before.type == LocationType.FUNCTION or loc_before.type == LocationType.CLASS_FUNCTION
     if loc_after is not None:
-        assert loc_after.type == LocationType.FUNCTION or loc_after.type == LocationType.CLASSFUNCTION
+        assert loc_after.type == LocationType.FUNCTION or loc_after.type == LocationType.CLASS_FUNCTION
 
     ## Case 1: Function without adding
     if loc_after is None:
-        func_code = old_content[loc_before.range.start-1: loc_before.range.end]
+        func_code = old_content[loc_before.range.start - 1: loc_before.range.end]
 
         for ind in all_indexes:
             del_line_id = del_line_index2id[ind]
@@ -1415,14 +2045,14 @@ def _get_full_diff_func_code(
                 assert del_line_id >= curr_before_line_id
                 while del_line_id > curr_before_line_id:
                     # TODO: Check 3, delete after
-                    assert old_content[curr_before_line_id-1] == new_content[curr_after_line_id-1]
-                    func_code.append(old_content[curr_before_line_id-1])
+                    assert old_content[curr_before_line_id - 1] == new_content[curr_after_line_id - 1]
+                    func_code.append(old_content[curr_before_line_id - 1])
                     curr_before_line_id += 1
                     curr_after_line_id += 1
 
                 assert del_line_id == curr_before_line_id
                 # TODO: Check 4, delete after
-                assert diff_code_snippet[ind][1:] == old_content[curr_before_line_id-1]
+                assert diff_code_snippet[ind][1:] == old_content[curr_before_line_id - 1]
                 func_code.append(diff_code_snippet[ind])
                 curr_before_line_id += 1
 
@@ -1432,14 +2062,14 @@ def _get_full_diff_func_code(
                 assert add_line_id >= curr_after_line_id
                 while add_line_id > curr_after_line_id:
                     # TODO: Check 5, delete after
-                    assert old_content[curr_before_line_id-1] == new_content[curr_after_line_id-1]
-                    func_code.append(old_content[curr_before_line_id-1])
+                    assert old_content[curr_before_line_id - 1] == new_content[curr_after_line_id - 1]
+                    func_code.append(old_content[curr_before_line_id - 1])
                     curr_before_line_id += 1
                     curr_after_line_id += 1
 
                 assert add_line_id == curr_after_line_id
                 # TODO: Check 6, delete after
-                assert diff_code_snippet[ind][1:] == new_content[curr_after_line_id-1]
+                assert diff_code_snippet[ind][1:] == new_content[curr_after_line_id - 1]
                 func_code.append(diff_code_snippet[ind])
                 curr_after_line_id += 1
 
@@ -1447,8 +2077,8 @@ def _get_full_diff_func_code(
 
         while curr_before_line_id <= loc_before.range.end:
             # TODO: Check 5, delete after
-            assert old_content[curr_before_line_id-1] == new_content[curr_after_line_id-1]
-            func_code.append(old_content[curr_before_line_id-1])
+            assert old_content[curr_before_line_id - 1] == new_content[curr_after_line_id - 1]
+            func_code.append(old_content[curr_before_line_id - 1])
             curr_before_line_id += 1
             curr_after_line_id += 1
 
@@ -1459,7 +2089,7 @@ def _get_full_diff_func_code(
 
 
 def _get_full_diff_global_code(
-    cont_indexes: List[int], diff_code_snippet: List[str]
+        cont_indexes: List[int], diff_code_snippet: List[str]
 ) -> str:
     """
     NOTE: The input line indexes must be continuous.
@@ -1467,206 +2097,7 @@ def _get_full_diff_global_code(
     code = []
     for i, ind in enumerate(cont_indexes):
         if i > 0:
-            assert ind == cont_indexes[i-1] + 1
+            assert ind == cont_indexes[i - 1] + 1
         code.append(diff_code_snippet[ind])
 
     return "\n".join(code)
-
-
-""""""
-
-
-def _parse_ind_struct(
-        ind_struct: IndStructType,
-        old_content: List[str], old_locations: Dict[int, Location], old_line_loc_ids: List[int],
-        new_content: List[str], new_locations: Dict[int, Location], new_line_loc_ids: List[int],
-        del_line_index2id: Dict[int, int], add_line_index2id: Dict[int, int], diff_code_snippet: List[str]
-) -> Tuple[List[ContIndStructType], List[DiffStructType]]:
-    """
-    Task 1: Group continuous indexes in the same struct.
-    Task 2: Get full diff code for each struct after grouping.
-
-    NOTE 1: Only for struct Global, Function, ClassGlobal or ClassFunction.
-    NOTE 2: For Global and ClassGlobal, struct only contains continuous lines, so one `IndStructType` may
-            get multiple `ContIndStructType` after processing, like:
-            IndStructType[1, 2, 3, 5, 6] -> ContIndStructType[[1, 2, 3]], ContIndStructType[[5, 6]]
-    NOTE 3: For Function and ClassFunction, struct must contain all lines involved, so one `IndStructType` only
-            get one `ContIndStructType` after processing, like:
-            IndStructType[1, 2, 3, 5, 6] -> ContIndStructType[[1, 2, 3], [5, 6]]
-    """
-    # Split discontinuous lines indexes
-    all_cont_indexes = _split_discontinuous_line_indexes(ind_struct.indexes)
-
-    ## Case 1
-    if ind_struct.struct_type in (LocationType.GLOBAL, LocationType.CLASSGLOBAL):
-        cont_ind_globals: List[ContIndStructType] = []
-        diff_globals: List[DiffStructType] = []
-
-        for cont_indexes in all_cont_indexes:
-            cont_ind_global = ContIndStructType(struct_type=ind_struct.struct_type,
-                                                struct_name="",
-                                                all_indexes=[cont_indexes])
-            cont_ind_globals.append(cont_ind_global)
-
-            diff_global = DiffStructType(struct_type=ind_struct.struct_type,
-                                         struct_name="",
-                                         code=_get_full_diff_global_code(cont_indexes, diff_code_snippet))
-            diff_globals.append(diff_global)
-
-        return cont_ind_globals, diff_globals
-    ## Case 2
-    else:
-        assert ind_struct.struct_type in (LocationType.FUNCTION, LocationType.CLASSFUNCTION)
-
-        # Find Function location in the file after
-        loc_after: DiffLocation | None = None
-        for ind in ind_struct.indexes:
-            loc = get_diff_loc_by_line_ind(
-                ind,
-                old_locations, old_line_loc_ids,
-                new_locations, new_line_loc_ids,
-                del_line_index2id, add_line_index2id
-            )
-            if loc.file_type == FileType.NEW:
-                loc_after = loc
-                break
-        if loc_after is None:
-            loc_after = get_diff_loc_by_line_ind(
-                ind_struct.indexes[0],
-                old_locations, old_line_loc_ids,
-                new_locations, new_line_loc_ids,
-                del_line_index2id, add_line_index2id
-            )
-
-        cont_ind_func = ContIndStructType(struct_type=ind_struct.struct_type,
-                                          struct_name=loc_after.name.split("@")[0],
-                                          all_indexes=all_cont_indexes)
-        diff_func = DiffStructType(struct_type=ind_struct.struct_type,
-                                   struct_name=loc_after.name.split("@")[0],
-                                   code=_get_full_diff_func_code(
-                                       ind_struct.indexes,
-                                       old_content, old_locations, old_line_loc_ids,
-                                       new_content, new_locations, new_line_loc_ids,
-                                       del_line_index2id, add_line_index2id, diff_code_snippet
-                                   ))
-
-        return [cont_ind_func], [diff_func]
-
-
-def parse_diff_lines_within_top_struct(
-        ind_struct: IndType,
-        old_content: List[str], old_locations: Dict[int, Location], old_line_loc_ids: List[int],
-        new_content: List[str], new_locations: Dict[int, Location], new_line_loc_ids: List[int],
-        del_line_index2id: Dict[int, int], add_line_index2id: Dict[int, int], diff_code_snippet: List[str]
-) -> Tuple[List[ContIndType], List[DiffType]]:
-    """
-    For a top level struct (Global, Function, Class) with diff line indexes:
-        Task 1: Separate discontinuous diff lines into different groups.
-        Task 2: Get full diff code.
-    NOTE 1: The type of data to be processed is IndType!
-    NOTE 2: Only for struct in modified files.
-    """
-    ######################## Inner Function ########################
-
-    def _get_father_diff_loc_by_line_ind(_line_id: int) -> DiffLocation:
-        _loc = get_diff_loc_by_line_ind(
-            _line_id,
-            old_locations, old_line_loc_ids,
-            new_locations, new_line_loc_ids,
-            del_line_index2id, add_line_index2id
-        )
-        if _loc.file_type == FileType.OLD:
-            return loc_to_diff_loc(old_locations[_loc.father], FileType.OLD)
-        else:
-            return loc_to_diff_loc(new_locations[_loc.father], FileType.NEW)
-
-    ######################## Inner Function ########################
-
-    if isinstance(ind_struct, IndClassType):
-        # For saving continuous lines indexes
-        cont_ind_children: List[ContIndStructType] = []
-        # For saving full diff code
-        diff_children: List[DiffStructType] = []
-
-        for ind_child in ind_struct.children:
-            cont_ind_childs, diff_childs = _parse_ind_struct(
-                ind_child,
-                old_content, old_locations, old_line_loc_ids,
-                new_content, new_locations, new_line_loc_ids,
-                del_line_index2id, add_line_index2id, diff_code_snippet
-            )
-
-            cont_ind_children.extend(cont_ind_childs)
-            diff_children.extend(diff_childs)
-
-        # FIXME: Need update to find class location in the file after
-        class_loc = _get_father_diff_loc_by_line_ind(cont_ind_children[0].all_indexes[0][0])
-        cont_ind_class = ContIndClassType(struct_type=LocationType.CLASS,
-                                          struct_name=class_loc.name.split("@")[0],
-                                          children=cont_ind_children)
-        diff_class = DiffClassType(struct_type=LocationType.CLASS,
-                                   struct_name=class_loc.name.split("@")[0],
-                                   children=diff_children)
-
-        return [cont_ind_class], [diff_class]
-    else:
-        cont_ind_structs, diff_structs = _parse_ind_struct(
-            ind_struct,
-            old_content, old_locations, old_line_loc_ids,
-            new_content, new_locations, new_line_loc_ids,
-            del_line_index2id, add_line_index2id, diff_code_snippet
-        )
-
-        return cont_ind_structs, diff_structs
-
-
-def analyse_diff_within_file(
-        old_file_content: str,
-        new_file_content: str,
-        del_line_index2id: Dict[int, int],
-        add_line_index2id: Dict[int, int],
-        diff_code_snippet: List[str]
-) -> Tuple[List[ContIndType], List]:
-    """
-    NOTE 1: Only for modified files.
-    NOTE 2: For code before commit and code after commit, we filter blank lines in them,
-          also, for info extracted from commit `del_line_index2id`, `add_line_index2id`, `diff_code_snippet`,
-          we filter blank lines in them and align it with the no blank code before commit and after commit.
-    """
-    old_content: List[str] = old_file_content.splitlines(keepends=False)
-    new_content: List[str] = new_file_content.splitlines(keepends=False)
-
-    old_res = parse_python_file_locations(old_file_content)
-    new_res = parse_python_file_locations(new_file_content)
-
-    diff_classes_info, diff_funcs_info, diff_classFuncs_info = \
-        analyse_diff_structs_within_file(old_content, old_res, del_line_index2id,
-                                         new_content, new_res, add_line_index2id)
-
-    _, _, _, old_locations, old_line_loc_ids = old_res
-    _, _, _, new_locations, new_line_loc_ids = new_res
-
-    ## Step 1: Group diff lines by struct
-    diff_line_ind_structs: List[IndType] = group_diff_lines_by_struct_within_file(
-        old_locations=old_locations, old_line_loc_ids=old_line_loc_ids,
-        new_locations=new_locations, new_line_loc_ids=new_line_loc_ids,
-        del_line_index2id=del_line_index2id, add_line_index2id=add_line_index2id, diff_code_snippet=diff_code_snippet,
-        diff_classes_info=diff_classes_info, diff_funcs_info=diff_funcs_info, diff_classFuncs_info=diff_classFuncs_info
-    )
-
-    ## Step 2: Group continuous diff lines into the same group and get full diff code of them
-    cont_ind_structs: List[ContIndType] = []
-    diff_structs: List[DiffType] = []
-
-    for ind_struct in diff_line_ind_structs:
-        curr_cont_ind_structs, curr_diff_structs = parse_diff_lines_within_top_struct(
-            ind_struct=ind_struct,
-            old_content=old_content, old_locations=old_locations, old_line_loc_ids=old_line_loc_ids,
-            new_content=new_content, new_locations=new_locations, new_line_loc_ids=new_line_loc_ids,
-            del_line_index2id=del_line_index2id, add_line_index2id=add_line_index2id, diff_code_snippet=diff_code_snippet
-        )
-
-        cont_ind_structs.extend(curr_cont_ind_structs)
-        diff_structs.extend(curr_diff_structs)
-
-    return cont_ind_structs, diff_structs

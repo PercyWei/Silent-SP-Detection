@@ -39,6 +39,10 @@ class Model(ABC):
         raise NotImplementedError("abstract base class")
 
     @abstractmethod
+    def check_api_base(self) -> str:
+        raise NotImplementedError("abstract base class")
+
+    @abstractmethod
     def setup(self) -> None:
         raise NotImplementedError("abstract base class")
 

@@ -1,7 +1,7 @@
 # This code is copied from https://github.com/nus-apr/auto-code-rover
 # Original file: agent_app/model/register.py
 
-from agent_app.model import common, gpt
+from agent_app.model import gpt, common
 
 
 def register_all_models() -> None:

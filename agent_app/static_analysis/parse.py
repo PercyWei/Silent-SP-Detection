@@ -1,4 +1,5 @@
 import ast
+import re
 
 from typing import *
 from dataclasses import dataclass
@@ -10,25 +11,43 @@ from utils import LineRange
 
 
 class LocationType(str, Enum):
+    # Root
     MODULE = "module"
+    # Top level items
     GLOBAL = "global"
     FUNCTION = "function"
     CLASS = "class"
-    CLASSGLOBAL = "class_global"
-    CLASSFUNCTION = "class_function"
-    # BLANK = "blank"
-    # CLASSBLANK = "class_blank"
+    MAIN = "main"
+    # Class children
+    CLASS_GLOBAL = "class_global"
+    CLASS_FUNCTION = "class_function"
+    # Main children
+    MAIN_GLOBAL = "main_global"
 
     @staticmethod
     def attributes():
         return [k.value for k in LocationType]
 
 
+line_loc_types = [LocationType.GLOBAL, LocationType.FUNCTION,
+                  LocationType.CLASS_GLOBAL, LocationType.CLASS_FUNCTION,
+                  LocationType.MAIN_GLOBAL]
+top_level_loc_types = [LocationType.GLOBAL, LocationType.FUNCTION, LocationType.CLASS, LocationType.MAIN]
+no_children_loc_types = [LocationType.GLOBAL, LocationType.FUNCTION,
+                         LocationType.CLASS_GLOBAL, LocationType.CLASS_FUNCTION,
+                         LocationType.MAIN_GLOBAL]
+children_loc_types = [LocationType.CLASS, LocationType.MAIN]
+class_child_loc_types = [LocationType.CLASS_GLOBAL, LocationType.CLASS_FUNCTION]
+main_child_loc_types = [LocationType.MAIN_GLOBAL]
+
+
 @dataclass
 class Location:
+    """For recording different structs in Python code."""
     id: int
     father: int | None
     type: LocationType
+    ast: str
     name: str
     range: LineRange
 
@@ -36,242 +55,280 @@ class Location:
         return list(range(self.range.start, self.range.end + 1))
 
 
-class LocationError(Exception):
-    def __init__(self, locations: Dict[int, Location]):
-        self.locations = locations
-
-    def __str__(self):
-        print_msg = ""
-        for _, loc in self.locations.items():
-            print_msg += (f"Id: {loc.id}, Father: {loc.father}, Type: {loc.type}, "
-                          f"Name: {loc.name}, Range: {loc.range.start}-{loc.range.end}\n")
-
-        return print_msg
-
-
-def _add_blank_location(
-        locations: Dict[int, Location],
-        line_id2loc_id: Dict[int, int],
-        blank_type: LocationType,
-        cur_loc_id: int,
-        cur_loc: Location,
-        last_loc: Location | None,
-        father_loc: Location,
-        add_end: bool = False
-) -> int:
-    """
-    Add a blank location before and after the current location respectively.
-    last loc -> <blank loc> -> cur loc ( -> <blank loc> -> end )
-
-    """
-    # (1) Add BLANK before the current location
-    before_blank_loc = None
-    if last_loc is None:
-        if cur_loc.range.start > father_loc.range.start:
-            before_blank_loc = Location(id=cur_loc_id, father=father_loc.id, type=blank_type,
-                                        name="", range=LineRange(father_loc.range.start, cur_loc.range.start - 1))
-    else:
-        if cur_loc.range.start > last_loc.range.end + 1:
-            before_blank_loc = Location(id=cur_loc_id, father=father_loc.id, type=blank_type,
-                                        name="", range=LineRange(last_loc.range.end + 1, cur_loc.range.start - 1))
-
-    if before_blank_loc is not None:
-        # Save BLANK location before
-        locations[cur_loc_id] = before_blank_loc
-        cur_loc_id += 1
-        # Save loc id of lines in BLANK location before
-        for _line_id in range(before_blank_loc.range.start, before_blank_loc.range.end + 1):
-            line_id2loc_id[_line_id] = before_blank_loc.id
-
-    # (2) Add BLANK after the current location
-    after_blank_loc = None
-    if add_end and cur_loc.range.end < father_loc.range.end:
-        after_blank_loc = Location(id=cur_loc_id, father=father_loc.id, type=blank_type,
-                                   name="", range=LineRange(cur_loc.range.end + 1, father_loc.range.end))
-
-    if after_blank_loc is not None:
-        # Save BLANK location after
-        locations[cur_loc_id] = after_blank_loc
-        cur_loc_id += 1
-        # Save loc ids of lines in BLANK location after
-        for _line_id in range(after_blank_loc.range.start, after_blank_loc.range.end + 1):
-            line_id2loc_id[_line_id] = after_blank_loc.id
-
-    return cur_loc_id
-
-
 def _add_class_child_location(
-        locations: Dict[int, Location],
-        line_id2loc_id: Dict[int, int],
         class_funcs: List[int],
+        locations: Dict[int, Location],
+        line_loc_lookup: Dict[int, int],
         node: ast.AST,
         cur_loc_id: int,
         father_loc_id: int
 ) -> Tuple[Location, int]:
     """
-    For the node of class:
+    For current node (child of class):
     - `locations`: Add CLASSGLOBAL or CLASSFUNCTION location.
     - `line_id2loc_id`: For lines in this node, update look-up dict.
     - `class_funcs`: Record CLASSFUNCTION location id if this node is 'FunctionDef'.
-
     """
-    name = node.name if hasattr(node, 'name') else type(node).__name__
-    start_lineno = node.lineno  # 1-based
+    start_lineno = node.lineno    # 1-based
     end_lineno = node.end_lineno  # 1-based
+    ast_type = type(node).__name__
 
+    # (1) Save location
     if isinstance(node, ast.FunctionDef):
-        name = name + f"@{start_lineno}"
+        name = node.name + f"@{start_lineno}"
 
         class_funcs.append(cur_loc_id)
-        class_child_loc = Location(id=cur_loc_id, father=father_loc_id, type=LocationType.CLASSFUNCTION,
-                                   name=name, range=LineRange(start_lineno, end_lineno))
+        class_child_loc = Location(id=cur_loc_id, father=father_loc_id, type=LocationType.CLASS_FUNCTION,
+                                   ast=ast_type, name=name, range=LineRange(start_lineno, end_lineno))
     else:
-        class_child_loc = Location(id=cur_loc_id, father=father_loc_id, type=LocationType.CLASSGLOBAL,
-                                   name=name, range=LineRange(start_lineno, end_lineno))
+        name = node.name if hasattr(node, 'name') else ""
 
-    # 1) Save top level element of CLASS
+        class_child_loc = Location(id=cur_loc_id, father=father_loc_id, type=LocationType.CLASS_GLOBAL,
+                                   ast=ast_type, name=name, range=LineRange(start_lineno, end_lineno))
+
     locations[cur_loc_id] = class_child_loc
     cur_loc_id += 1
 
-    # 2) Save loc ids of lines in CLASS
+    # (2) Update location look-up dict for line id
     for line_id in range(start_lineno, end_lineno + 1):
-        line_id2loc_id[line_id] = class_child_loc.id
+        assert line_id not in line_loc_lookup
+        line_loc_lookup[line_id] = class_child_loc.id
 
     return class_child_loc, cur_loc_id
 
 
 def _add_class_location(
-        locations: Dict[int, Location],
-        line_id2loc_id: Dict[int, int],
         classes: List[int],
         classes_funcs: Dict[int, List[int]],
+        locations: Dict[int, Location],
+        line_loc_lookup: Dict[int, int],
         node: ast.ClassDef,
         cur_loc_id: int,
         father_loc_id: int
 ) -> Tuple[Location, int]:
     """
-    For AST node of type 'ClassDef':
+    For current node:
     - `locations`: Add CLASS location.
-    - `line_id2loc_id`: For lines in class, update look-up dict.
     - `classes`: Record CLASS location id.
 
-    For children of class:
+    For children of this Class:
     - `locations`: Add CLASSGLOBAL and CLASSFUNCTION location.
     - `line_id2loc_id`: For lines in class child, update look-up dict.
     - `classes_funcs`: Record CLASSFUNCTION location id.
-
     """
-    start_lineno = node.lineno  # 1-based
+    start_lineno = node.lineno    # 1-based
     end_lineno = node.end_lineno  # 1-based
+    ast_type = type(node).__name__
+    class_name = node.name + f"@{start_lineno}"
 
-    name = node.name + f"@{start_lineno}"
-
-    # I. Save the CLASS location
+    ########### Step I. Save location of CLASS ###########
     classes.append(cur_loc_id)
     class_loc = Location(id=cur_loc_id, father=father_loc_id, type=LocationType.CLASS,
-                         name=name, range=LineRange(start_lineno, end_lineno))
+                         ast=ast_type, name=class_name, range=LineRange(start_lineno, end_lineno))
     locations[cur_loc_id] = class_loc
     cur_loc_id += 1
 
-    # II. Go inside CLASS, iterate the top level elements of it
+    ########### Step II. Go inside CLASS ###########
     class_funcs: List[int] = []
 
-    children = list(ast.iter_child_nodes(node))
-    for j, child in enumerate(children):
-        # 1) Save class child information
-        cur_child_loc, cur_loc_id = _add_class_child_location(
-            locations=locations,
-            line_id2loc_id=line_id2loc_id,
+    ## (1) Add class name
+    first_child = node.body[0]
+    if start_lineno < first_child.lineno:
+        symbol_child_loc = Location(id=cur_loc_id, father=class_loc.id, type=LocationType.CLASS_GLOBAL,
+                                    ast="class_name", name="", range=LineRange(start_lineno, first_child.lineno - 1))
+        locations[cur_loc_id] = symbol_child_loc
+        cur_loc_id += 1
+
+        for line_id in range(start_lineno, first_child.lineno):
+            assert line_id not in line_loc_lookup
+            line_loc_lookup[line_id] = symbol_child_loc.id
+
+    ## (2) Iterate and add the top level elements of class body
+    for child in node.body:
+        _, cur_loc_id = _add_class_child_location(
             class_funcs=class_funcs,
+            locations=locations,
+            line_loc_lookup=line_loc_lookup,
             node=child,
             cur_loc_id=cur_loc_id,
             father_loc_id=class_loc.id
         )
 
-    # III. Go out CLASS, save the CLASS FUNCTION
+    # Step III. Go out CLASS, save the class functions
     classes_funcs[class_loc.id] = class_funcs
 
     return class_loc, cur_loc_id
 
 
 def _add_function_location(
-        locations: Dict[int, Location],
-        line_id2loc_id: Dict[int, int],
         funcs: List[int],
+        locations: Dict[int, Location],
+        line_loc_lookup: Dict[int, int],
         node: ast.FunctionDef,
         cur_loc_id: int,
         father_loc_id: int
 ) -> Tuple[Location, int]:
     """
-    For AST node of type 'FunctionDef':
+    For current node:
     - `locations`: Add FUNCTION location.
     - `line_id2loc_id`: For lines in function, update look-up dict.
     - `funcs`: Record FUNCTION location id.
-
     """
-    start_lineno = node.lineno  # 1-based
+    start_lineno = node.lineno    # 1-based
     end_lineno = node.end_lineno  # 1-based
+    ast_type = type(node).__name__
+    func_name = node.name + f"@{start_lineno}"
 
-    name = node.name + f"@{start_lineno}"
-
-    # I. Save the FUNCTION loc
+    # Step I. Save location of FUNCTION
     funcs.append(cur_loc_id)
     func_loc = Location(id=cur_loc_id, father=father_loc_id, type=LocationType.FUNCTION,
-                        name=name, range=LineRange(start_lineno, end_lineno))
+                        ast=ast_type, name=func_name, range=LineRange(start_lineno, end_lineno))
     locations[cur_loc_id] = func_loc
     cur_loc_id += 1
 
-    # II. Save loc ids of lines in FUNCTION
+    # (2) Update location look-up dict for line id
     for line_id in range(start_lineno, end_lineno + 1):
-        line_id2loc_id[line_id] = func_loc.id
+        assert line_id not in line_loc_lookup
+        line_loc_lookup[line_id] = func_loc.id
 
     return func_loc, cur_loc_id
 
 
 def _add_global_location(
         locations: Dict[int, Location],
-        line_id2loc_id: Dict[int, int],
+        line_loc_lookup: Dict[int, int],
         node: ast.AST,
         cur_loc_id: int,
         father_loc_id: int
 ) -> Tuple[Location, int]:
     """
-    For AST node of type not 'FunctionDef' or 'ClassDef':
+    For current node (top level node of root, except class/func):
     - `locations`: Add GLOBAL location.
     - `line_id2loc_id`: For lines in node, update look-up dict.
-
     """
-    name = node.name if hasattr(node, 'name') else type(node).__name__
-    start_lineno = node.lineno  # 1-based
+    start_lineno = node.lineno    # 1-based
     end_lineno = node.end_lineno  # 1-based
+    ast_type = type(node).__name__
+    name = node.name if hasattr(node, 'name') else ""
 
-    # I. Save the GLOBAL loc
+    # (1) Save location of GLOBAL
     global_loc = Location(id=cur_loc_id, father=father_loc_id, type=LocationType.GLOBAL,
-                          name=name, range=LineRange(start_lineno, end_lineno))
+                          ast=ast_type, name=name, range=LineRange(start_lineno, end_lineno))
     locations[cur_loc_id] = global_loc
     cur_loc_id += 1
 
-    # II. Save loc ids of lines in GLOBAL
+    # (2) Update location look-up dict for line id
     for line_id in range(start_lineno, end_lineno + 1):
-        line_id2loc_id[line_id] = global_loc.id
+        assert line_id not in line_loc_lookup
+        line_loc_lookup[line_id] = global_loc.id
 
     return global_loc, cur_loc_id
 
 
-def parse_python_file_locations(
-        file_content: str
-) -> Tuple[List[int], List[int], Dict[int, List[int]], Dict[int, Location], List[int]]:
+def _is_if_main_line(line: str) -> bool:
+    pattern = r'^\s*if\s+__name__\s*==\s*[\'"]__main__[\'"]\s*:'
+    match = re.search(pattern, line, re.MULTILINE)
+    return bool(match)
+
+
+def _add_if_main_child_location(
+        locations: Dict[int, Location],
+        line_loc_lookup: Dict[int, int],
+        node: ast.AST,
+        cur_loc_id: int,
+        father_loc_id: int
+) -> Tuple[Location, int]:
     """
+    For current node (child of Main):
+    - `locations`: Add MAINGLOBAL location.
+    - `line_id2loc_id`: For lines in this node, update look-up dict.
+    """
+    start_lineno = node.lineno    # 1-based
+    end_lineno = node.end_lineno  # 1-based
+    ast_type = type(node).__name__
+    name = node.name if hasattr(node, 'name') else ""
+
+    # (1) Save location of MAINGLOBAL
+    if_main_child_loc = Location(id=cur_loc_id, father=father_loc_id, type=LocationType.MAIN_GLOBAL,
+                                 ast=ast_type, name=name, range=LineRange(start_lineno, end_lineno))
+    locations[cur_loc_id] = if_main_child_loc
+    cur_loc_id += 1
+
+    # (2) Update look-up dict for line id
+    for line_id in range(start_lineno, end_lineno + 1):
+        assert line_id not in line_loc_lookup
+        line_loc_lookup[line_id] = if_main_child_loc.id
+
+    return if_main_child_loc, cur_loc_id
+
+
+def _add_if_main_location(
+        if_mains: List[int],
+        locations: Dict[int, Location],
+        line_id2loc_id: Dict[int, int],
+        node: ast.If,
+        cur_loc_id: int,
+        father_loc_id: int
+) -> Tuple[Location, int]:
+    """
+       For AST node of type 'ClassDef':
+       - `locations`: Add CLASS location.
+       - `line_id2loc_id`: For lines in class, update look-up dict.
+       - `classes`: Record CLASS location id.
+
+       For children of class:
+       - `locations`: Add CLASSGLOBAL and CLASSFUNCTION location.
+       - `line_id2loc_id`: For lines in class child, update look-up dict.
+       - `classes_funcs`: Record CLASSFUNCTION location id.
+
+       """
+    start_lineno = node.lineno    # 1-based
+    end_lineno = node.end_lineno  # 1-based
+    ast_type = type(node).__name__
+    name = "if_main"
+
+    # I. Save location of MAIN
+    if_mains.append(cur_loc_id)
+    main_loc = Location(id=cur_loc_id, father=father_loc_id, type=LocationType.MAIN,
+                        ast=ast_type, name=name, range=LineRange(start_lineno, end_lineno))
+    locations[cur_loc_id] = main_loc
+    cur_loc_id += 1
+
+    # II. Go inside MAIN, iterate the top level elements of it
+    children = [node.test] + node.body + node.orelse
+
+    for child in children:
+        _, cur_loc_id = _add_if_main_child_location(
+            locations=locations,
+            line_loc_lookup=line_id2loc_id,
+            node=child,
+            cur_loc_id=cur_loc_id,
+            father_loc_id=main_loc.id
+        )
+
+    return main_loc, cur_loc_id
+
+
+def parse_python_file_locations(file_content: str) -> Tuple[Dict[int, Location], Dict[int, int], Dict]:
+    """
+    Parse Python file content and extract the following types of Locations:
+    - Top level items:
+        - Global
+        - Function
+        - Class
+        - Main (if main)
+    - Class child items
+        - ClassGlobal
+        - ClassFunction
+    - Main child items
+        - MainGlobal
 
     Args:
         file_content (str): Python file content.
-
     Returns:
-        List[int]: List of CLASS location id
-        List[int]: List of FUNCTION location id
-        Dict[int, List[int]]: CLASS location id -> List of CLASSFUNCTION location id
         Dict[int, Location]: Location id -> Location
-        List[int]: The value of the k-th element is the id of location of the k-th code line in the file.
+        Dict[int, int]: line id -> line location id
+        Dict: Info dict containing classes, funcs, class_funcs and if_main.
     """
     try:
         tree = ast.parse(file_content)
@@ -279,19 +336,23 @@ def parse_python_file_locations(
         logger.debug("AST parsing file failed")
         raise RuntimeError("AST parsing file failed")
 
+    file_lines = file_content.splitlines(keepends=False)
+    file_len = len(file_lines)
+
     # location_id -> Location
     locations: Dict[int, Location] = {}
-    # line id -> location id
-    line_id2loc_id: Dict[int, int] = {}
+    # line id -> line location info
+    line_loc_lookup: Dict[int, int] = {}
 
-    classes: List[int] = []
+    if_mains: List[int] = []
     funcs: List[int] = []
+    classes: List[int] = []
     classes_funcs: Dict[int, List[int]] = {}
 
-    # Add root Location
+    ################## Add root Location ##################
     cur_loc_id = 0
     root_loc = Location(id=cur_loc_id, father=None, type=LocationType.MODULE,
-                        name="", range=LineRange(start=1, end=len(file_content.splitlines())))
+                        ast=type(tree).__name__, name="", range=LineRange(start=1, end=file_len))
     locations[cur_loc_id] = root_loc
     cur_loc_id += 1
 
@@ -300,33 +361,58 @@ def parse_python_file_locations(
     for i, child in enumerate(tree_children):
         if isinstance(child, ast.ClassDef):
             _, cur_loc_id = _add_class_location(
-                locations=locations,
-                line_id2loc_id=line_id2loc_id,
                 classes=classes,
                 classes_funcs=classes_funcs,
+                locations=locations,
+                line_loc_lookup=line_loc_lookup,
                 node=child,
                 cur_loc_id=cur_loc_id,
                 father_loc_id=root_loc.id
             )
         elif isinstance(child, ast.FunctionDef):
             _, cur_loc_id = _add_function_location(
-                locations=locations,
-                line_id2loc_id=line_id2loc_id,
                 funcs=funcs,
+                locations=locations,
+                line_loc_lookup=line_loc_lookup,
                 node=child,
                 cur_loc_id=cur_loc_id,
                 father_loc_id=root_loc.id
             )
+        elif isinstance(child, ast.If):
+            if_cond_line = file_lines[child.lineno - 1]
+            if _is_if_main_line(if_cond_line):
+                _, cur_loc_id = _add_if_main_location(
+                    if_mains=if_mains,
+                    locations=locations,
+                    line_id2loc_id=line_loc_lookup,
+                    node=child,
+                    cur_loc_id=cur_loc_id,
+                    father_loc_id=root_loc.id
+                )
+            else:
+                _, cur_loc_id = _add_global_location(
+                    locations=locations,
+                    line_loc_lookup=line_loc_lookup,
+                    node=child,
+                    cur_loc_id=cur_loc_id,
+                    father_loc_id=root_loc.id
+                )
         else:
             _, cur_loc_id = _add_global_location(
                 locations=locations,
-                line_id2loc_id=line_id2loc_id,
+                line_loc_lookup=line_loc_lookup,
                 node=child,
                 cur_loc_id=cur_loc_id,
                 father_loc_id=root_loc.id
             )
 
-    assert len(line_id2loc_id) == len(file_content.splitlines()), LocationError(locations)
-    line_loc_id = [loc_id for _, loc_id in sorted(line_id2loc_id.items())]
+    assert len(if_mains) <= 1
 
-    return classes, funcs, classes_funcs, locations, line_loc_id
+    structs_info = {
+        "if_mains": if_mains,
+        "funcs": funcs,
+        "classes": classes,
+        "classes_funcs": classes_funcs
+    }
+
+    return locations, line_loc_lookup, structs_info

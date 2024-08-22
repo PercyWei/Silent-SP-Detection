@@ -1,15 +1,20 @@
 
+import re
 import os
 import ast
 import json
+import glob
+import time
+import tokenize
 
 from typing import *
+from io import StringIO
 from loguru import logger
 
 
 from agent_app.commit.commit_util import (
     extract_commit_content_info, get_file_after_commit, get_file_before_commit,
-    analyse_diff_structs_within_file
+    match_diff_structs_within_file
 )
 from agent_app.static_analysis.parse import parse_python_file_locations as parse
 
@@ -117,7 +122,7 @@ def test2(local_repo_dpath, commit_hash, diff_file_info):
     new_file_content = get_file_after_commit(local_repo_dpath, commit_hash, new_fname)
 
     diff_classes_info, diff_funcs_info, diff_asyncFuncs_info = \
-        analyse_diff_structs_within_file(old_file_content, new_file_content, diff_file_info)
+        match_diff_structs_within_file(old_file_content, new_file_content, diff_file_info)
 
     if diff_classes_info is not None and diff_funcs_info is not None:
         logger.info("#" * 75)
@@ -277,20 +282,117 @@ def main_test_changed_lines_locations(local_repos_dpath: str, tasks_map_file: st
     # test4(tasks_map_file, local_repos_dpath)
 
 
+"""TEST 5"""
+
+
+def test5():
+    # code = ('import os'
+    #         '\n"""'
+    #         '\nCopyright (c) 2018, <NAME>'
+    #         '\n"""'
+    #         '\ns = 1'
+    #         '\nprint("start"'
+    #         '\n      # comment'
+    #         '\n      "end")')
+    #
+
+    code = """
+    import ast
+    import ast as st
+    import re, sys as sy, ast as aaa
+    from . import x
+    from .. import y
+    from .x import z
+    from a.b import c as abc, d
+
+    a = []
+    if len(a) > 1:
+        print(a["a"])
+    else:
+        a["b"] = 1
+
+    def a(n):
+        return b+1
+
+    class item():
+        @override_settings(DEBUG=True, ALLOWED_HOSTS=['www.example.com'])
+        def test_https_bad_referer(self):
+            req = self._get_POST_request_with_token()
+            req._is_secure_override = True
+            req.META['HTTP_HOST'] = 'www.example.com'
+            req.META['HTTP_REFERER'] = 'https://www.evil.org/somepage'
+            req.META['SERVER_PORT'] = '443'
+            response = CsrfViewMiddleware().process_view(req, post_form_view, (), {})
+            self.assertContains(
+                response,
+                'Referer checking failed - https://www.evil.org/somepage does not '
+                'match any trusted origins.',
+                status_code=403,
+            )
+
+    if __name__ == "__main__":
+        print(a)
+        """
+
+    print(code)
+    tree = ast.parse(code)
+    for node in ast.iter_child_nodes(tree):
+        if isinstance(node, ast.ClassDef):
+            for child in ast.iter_child_nodes(node):
+                if isinstance(child, ast.FunctionDef):
+                    children = list(ast.iter_child_nodes(child))
+                    print(ast.dump(children))
+
+        # if isinstance(node, ast.FunctionDef):
+        #     children = list(ast.iter_child_nodes(node))
+        #     print(ast.dump(children))
+
+    print(tree)
+
+    # file = "/root/projects/VDTest/output/dataset/zerver_models.py_before.json"
+    # with open(file, 'r') as f:
+    #     code = f.read()
+
+    # tree = ast.parse(code)
+    # print(ast.dump(tree))
+
+
+def run_time():
+    repo_dpath = "/root/projects/clone_projects/odoo_odoo"
+    start = time.time()
+    abs_fpaths = glob.glob(os.path.join(repo_dpath, "**/*.py"), recursive=True)
+    end = time.time()
+    print(time.time() - start)
+
+    regex = re.compile("asdaf")
+
+    start = time.time()
+    for abs_fpath in abs_fpaths:
+        match = regex.search(abs_fpath)
+        if match:
+            print(abs_fpath)
+    print(time.time() - start)
+
+
+def test6():
+    loop_conv = "/root/projects/VDTest/output/agent/vul_2024-08-21T22:20:17/26-vulfix_2024-08-21T22:20:17/process_1/loop_6_conversations.json"
+    with open(loop_conv, 'r') as f:
+        conv = json.load(f)
+
+    loop_conv = "/root/projects/VDTest/output/agent/vul_2024-08-21T22:20:17/26-vulfix_2024-08-21T22:20:17/process_1/loop_6.txt"
+    with open(loop_conv, 'w') as f:
+        for c in conv:
+            f.write("-" * 40 + c["role"] + "-" * 40 + "\n")
+            f.write(c["content"])
+            f.write("\n\n" + "=" * 100 + "\n\n")
+
+
 if __name__ == '__main__':
     # local_repos_dir = "/root/projects/clone_projects"
     # tasks_map_fpath = "/root/projects/VDTest/output/TreeVul/TreeVul_valid_scsfCVE.json"
     # main_test_changed_lines_locations(local_repos_dir, tasks_map_fpath)
 
-    import ast
-    code = """
-    
-import os
-    
-s = 1
-print(s)
-    
-    """
-    print(code)
-    tree = ast.parse(code)
-    print(tree)
+    test6()
+
+
+

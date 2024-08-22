@@ -7,8 +7,9 @@ A proxy agent. Process raw response into json format.
 
 import re
 import inspect
+
 from typing import *
-from rich.text import Text
+from enum import Enum
 
 from loguru import logger
 
@@ -18,7 +19,23 @@ from agent_app.data_structures import State, MessageThread
 from agent_app.post_process import ExtractStatus, is_valid_json
 from agent_app.util import parse_function_invocation
 
-START_PROXY_PROMPT = """You are a helpful assistant to convert text containing the following information into json format.
+
+class ProxyTask(str, Enum):
+    INIT_HYP_PROPOSAL = "INIT_HYP_PROPOSAL"
+    NEW_HYP_PROPOSAL = "NEW_HYP_PROPOSAL"
+    CONTEXT_RETRIEVAL = "CONTEXT_RETRIEVAL"
+    SCORE = "SCORE"
+
+    def task_target(self) -> str:
+        if self == ProxyTask.INIT_HYP_PROPOSAL or self == ProxyTask.NEW_HYP_PROPOSAL:
+            return "hypothesis"
+        elif self == ProxyTask.CONTEXT_RETRIEVAL:
+            return "search APIs"
+        elif self == ProxyTask.SCORE:
+            return "confidence score"
+
+
+INIT_HYP_PROPOSAL_PROMPT = """You are a helpful assistant to convert text containing the following information into json format.
 1. Whether the commit fixes the vulnerability?
 2. Where is the patch located?
 3. What types of vulnerabilities might it address?
@@ -59,10 +76,10 @@ type Hypothesis = VulPatchHypothesis | NonVulPatchHypothesis;
 Now based on the given context, write a hypothesis section according to the Hypothesis schema.
 """
 
-CONTEXT_RETRIEVAL_PROXY_PROMPT = """You are a helpful assistant to convert text containing the following information into json format.
+CONTEXT_RETRIEVAL_PROMPT = """You are a helpful assistant to convert text containing the following information into json format.
 1. How to construct search API calls to get more context of the project?
 
-Extract API calls from question 1, leave an empty list if you do not find any valid API calls.
+Extract API calls from question 1, leave an empty list if you do not find any valid API calls or the text content indicates that no further context is needed.
 
 The API calls include:
 - search_class(class_name: str)
@@ -90,7 +107,7 @@ interface ApiCalls {
 Now based on the given context, write a api_calls section that conforms to the ApiCalls schema.
 """
 
-HYPOTHESIS_CHECK_PROXY_PROMPT = """You are a helpful assistant to convert text containing the following information into json format.
+NEW_HYP_PROPOSAL_PROMPT = """You are a helpful assistant to convert text containing the following information into json format.
 1. Are new hypotheses being proposed?
 
 Extract new hypothesis from question 1, leave an empty list if you do not find any valid hypothesis.
@@ -116,7 +133,7 @@ interface HypothesisList {
 Now based on the given context, write a hypothesis_list section that conforms to the HypothesisList schema.
 """
 
-HYPOTHESIS_VERIFY_PROXY_PROMPT = """You are a helpful assistant to convert text containing the following information into json format.
+SCORE_PROMPT = """You are a helpful assistant to convert text containing the following information into json format.
 1. What confidence score is set for the current hypothesis?
 
 Extract the confidence score from question 1.
@@ -131,33 +148,30 @@ Now based on the given context, write a confidence_score section that conforms t
 """
 
 
-def run_with_retries(text: str, state: str, retries=3) -> Tuple[str | None, List[MessageThread]]:
+def get_task_prompt(task: ProxyTask) -> str:
+    variable_name = f"{task}_PROMPT"
+    system_prompt = globals().get(variable_name, '')
+    assert system_prompt != '', KeyError(variable_name)
+    return system_prompt
+
+
+def run_with_retries(text: str, task: ProxyTask, retries: int = 3) -> Tuple[str | None, List[MessageThread]]:
     """
 
 
     Args:
         text (str): Response from Actor Agent.
-        state (str): Actor Agent state.
-        retries (int): Number of retries with Proxy Agent
+        task (ProxyTask): Task of Proxy Agent.
+        retries (int): Number of retries with Proxy Agent.
     Returns:
         respond text: Valid response in json format from Poxy Agent, None if .
         msg_threads: List of all MessageThread instances.
     """
     msg_threads = []
     for idx in range(1, retries + 1):
-        info = None
-        if state == State.START_STATE:
-            info = "hypothesis"
-        elif State == State.HYPOTHESIS_CHECK_STATE:
-            info = "hypothesis"
-        elif state == State.CONTEXT_RETRIEVAL_STATE:
-            info = "search APIs"
-        elif State == State.HYPOTHESIS_VERIFY_STATE:
-            info = "confidence score"
+        logger.debug(f"Trying to select {task.task_target()} in json. Try {idx} of {retries}.")
 
-        logger.debug(f"Trying to select {info} in json. Try {idx} of {retries}.")
-
-        respond_text, new_thread = run(text, state)
+        respond_text, new_thread = run(text, task)
         msg_threads.append(new_thread)
 
         extract_status, data = is_valid_json(respond_text)
@@ -166,7 +180,7 @@ def run_with_retries(text: str, state: str, retries=3) -> Tuple[str | None, List
             logger.debug("Invalid json. Will retry.")
             continue
 
-        valid, diagnosis = is_valid_response(data, state)
+        valid, diagnosis = is_valid_response(data, task)
         if not valid:
             logger.debug(f"{diagnosis}. Will retry.")
             continue
@@ -176,27 +190,20 @@ def run_with_retries(text: str, state: str, retries=3) -> Tuple[str | None, List
     return None, msg_threads
 
 
-def get_system_prompt(state: str) -> str:
-    variable_name = f"{state.upper()}_PROXY_PROMPT"
-    system_prompt = globals().get(variable_name, '')
-    assert system_prompt != '', KeyError(variable_name)
-    return system_prompt
-
-
-def run(text: str, state: str) -> Tuple[str, MessageThread]:
+def run(text: str, task: ProxyTask) -> Tuple[str, MessageThread]:
     """
     Run the agent to extract useful information in json format.
 
     Args:
         text (str): Response from Actor Agent.
-        state (str): Actor Agent state.
+        task (ProxyTask): Task of Proxy Agent.
     Returns:
         respond_text (str): Response text in json format from Agent.
         msg_threads (MessageThread): MessageThread instance containing current conversation with Proxy Agent.
     """
     msg_thread = MessageThread()
-    system_prompt = get_system_prompt(state)
-    msg_thread.add_system(system_prompt)
+    task_prompt = get_task_prompt(task)
+    msg_thread.add_system(task_prompt)
     msg_thread.add_user(text)
     respond_text, *_ = common.SELECTED_MODEL.call(msg_thread.to_msg(), response_format="json_object")
 
@@ -205,13 +212,13 @@ def run(text: str, state: str) -> Tuple[str, MessageThread]:
     return respond_text, msg_thread
 
 
-def is_valid_response(data: Any, state: str) -> Tuple[bool, str]:
+def is_valid_response(data: List | Dict, task: ProxyTask) -> Tuple[bool, str]:
     """
     Check if input data is a valid response
 
     Args:
-        data:
-        state (str):
+        data (List | Dict | None): Json data.
+        task (ProxyTask): Task of Proxy Agent.
     Returns:
         bool: True if input data is a valid response, False otherwise
         str: Statement of cause of failure
@@ -219,7 +226,7 @@ def is_valid_response(data: Any, state: str) -> Tuple[bool, str]:
     if not isinstance(data, dict):
         return False, "Json is not a dict"
 
-    if state == State.START_STATE:
+    if task == ProxyTask.INIT_HYP_PROPOSAL:
         """
         {
             "commit_type": "vulnerability_patch" | "non_vulnerability_patch", 
@@ -271,7 +278,7 @@ def is_valid_response(data: Any, state: str) -> Tuple[bool, str]:
                     continue
                 return False, "For each vulnerability type in 'vulnerability_types', it should have a CWE-ID and an integer confidence score"
 
-    elif state == State.HYPOTHESIS_CHECK_STATE:
+    elif task == ProxyTask.NEW_HYP_PROPOSAL:
         """
         {
             "hypothesis_list" : [
@@ -312,13 +319,13 @@ def is_valid_response(data: Any, state: str) -> Tuple[bool, str]:
                 if commit_type == "non_vulnerability_patch" and vul_type != "":
                     return False, "For hypothesis, 'vulnerability_type' should be empty while 'commit_type' is 'non_vulnerability_patch'"
 
-                if not re.fullmatch(r"CWE-\d+", vul_type):
-                    return False, "For hypothesis, 'vulnerability_type' should be a CWE-ID"
+                if commit_type == "vulnerability_patch" and not re.fullmatch(r"CWE-\d+", vul_type):
+                    return False, "For hypothesis, 'vulnerability_type' should be a CWE-ID while 'commit_type' is 'vulnerability_patch'"
 
                 if not isinstance(conf_score, int):
                     return False, "For hypothesis, 'confidence_score' is not an integer"
 
-    elif state == State.CONTEXT_RETRIEVAL_STATE:
+    elif task == ProxyTask.CONTEXT_RETRIEVAL:
         """
         {
             "api_calls" : [
@@ -352,7 +359,7 @@ def is_valid_response(data: Any, state: str) -> Tuple[bool, str]:
                 if len(func_args) != len(arg_names):
                     return False, f"The API call '{api_call}' has wrong number of arguments"
 
-    elif state == State.HYPOTHESIS_VERIFY_STATE:
+    elif task == ProxyTask.SCORE:
         """
        {
            "confidence_score": int
