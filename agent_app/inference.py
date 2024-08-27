@@ -20,9 +20,10 @@ from agent_app.api.manage import ProcessManager
 from agent_app.api.agent_proxy import ProxyTask
 from agent_app.model import common
 from agent_app.search.search_manage import SearchManager
-from agent_app.data_structures import State, CommitType, FunctionCallIntent, MessageThread, SearchStatus
+from agent_app.data_structures import State, CommitType, CodeSnippetLocation, FunctionCallIntent, MessageThread, SearchStatus
 from agent_app.log import (
-    print_banner, print_user, print_actor, print_proxy,
+    print_banner,
+    print_system, print_user, print_actor, print_proxy,
     print_commit_content,
     log_and_print, log_and_cprint
 )
@@ -42,7 +43,16 @@ Your task is to determine whether the commit fixes the vulnerability, and if so,
 To achieve this, you need to make some reasonable hypothesis, and then use the search API calls to gather relevant context and verify the correctness of them. 
 """
 
-START_INSTRUCTION = """In this step, first, you need to answer the following three questions in order based on the raw commit contents, then summarise the correctness of the hypothesis.
+
+HYP_DEF = """
+A hypothesis contains three attributes: commit type, vulnerability type and confidence score.
+- commit type: It indicates whether the commit fixes a vulnerability. Choose answer from "vulnerability_patch" and "non_vulnerability_patch".
+- vulnerability type: It indicates the type of vulnerability that was fixed by this commit. Use CWE-ID as the answer, and leave it empty if you choose 'non_vulnerability_patch' for commit type.
+- confidence score: It indicates the level of reliability of the hypothesis. Choose an integer between 1 and 10 as the answer.
+"""
+
+
+START_INSTRUCTION = """In this step, first, you need to make hypothesis about the functionality of the commit.
 1.
  - Question: What is the commit type?
  - Description: Judge if the commit fixes the vulnerability.
@@ -76,214 +86,109 @@ NOTE: You can use MULTIPLE search APIs in one round.
 """EVALUATION"""
 
 
-def compare_init_and_end_hypothesis(
-        init_hyps: List[Dict],
-        end_hyps: List[Dict]
-) -> bool:
-    """
-    Compare init hypothesis and end hypothesis to find out if there are different hypotheses.
-    NOTE: We do not consider the confidence score.
+@dataclass
+class EvalResult:
+    target_commit_type: int
+    target_vul_type: str | None
+    commit_type_match_rank: int | None = None
+    vul_type_match_rank: int | None = None
 
-    Args:
-        init_hyps (List[Dict]): :
-        end_hyps (List[Dict]):
-    Returns:
-        bool: True if different, False otherwise.
-    """
-    if len(init_hyps) != len(end_hyps):
-        return True
-
-    rest_hyp_list = copy.deepcopy(end_hyps)
-    for hyp in init_hyps:
-        for i in range(len(rest_hyp_list)):
-            end_hyp = rest_hyp_list[i]
-            if hyp["commit_type"] == end_hyp["commit_type"] and \
-                    hyp["vulnerability_type"] == end_hyp["vulnerability_type"]:
-                rest_hyp_list.pop(i)
-                break
-
-    if len(rest_hyp_list) > 0:
-        return True
-    else:
-        return False
-
-
-def calculate_final_confidence_score(all_hyps: List[Dict], proc_num: int, cal_type: int = 0) -> List[Dict]:
-    """
-    Calculate the final confidence score of hypothesis based on multi-round processes.
-
-    Args:
-        all_hyps (List[Dict]):
-        proc_num (int):
-        cal_type (int): Calculation strategy.
-            - 0: General weighted average
-            - 1: Improved linear weighted average
-            - 2: Weighted average considering position
-    Returns:
-        List[Dict]: Hypothesis with final confidence score.
-    """
-
-    def _normalize(_score):
-        # 1-10 -> 0.1-1
-        return 0.1 + (_score - 1) * 0.1 / 9.0
-
-    def _denormalize(_score):
-        # 0.1-1 -> 1-10
-        return 1 + (_score - 0.1) * 9.0 / 0.9
-
-    hyp_score = defaultdict(lambda: {"count": 0, "total_score": 0})
-
-    if cal_type == 0:
-        for hyp in all_hyps:
-            hyp_name = hyp["commit_type"] + "." + hyp["vulnerability_type"]
-            hyp_score[hyp_name]["count"] += 1
-            hyp_score[hyp_name]["total_score"] += _normalize(hyp["confidence_score"])
-
-        hyp_final_score = {
-            hyp_name: (data["total_score"] / data["count"]) * (1 + data["count"] / proc_num)
-            for hyp_name, data in hyp_score.items()
+    def full_to_dict(self):
+        return {
+            "target_commit_type": self.target_commit_type,
+            "target_vul_type": self.target_vul_type,
+            "commit_type_match_rank": self.commit_type_match_rank,
+            "vul_type_match_rank": self.vul_type_match_rank
         }
-    elif cal_type == 1:
-        for hyp in all_hyps:
-            hyp_name = hyp["commit_type"] + "." + hyp["vulnerability_type"]
-            hyp_score[hyp_name]["count"] += 1
-            hyp_score[hyp_name]["total_score"] += _normalize(hyp["confidence_score"])
 
-        hyp_final_score = {
-            hyp_name: (data["total_score"] / data["count"]) * (1 + math.log(data["count"] + 1))
-            for hyp_name, data in hyp_score.items()
+    def rank_to_dict(self):
+        return {
+            "commit_type_match_rank": self.commit_type_match_rank,
+            "vul_type_match_rank": self.vul_type_match_rank
         }
-    elif cal_type == 2:
-        # FIXME: Complete
-        hyp_final_score = {}
-        pass
-    else:
-        raise RuntimeError
-
-    hyp_final_score = {
-        hyp_name: _denormalize(score)
-        for hyp_name, score in hyp_final_score.items()
-    }
-
-    final_hyps = [{"commit_type": hyp_name.split('.')[0],
-                   "vulnerability_type": hyp_name.split('.')[1],
-                   "confidence_score": score
-                   } for hyp_name, score in hyp_final_score.items()]
-
-    final_hyps = sorted(final_hyps, key=lambda x: x["confidence_score"], reverse=True)
-
-    return final_hyps
 
 
-def hypothesis_evaluation(
+def hypothesis_rank_evaluation(
         target_commit_type: int,
-        target_vul_type: str,
+        target_vul_type: str | None,
         hyp_list: List[Dict]
-) -> Tuple[bool, Dict]:
+) -> EvalResult:
 
-    golden_match = False
-    if hyp_list[0]["vulnerability_type"] == target_vul_type:
-        golden_match = True
+    eval_res = EvalResult(target_commit_type, target_vul_type)
 
-    match_rank = None
+    hyp_list = sorted(hyp_list, key=lambda x: x["confidence_score"], reverse=True)
+
+    target_commit_type = "vulnerability_patch" if target_commit_type == 1 else "non_vulnerability_patch"
+
     for i, hyp in enumerate(hyp_list):
-        if hyp["vulnerability_type"] == target_vul_type:
-            match_rank = i + 1
+        # (1) Evaluate commit type
+        if hyp["commit_type"] == target_commit_type and eval_res.commit_type_match_rank is None:
+            eval_res.commit_type_match_rank = i + 1
 
-    return golden_match, {"hypothesis_number": len(hyp_list),
-                          "golden_match": golden_match,
-                          "match_rank": match_rank}
+        # (2) Evaluate vulnerability type
+        if target_vul_type is not None and \
+                hyp["vulnerability_type"] == target_vul_type and \
+                eval_res.vul_type_match_rank is None:
+            eval_res.vul_type_match_rank = i + 1
+
+    return eval_res
 
 
 def task_evaluation(
+        target_commit_type: int,
+        target_vul_type: str | None,
         proc_dpath_list: List[str],
-        target_vul_type: str,
+        final_res_fpath: str
 ) -> Dict:
-    # Step 1: Evaluate each process result
-    diff_num = 0
-    all_end_hyps: List[Dict] = []
-    for proc_dpath in proc_dpath_list:
-        proc_hyp_dpath = os.path.join(proc_dpath, "hypothesis")
-
-        golden_match_num = 0
-
-        init_hyp_fpath = os.path.join(proc_hyp_dpath, "init.json")
-        with open(init_hyp_fpath, "r") as f:
-            init_hyps = json.load(f)["hypothesis"]
-
-            _, init_hyp_count = hypothesis_evaluation(1, target_vul_type, init_hyps)
-
-        end_hyp_fpath = os.path.join(proc_hyp_dpath, "end.json")
-        with open(end_hyp_fpath, "r") as f:
-            end_hyps = json.load(f)["hypothesis"]
-
-            all_end_hyps.extend(end_hyps)
-
-            end_golden_match, end_hyp_count = hypothesis_evaluation(1, target_vul_type, end_hyps)
-
-        if end_golden_match:
-            golden_match_num += 1
-
-        diff = compare_init_and_end_hypothesis(init_hyps, end_hyps)
-        if diff:
-            diff_num += 1
-
-    # Step 2: Evaluate based on the end hypothesis of all processes
-    final_hyps = calculate_final_confidence_score(all_end_hyps, len(proc_dpath_list))
-
-    golden_match = False
-    if final_hyps[0]["vulnerability_type"] == target_vul_type:
-        golden_match = True
-
-    match_rank = None
-    for i, hyp in enumerate(final_hyps):
-        if hyp["commit_type"] == target_vul_type:
-            match_rank = i + 1
-            break
-
-    result = {
-        "golden_match": golden_match,
-        "match_rank": match_rank,
-        "hyp_diff_num": diff_num
+    all_res = {
+        "target_commit_type": target_commit_type,
+        "target_vul_type": target_vul_type,
     }
 
-    if golden_match:
-        globals_mut.inc_golden_match_tasks()
-        log_and_cprint("Golden match: True.", style="bold green")
-    else:
-        log_and_cprint("Golden match: False.", style="bold red")
+    proc_results = {}
+    # Step 1: Evaluate each process results
+    for proc_dpath in proc_dpath_list:
+        proc_name = proc_dpath.split("/")[-1]
+        proc_hyp_dpath = os.path.join(proc_dpath, "hypothesis")
 
-    return result
+        # (1) Process init hypothesis
+        init_hyp_fpath = os.path.join(proc_hyp_dpath, "init.json")
+        with open(init_hyp_fpath, "r") as f:
+            proc_init_hyps = json.load(f)["unverified"]
+            proc_init_res = hypothesis_rank_evaluation(target_commit_type, target_vul_type, proc_init_hyps)
+
+        # (2) Process final hypothesis
+        end_hyp_fpath = os.path.join(proc_hyp_dpath, "final.json")
+        with open(end_hyp_fpath, "r") as f:
+            proc_final_hyps = json.load(f)["verified"]
+            proc_final_res = hypothesis_rank_evaluation(target_commit_type, target_vul_type, proc_final_hyps)
+
+        proc_results[proc_name] = {
+            "init": proc_init_res.rank_to_dict(),
+            "final": proc_final_res.rank_to_dict()
+        }
+
+    all_res["process_results"] = proc_results
+
+    # Step 2: Evaluate the final results
+    with open(final_res_fpath, "r") as f:
+        final_hyps = json.load(f)
+    final_res = hypothesis_rank_evaluation(target_commit_type, target_vul_type, final_hyps)
+
+    all_res["final_result"] = final_res.rank_to_dict()
+
+    return all_res
 
 
 """HYPOTHESIS"""
 
 
 @dataclass
-class CodeSnippet:
-    """Dataclass to hold code snippet."""
-    file_path: str  # This is RELATIVE path
-    class_name: str | None
-    func_name: str | None
-    code: str
-
-    def to_dict(self) -> Dict:
-        return {
-            "file_path": self.file_path,
-            "class_name": self.class_name,
-            "func_name": self.func_name,
-            "code": self.code
-        }
+class CodeContext(CodeSnippetLocation):
+    """Dataclass to hold the locations of searched code snippet."""
 
     def to_str(self) -> str:
-        seq = f"<file>{self.file_path}</file>\n"
-        if self.class_name is not None:
-            seq += f"<class>{self.class_name}</class> "
-        if self.func_name is not None:
-            seq += f"<func>{self.func_name}</func>"
-        seq += f"\n<code>\n{self.code}\n</code>"
-
-        return seq
+        return self.to_tagged_str()
 
 
 @dataclass
@@ -365,6 +270,16 @@ def verify_hypothesis(hyp: Hypothesis, analysis: str) -> VerifiedHypothesis:
 """ACTION WITH AGENT"""
 
 
+def _add_system_msg_and_print(
+        system_msg: str,
+        msg_thread: MessageThread,
+        print_desc: str = "",
+        print_callback: Optional[Callable[[dict], None]] = None
+) -> None:
+    msg_thread.add_system(system_msg)
+    print_system(msg=system_msg, desc=print_desc, print_callback=print_callback)
+
+
 def _add_usr_msg_and_print(
         usr_msg: str,
         msg_thread: MessageThread,
@@ -442,15 +357,105 @@ def _ask_actor_and_proxy_with_retries(
     return proxy_json_output
 
 
+"""POST-PROCESS"""
+
+
+def calculate_final_confidence_score(all_hyps: List[Dict], proc_num: int, cal_type: int = 0) -> List[Dict]:
+    """Calculate the final confidence score of hypothesis based on multi-processes.
+
+    Args:
+        all_hyps (List[Dict]):
+        proc_num (int):
+        cal_type (int): Calculation strategy.
+            - 0: General average
+            - 1: Improved linear weighted average
+            - 2: Weighted average considering position
+    Returns:
+        List[Dict]: Hypothesis with final confidence score.
+    """
+
+    def _normalize(_score):
+        # 0-10 -> 0-1
+        return _score * 0.1
+
+    def _denormalize(_score):
+        # 0-1 -> 0-10
+        return _score * 10
+
+    ## CASE 1: Process number = 1
+    if proc_num == 1:
+        all_hyps = sorted(all_hyps, key=lambda x: x["confidence_score"], reverse=True)
+        return all_hyps
+
+    ## CASE 2: Process number > 1
+    hyp_score = defaultdict(lambda: {"count": 0, "total_score": 0})
+
+    if cal_type == 0:
+        for hyp in all_hyps:
+            hyp_name = hyp["commit_type"] + "." + hyp["vulnerability_type"]
+            hyp_score[hyp_name]["count"] += 1
+            hyp_score[hyp_name]["total_score"] += _normalize(hyp["confidence_score"])
+
+        hyp_final_score = {
+            hyp_name: data["total_score"] / proc_num
+            for hyp_name, data in hyp_score.items()
+        }
+    elif cal_type == 1:
+        for hyp in all_hyps:
+            hyp_name = hyp["commit_type"] + "." + hyp["vulnerability_type"]
+            hyp_score[hyp_name]["count"] += 1
+            hyp_score[hyp_name]["total_score"] += _normalize(hyp["confidence_score"])
+
+        hyp_final_score = {
+            hyp_name: (data["total_score"] / data["count"]) * (1 + math.log(data["count"] + 1))
+            for hyp_name, data in hyp_score.items()
+        }
+    elif cal_type == 2:
+        # FIXME: Complete
+        hyp_final_score = {}
+        pass
+    else:
+        raise RuntimeError
+
+    hyp_final_score = {
+        hyp_name: _denormalize(score)
+        for hyp_name, score in hyp_final_score.items()
+    }
+
+    final_hyps = [{"commit_type": hyp_name.split('.')[0],
+                   "vulnerability_type": hyp_name.split('.')[1],
+                   "confidence_score": score}
+                  for hyp_name, score in hyp_final_score.items()]
+
+    final_hyps = sorted(final_hyps, key=lambda x: x["confidence_score"], reverse=True)
+
+    return final_hyps
+
+
+def vote_on_result(proc_dpaths: List[str]) -> List[Dict]:
+    all_ver_hyps: List[Dict] = []
+
+    for proc_dpath in proc_dpaths:
+        proc_final_hyp_fpath = os.path.join(proc_dpath, "hypothesis", "final.json")
+
+        with open(proc_final_hyp_fpath, "r") as f:
+            end_hyps = json.load(f)["verified"]
+            all_ver_hyps.extend(end_hyps)
+
+    final_hyps = calculate_final_confidence_score(all_ver_hyps, proc_num=len(proc_dpaths))
+
+    return final_hyps
+
+
 """SUB-PROCESS"""
 
 
 @dataclass
-class ProcessOutputDirs:
-    """For recording all relevant output dir paths in current process."""
+class ProcessOutPaths:
+    """For recording all relevant output paths in current process."""
     root: str
-    proxy_dpath: str
     hyp_dpath: str
+    proxy_dpath: str
     tool_call_dpath: str
 
 
@@ -458,57 +463,87 @@ class ProcessOutputDirs:
 class ProcHypothesis:
     """For recording all relevant info about hypothesis in current process."""
     cur_hyp: Hypothesis | None = None
-    impt_code: List[CodeSnippet] = field(default_factory=list)
     unverified: List[Hypothesis] = field(default_factory=list)
     verified: List[VerifiedHypothesis] = field(default_factory=list)
+    patch: List[CodeContext] = field(default_factory=list)
+    code_context: List[CodeContext] = field(default_factory=list)
 
-    def to_dict(self) -> Dict:
+    def hyp_to_dict(self) -> Dict:
         return {
             "unverified": [hyp.to_dict() for hyp in self.unverified],
             "verified": [hyp.to_dict() for hyp in self.verified]
         }
 
-    def sort_unverified(self):
+    def code_to_str(self) -> str:
+        code_seq_list = []
+        for c in self.code_context:
+            code_seq_list.append(c.to_str())
+        return "\n\n".join(code_seq_list)
+
+    def patch_to_str(self) -> str:
+        code_seq_list = []
+        for c in self.patch:
+            code_seq_list.append(c.to_str())
+        return "\n\n".join(code_seq_list)
+
+    def sort_unverified(self) -> None:
         sorted_hyps = sorted(self.unverified, key=lambda x: x.confidence_score, reverse=True)
         self.unverified = sorted_hyps
 
-    def sort_verified(self):
+    def sort_verified(self) -> None:
         sorted_hyps = sorted(self.verified, key=lambda x: x.confidence_score, reverse=True)
         self.verified = sorted_hyps
+
+    def in_unverified(self, hyp: Hypothesis) -> bool:
+        for u_hyp in self.unverified:
+            if u_hyp.commit_type == hyp.commit_type and u_hyp.vulnerability_type == hyp.vulnerability_type:
+                return True
+        return False
+
+    def in_verified(self, hyp: Hypothesis) -> bool:
+        for v_hyp in self.verified:
+            if v_hyp.commit_type == hyp.commit_type and v_hyp.vulnerability_type == hyp.vulnerability_type:
+                return True
+        return False
+
+    def save_hyp_to_file(self, fpath: str) -> None:
+        with open(fpath, "w") as f:
+            json.dump(self.hyp_to_dict(), f, indent=4)
 
 
 def run_in_start_state(
         process_no: int,
-        curr_proc_dirs: ProcessOutputDirs,
+        curr_proc_outs: ProcessOutPaths,
         msg_thread: MessageThread,
         manager: ProcessManager,
         print_callback: Optional[Callable[[dict], None]] = None
-) -> ProcHypothesis:
+) -> ProcHypothesis | None:
     print_desc = f"state {State.START_STATE} | process {process_no}"
 
-    ###################################################
-    ########## STEP I: Prepare system prompt ##########
-    ###################################################
+    ##########################
+    # STEP I: Prepare prompt #
+    ##########################
 
-    msg_thread.add_system(SYSTEM_PROMPT)
+    # (1) System prompt
+    _add_system_msg_and_print(SYSTEM_PROMPT, msg_thread, print_desc, print_callback)
 
-    #########################################################################
-    ########## STEP II: Prepare init prompt (commit + instruction) ##########
-    #########################################################################
+    # (2) Hypothesis proposal prompt
+    commit_desc = manager.commit_manager.describe_commit_files()
+    hyp_prop_prompt = ("The content of the commit is as follows:"
+                       f"\n{commit_desc}"
+                       "\n\nIn this step, based on the raw commit content, you need to make hypothesis about the functionality of the commit."
+                       f"{HYP_DEF}"
+                       f"\n\nNOTE: You can make multiple new hypothesis one time.")
 
-    commit_desc = manager.commit_manager.commit_files_info_seq()
-    init_prompt = commit_desc + "\n" + START_INSTRUCTION
-    _add_usr_msg_and_print(init_prompt, msg_thread, print_desc, print_callback)
+    _add_usr_msg_and_print(hyp_prop_prompt, msg_thread, print_desc, print_callback)
 
-    ####################################################
-    ########## STEP III: Make init hypothesis ##########
-    ####################################################
+    ##################################################
+    # STEP II: Ask the Agent to make init hypothesis #
+    ##################################################
 
-    proc_all_hypothesis: ProcHypothesis = ProcHypothesis()
-
-    proxy_conv_save_fpath = os.path.join(curr_proc_dirs.proxy_dpath, f"init_hypothesis_proposal.json")
+    proxy_conv_save_fpath = os.path.join(curr_proc_outs.proxy_dpath, f"init_hypothesis_proposal.json")
     raw_hypothesis = _ask_actor_and_proxy_with_retries(
-        task=ProxyTask.INIT_HYP_PROPOSAL,
+        task=ProxyTask.HYP_PROPOSAL,
         manager=manager,
         msg_thread=msg_thread,
         proxy_conv_save_fpath=proxy_conv_save_fpath,
@@ -518,42 +553,81 @@ def run_in_start_state(
 
     if raw_hypothesis is None:
         # Failed to make valid hypothesis with retries
-        return proc_all_hypothesis
+        return None
 
-    print_proxy(raw_hypothesis, print_desc, print_callback)
+    print_proxy(msg=raw_hypothesis, desc=print_desc, print_callback=print_callback)
 
-    ############################################################################
-    ##################### STEP IV: Collect init hypothesis #####################
-    ############################################################################
+    #####################################
+    # STEP III: Collect init hypothesis #
+    #####################################
 
-    # Collate init hypothesis
-    raw_hyp_json = json.loads(raw_hypothesis)
-    commit_type = raw_hyp_json["commit_type"]
-    assert commit_type in CommitType.attributes()
-    if commit_type == CommitType.NonVulnerabilityPatch:
-        hyp = Hypothesis(commit_type=commit_type, vulnerability_type="", confidence_score=10)
-        proc_all_hypothesis.unverified.append(hyp)
-    else:
-        for vul_type in raw_hyp_json["vulnerability_types"]:
-            hyp = get_unverified_hypothesis(commit_type=commit_type, vul_type=vul_type[0], conf_score=vul_type[1])
+    proc_all_hypothesis: ProcHypothesis = ProcHypothesis()
+
+    json_hyp = json.loads(raw_hypothesis)
+    hyp_list = json_hyp["hypothesis_list"]
+    for hyp in hyp_list:
+        hyp = get_unverified_hypothesis(hyp["commit_type"], hyp["vulnerability_type"], hyp["confidence_score"])
+        if not proc_all_hypothesis.in_unverified(hyp):
             proc_all_hypothesis.unverified.append(hyp)
-
-        # Extract important code snippet in the commit
-        raw_patch_locations = raw_hyp_json["patch_locations"]
-        # FIXME: Agent answer about locations may not be clear, need activate search. Use state_manager.commit_manager
-        for loc in raw_patch_locations:
-            fpath = loc["file"]
-            class_name = loc.get("class_name", None)
-            func_name = loc.get("func_name", None)
-            code = loc["code"]
-            code_snip = CodeSnippet(fpath, class_name, func_name, code)
-            proc_all_hypothesis.impt_code.append(code_snip)
 
     assert len(proc_all_hypothesis.unverified) > 0
 
-    # Save init hypothesis
-    hypothesis_log = Path(curr_proc_dirs.hyp_dpath, f"init.json")
-    hypothesis_log.write_text(json.dumps(proc_all_hypothesis.to_dict(), indent=4))
+    proc_all_hypothesis.sort_unverified()
+    hyp_fpath = os.path.join(curr_proc_outs.hyp_dpath, "init.json")
+    proc_all_hypothesis.save_hyp_to_file(hyp_fpath)
+
+    ###################################
+    # STEP V: Extract patch locations #
+    ###################################
+
+    # Determine whether we need to extract the exact patch locations
+    patch_exist = False
+    for hyp in proc_all_hypothesis.unverified:
+        if hyp.commit_type == CommitType.VulnerabilityPatch:
+            patch_exist = True
+            break
+
+    if patch_exist:
+        #############################################
+        # Step V-1: Prepare patch extraction prompt #
+        #############################################
+
+        patch_extraction_prompt = ("Since your hypothesis include the case that the commit fixes a vulnerability, we need to extract the code snippets that might be the patch from the original commit."
+                                   "\n\nNOTE: For each extracted code snippet, you should at least provide its 'file_name' and 'code', while 'class_name' and 'func_name' are not required.")
+
+        _add_usr_msg_and_print(patch_extraction_prompt, msg_thread, print_desc, print_callback)
+
+        ######################################################
+        # Step V-2: Ask the Agent to extract patch locations #
+        ######################################################
+
+        proxy_conv_save_fpath = os.path.join(curr_proc_outs.proxy_dpath, f"patch_extraction.json")
+        patch_locations = _ask_actor_and_proxy_with_retries(
+            task=ProxyTask.PATCH_EXTRACTION,
+            manager=manager,
+            msg_thread=msg_thread,
+            proxy_conv_save_fpath=proxy_conv_save_fpath,
+            print_desc=print_desc,
+            print_callback=print_callback
+        )
+
+        #####################################
+        # Step V-3: Collect patch locations #
+        #####################################
+
+        if patch_locations is not None:
+            print_proxy(msg=patch_locations, desc=print_desc, print_callback=print_callback)
+
+            json_patch_locations = json.loads(patch_locations)
+            raw_patch_locations = json_patch_locations["patch_locations"]
+            # TODO: Agent answer about locations may not be clear, need activate search. Use state_manager.commit_manager
+            for loc in raw_patch_locations:
+                fpath = loc["file"]
+                class_name = loc.get("class_name", None)
+                func_name = loc.get("func_name", None)
+                code = loc["code"]
+                code_snip = CodeContext(fpath, class_name, func_name, code)
+                proc_all_hypothesis.patch.append(code_snip)
 
     return proc_all_hypothesis
 
@@ -562,48 +636,54 @@ def run_in_reflexion_state(
         process_no: int,
         loop_no: int,
         proc_all_hypothesis: ProcHypothesis,
-        curr_proc_dirs: ProcessOutputDirs,
+        curr_proc_outs: ProcessOutPaths,
         msg_thread: MessageThread,
         manager: ProcessManager,
         print_callback: Optional[Callable[[dict], None]] = None
 ) -> MessageThread:
+    """
+    In order to prevent the forgetting problem caused by too many rounds of interaction with LLM,
+    we open a new round conversation after a complete loop (make hypothesis -> context retrieval -> verify hypothesis)
+    """
     print_desc = f"state {State.REFLEXION_STATE} | process {process_no} | loop {loop_no}"
-
-    #######################################
-    ########## CASE 1: In loop 1 ##########
-    #######################################
 
     if loop_no == 1:
         return msg_thread
 
-    ###############################################
-    ########## CASE 2: In loop i (i > 1) ##########
-    ###############################################
-
     # Open a new conversation
     msg_thread = MessageThread()
 
-    # Prepare system prompt
-    msg_thread.add_system(SYSTEM_PROMPT)
+    # (1) System prompt
+    _add_system_msg_and_print(SYSTEM_PROMPT, msg_thread, print_desc, print_callback)
 
-    # Prepare the summary of all previous loops
-    loop_summary = "In the previous analysis, you have made and analysed the following hypothesis:"
+    # (2) Commit content
+    commit_desc = manager.commit_manager.describe_commit_files()
+    commit_prompt = ("The content of the commit is as follows:"
+                     f"\n{commit_desc}")
 
-    # (1) Hypothesis description and analysis
+    # (3) Summary of all previous loops
+    # 3.1 Hypothesis description and analysis
     proc_all_hypothesis.sort_verified()
 
+    # TODO: Briefly summary the analysis of previous hypothesis
+
+    loop_summary = "In the previous analysis, you have made and analysed the following hypothesis:"
     for i, hyp in enumerate(proc_all_hypothesis.verified):
         desc = describe_hypothesis(hyp)
         loop_summary += (f"\nHypothesis {i + 1}: "
                          f"\n - Description: {desc}"
                          f"\n - Analysis: {hyp.analysis}")
 
-    # (2) Code snippets
-    loop_summary += "\n\nBesides, by calling the search APIs, you got the following code snippets which help with analysis."
-    for c in proc_all_hypothesis.impt_code:
-        loop_summary += "\n\n" + c.to_str()
+    # 3.2 Code snippets of patch and context
+    # TODO: How do we add the contents of patch locations?
+    code_snippet_prompt = ("Besides, by calling the search APIs, you have got the following code snippets which help with analysis."
+                           f"\n\n{proc_all_hypothesis.code_to_str()}")
 
-    _add_usr_msg_and_print(loop_summary, msg_thread, print_desc, print_callback)
+    reflexion_prompt = (f"{commit_prompt}"
+                        f"\n{loop_summary}"
+                        f"\n{code_snippet_prompt}")
+
+    _add_usr_msg_and_print(reflexion_prompt, msg_thread, print_desc, print_callback)
 
     return msg_thread
 
@@ -612,16 +692,16 @@ def run_in_hypothesis_check_state(
         process_no: int,
         loop_no: int,
         proc_all_hypothesis: ProcHypothesis,
-        curr_proc_dirs: ProcessOutputDirs,
+        curr_proc_dirs: ProcessOutPaths,
         msg_thread: MessageThread,
         manager: ProcessManager,
         print_callback: Optional[Callable[[dict], None]] = None
 ) -> bool:
     print_desc = f"state {State.HYPOTHESIS_CHECK_STATE} | process {process_no} | loop {loop_no}"
 
-    ############################################################
-    ########## Step I: Whether to make new hypothesis ##########
-    ############################################################
+    ##########################################
+    # Step I: Whether to make new hypothesis #
+    ##########################################
     if len(proc_all_hypothesis.unverified) == 0:
         assert len(proc_all_hypothesis.verified) > 0
 
@@ -629,19 +709,16 @@ def run_in_hypothesis_check_state(
         ########## Step I-1: Ask Actor Agent to make new hypothesis ##########
         ######################################################################
 
-        make_hyp_prompt = (f"Based on the previous hypothesis and analyses, answer the below question:"
-                           f"\n- Are there better hypothesis: make hypothesis that differ from those already made. (leave it empty if there is no more appropriate hypothesis)"
-                           f"\n\nNOTE 1: A hypothesis contains three attributes: commit type, vulnerability type and confidence score."
-                           f"\ncommit type indicates if the commit fixes the vulnerability. Choose 'vulnerability_patch' or 'non_vulnerability_patch' as the answer."
-                           f"\nvulnerability type indicates the type of vulnerability that was fixed by this commit. Use CWE-ID as the answer, and leave it empty if you choose 'non_vulnerability_patch' for commit type."
-                           f"\nconfidence score indicates the level of reliability of this hypothesis. Choose an integer between 1 and 10 as the answer."
-                           f"\n\nNOTE 2: You can make multiple new hypothesis one time."
-                           f"\n\nNOTE 3: DO NOT mention hypothesis you have made.")
-        _add_usr_msg_and_print(make_hyp_prompt, msg_thread, print_desc, print_callback)
+        hyp_prop_prompt = (f"Based on the previous hypothesis and analyses, answer the below question:"
+                           f"\n- Are there any better hypothesis: make hypothesis that differ from those already made. (leave it empty if there is no more appropriate hypothesis)"
+                           f"{HYP_DEF}"
+                           f"\n\nNOTE: You can make multiple new hypothesis one time.")
 
-        proxy_conv_fpath = os.path.join(curr_proc_dirs.proxy_dpath, f"loop_{loop_no}_new_hypothesis_proposal.json")
+        _add_usr_msg_and_print(hyp_prop_prompt, msg_thread, print_desc, print_callback)
+
+        proxy_conv_fpath = os.path.join(curr_proc_dirs.proxy_dpath, f"loop_{loop_no}_hypothesis_proposal.json")
         raw_hypothesis = _ask_actor_and_proxy_with_retries(
-            task=ProxyTask.NEW_HYP_PROPOSAL,
+            task=ProxyTask.HYP_PROPOSAL,
             manager=manager,
             msg_thread=msg_thread,
             proxy_conv_save_fpath=proxy_conv_fpath,
@@ -653,71 +730,45 @@ def run_in_hypothesis_check_state(
             # Extract hypothesis with retries failed
             return False
 
+        print_proxy(msg=raw_hypothesis, desc=print_desc, print_callback=print_callback)
+
         #######################################################################
         ########## Step I-2: Choose next step: end / continue verify ##########
         #######################################################################
 
-        print_proxy(raw_hypothesis, print_desc, print_callback)
-
         json_hypothesis = json.loads(raw_hypothesis)
         hypothesis_list = json_hypothesis["hypothesis_list"]
 
-        if len(hypothesis_list) == 0:
-            # No more new hypothesis
-            return False
-
         # Filter verified hypothesis
         for hyp in hypothesis_list:
-            assert hyp["commit_type"] in CommitType.attributes()
+            hyp = get_unverified_hypothesis(hyp["commit_type"], hyp["vulnerability_type"], hyp["confidence_score"])
 
-            # Check if verified
-            verified_flag = False
-            if hyp["commit_type"] == CommitType.NonVulnerabilityPatch:
-                for v_hyp in proc_all_hypothesis.verified:
-                    if v_hyp.commit_type == CommitType.NonVulnerabilityPatch:
-                        verified_flag = True
-                        break
-            else:
-                for v_hyp in proc_all_hypothesis.verified:
-                    if v_hyp.vulnerability_type == hyp["vulnerability_type"]:
-                        verified_flag = True
-                        break
-
-            # Add new hypothesis to unverified hypothesis
-            if not verified_flag:
-                hyp = get_unverified_hypothesis(commit_type=hyp["commit_type"],
-                                                vul_type=hyp["vulnerability_type"],
-                                                conf_score=hyp["confidence_score"])
+            if not proc_all_hypothesis.in_verified(hyp):
                 proc_all_hypothesis.unverified.append(hyp)
 
-    ########################################################################
-    ########## Step II: Select an unverified hypothesis to verify ##########
-    ########################################################################
+    if len(proc_all_hypothesis.unverified) == 0:
+        # No more new hypothesis
+        return False
+
+    ######################################################
+    # Step II: Select an unverified hypothesis to verify #
+    ######################################################
 
     proc_all_hypothesis.sort_unverified()
     proc_all_hypothesis.cur_hyp = proc_all_hypothesis.unverified[0]
 
-    #########################################################################
-    ########## Step III: Prepare prompt to describe the hypothesis ##########
-    #########################################################################
+    #######################################################
+    # Step III: Prepare prompt to describe the hypothesis #
+    #######################################################
 
     if proc_all_hypothesis.cur_hyp.commit_type == CommitType.NonVulnerabilityPatch:
-        # Describe the justify process
         suffix_prompt = "Then you need to analyze the functionality of each code snippet in the commit to determine if it is not relevant to vulnerability fixing."
     else:
-        # Describe the important code snippet which is related to the vulnerability patch
-        # FIXME: For the important code snippet provided by Actor Agent, do we need to search again
-        #       to get a more accurate snippet?
-        assert proc_all_hypothesis.impt_code is not None
-
-        impt_code_seq = ""
-        for item in proc_all_hypothesis.impt_code:
-            impt_code_seq += item.to_str() + "\n\n"
-
+        # TODO: For now, we believe that the model will be highly consistent in the selection of patch code snippets
         suffix_prompt = (
-            "The important code snippets and locations in this commit which are related to the vulnerability patch are as follows."
+            "The code snippets most likely to be the patch are as follows:"
             f"\n\n```"
-            f"{impt_code_seq}"
+            f"\n{proc_all_hypothesis.patch_to_str()}"
             f"\n```"
         )
 
@@ -735,7 +786,7 @@ def run_in_context_retrieval_state(
         process_no: int,
         loop_no: int,
         proc_all_hypothesis: ProcHypothesis,
-        curr_proc_dirs: ProcessOutputDirs,
+        curr_proc_dirs: ProcessOutPaths,
         msg_thread: MessageThread,
         manager: ProcessManager,
         print_callback: Optional[Callable[[dict], None]] = None
@@ -745,6 +796,8 @@ def run_in_context_retrieval_state(
     ###############################################################
     ########## Step I: Prepare the init retrieval prompt ##########
     ###############################################################
+
+    # TODO: We can simplify the conversation by modifying what we asked before after getting the desired code context
 
     init_retrieval_prompt = (
         "Before conducting a formal analysis of the current hypothesis, you must get enough contextual code information."
@@ -790,7 +843,7 @@ def run_in_context_retrieval_state(
         ########### Case 2: Valid respond ###########
         #############################################
 
-        print_proxy(selected_apis, round_print_desc, print_callback)
+        print_proxy(msg=selected_apis, desc=print_desc, print_callback=print_callback)
 
         selected_apis_json = json.loads(selected_apis)
         json_api_calls = selected_apis_json["api_calls"]
@@ -836,8 +889,8 @@ def run_in_context_retrieval_state(
 
             # (2) Collect code snippet extracted
             for res in all_search_res:
-                code_snip = CodeSnippet(res.file_path, res.class_name, res.func_name, res.code)
-                proc_all_hypothesis.impt_code.append(code_snip)
+                code_snip = CodeContext(res.file_path, res.class_name, res.func_name, res.code)
+                proc_all_hypothesis.code_context.append(code_snip)
 
         # if deal_special:
         #     _add_usr_msg_and_print(
@@ -896,7 +949,7 @@ def run_in_hypothesis_verify_state(
         process_no: int,
         loop_no: int,
         proc_all_hypothesis: ProcHypothesis,
-        curr_proc_dirs: ProcessOutputDirs,
+        curr_proc_dirs: ProcessOutPaths,
         msg_thread: MessageThread,
         manager: ProcessManager,
         print_callback: Optional[Callable[[dict], None]] = None
@@ -957,7 +1010,7 @@ def run_in_hypothesis_verify_state(
 
     # This extraction is too simple and should not go wrong.
     assert score is not None
-    print_proxy(score, print_desc, print_callback)
+    print_proxy(msg=score, desc=print_desc, print_callback=print_callback)
 
     #########################################################
     ########## Step III: Update all the hypothesis ##########
@@ -984,7 +1037,7 @@ def run_in_hypothesis_verify_state(
     ########## Step V: Decide next step ##########
     ##############################################
 
-    if len(proc_all_hypothesis.verified) > globals.hypothesis_limit:
+    if len(proc_all_hypothesis.verified) >= globals.hypothesis_limit:
         log_and_print("Too many verified hypothesis. End anyway.")
         return False
 
@@ -994,17 +1047,17 @@ def run_in_hypothesis_verify_state(
 def run_in_end_state(
         process_no: int,
         proc_all_hypothesis: ProcHypothesis,
-        curr_proc_dirs: ProcessOutputDirs,
+        curr_proc_outs: ProcessOutPaths,
         msg_thread: MessageThread,
-        state_manager: ProcessManager,
+        manager: ProcessManager,
         print_callback: Optional[Callable[[dict], None]] = None
 ):
     # Save end hypothesis
     proc_all_hypothesis.sort_verified()
     proc_all_hypothesis.sort_unverified()
 
-    hypothesis_log = Path(curr_proc_dirs.hyp_dpath, f"end.json")
-    hypothesis_log.write_text(json.dumps(proc_all_hypothesis.to_dict(), indent=4))
+    hyp_fpath = os.path.join(curr_proc_outs.hyp_dpath, "final.json")
+    proc_all_hypothesis.save_hyp_to_file(hyp_fpath)
 
 
 """MAIN PROCESS"""
@@ -1012,53 +1065,57 @@ def run_in_end_state(
 
 def start_conversation_round_stratified(
         output_dpath: str,
-        state_manager: ProcessManager,
+        manager: ProcessManager,
         print_callback: Optional[Callable[[dict], None]] = None
-) -> bool:
+) -> Dict:
     """
     This version uses json data to process API calls, instead of using the OpenAI function calling.
     Advantage is that multiple API calls can be made in a single round.
     """
-    process_status: Dict[int, bool] = {}
+    # -------------------------------- Identification -------------------------------- #
 
-    ################################################################
-    #################### STEP 1: Identification ####################
-    ################################################################
+    ## Step I: Perform multiple independent and complete processes
+    # process_name -> status
+    proc_status: Dict[str, bool] = {}
 
-    for process_no in range(1, globals.complete_process_limit + 1):
-        print_banner(f"COMPLETE PROCESS {process_no}")
+    for proc_no in range(1, globals.complete_process_limit + 1):
+        print_banner(f"COMPLETE PROCESS {proc_no}")
 
-        # FIXME: Add Reflexion Module to remind Agent the following info:
+        # TODO: Add Reflexion Module to remind Agent the following info:
         #  (1) Previous successful process: previous hypothesis and analysis.
         #  (2) Previous failed process: failed reason.
 
-        ## I. Preparation
-        process_status[process_no] = False
+        ## 1. Preparation
 
-        curr_proc_dpath = make_hie_dirs(output_dpath, f"process_{process_no}")
+        # Root
+        curr_proc_name = f"process_{proc_no}"
+        curr_proc_dpath = make_hie_dirs(output_dpath, curr_proc_name)
+        # Dirs
+        curr_proc_hyp_fpath = make_hie_dirs(curr_proc_dpath, f"hypothesis")
         curr_proc_proxy_dpath = make_hie_dirs(curr_proc_dpath, f"proxy_agent")
-        curr_proc_hyp_dpath = make_hie_dirs(curr_proc_dpath, f"hypothesis")
         curr_proc_tool_call_dpath = make_hie_dirs(curr_proc_dpath, "tool_calls")
 
-        curr_proc_dirs = ProcessOutputDirs(
+        curr_proc_dirs = ProcessOutPaths(
             root=curr_proc_dpath,
+            hyp_dpath=curr_proc_hyp_fpath,
             proxy_dpath=curr_proc_proxy_dpath,
-            hyp_dpath=curr_proc_hyp_dpath,
             tool_call_dpath=curr_proc_tool_call_dpath,
         )
 
+        proc_status[curr_proc_name] = False
+
         msg_thread = MessageThread()
 
-        ## II. Workflow
+        ## 2. Workflow
         ########## START ##########
-        proc_all_hyp = run_in_start_state(process_no, curr_proc_dirs, msg_thread, state_manager, print_callback)
+        proc_all_hyp = run_in_start_state(proc_no, curr_proc_dirs, msg_thread, manager, print_callback)
 
-        if len(proc_all_hyp.unverified) == 0:
+        if proc_all_hyp is None:
             continue
 
         ## State switching process:
-        # Complete loop: hypothesis_check -> context_retrieval -> hypothesis_verify
-        # Complete process: start -> loop -> ( reflexion -> loop ) -> ... -> ( reflexion -> loop ) -> end
+        # - Complete loop: hypothesis_check -> context_retrieval -> hypothesis_verify
+        # - Complete process: start -> loop -> ( reflexion -> loop ) -> ... -> ( reflexion -> loop ) -> end
         loop_no = 0
 
         while True:
@@ -1066,22 +1123,22 @@ def start_conversation_round_stratified(
 
             ########## (1) Reflexion ##########
             msg_thread = run_in_reflexion_state(
-                process_no, loop_no, proc_all_hyp, curr_proc_dirs, msg_thread, state_manager, print_callback)
+                proc_no, loop_no, proc_all_hyp, curr_proc_dirs, msg_thread, manager, print_callback)
 
             ########## (2) Hypothesis check ##########
             continue_loop = run_in_hypothesis_check_state(
-                process_no, loop_no, proc_all_hyp, curr_proc_dirs, msg_thread, state_manager, print_callback)
+                proc_no, loop_no, proc_all_hyp, curr_proc_dirs, msg_thread, manager, print_callback)
 
             if not continue_loop:
                 break
 
             ########## (3) Context retrieval ##########
             run_in_context_retrieval_state(
-                process_no, loop_no, proc_all_hyp, curr_proc_dirs, msg_thread, state_manager, print_callback)
+                proc_no, loop_no, proc_all_hyp, curr_proc_dirs, msg_thread, manager, print_callback)
 
             ########## (4) Hypothesis verify ##########
             continue_loop = run_in_hypothesis_verify_state(
-                process_no, loop_no, proc_all_hyp, curr_proc_dirs, msg_thread, state_manager, print_callback)
+                proc_no, loop_no, proc_all_hyp, curr_proc_dirs, msg_thread, manager, print_callback)
 
             print(len(proc_all_hyp.verified))
 
@@ -1089,48 +1146,54 @@ def start_conversation_round_stratified(
                 break
 
         ########## END ##########
-        run_in_end_state(process_no, proc_all_hyp, curr_proc_dirs, msg_thread, state_manager, print_callback)
+        run_in_end_state(proc_no, proc_all_hyp, curr_proc_dirs, msg_thread, manager, print_callback)
 
-        ## III. Record
-        process_status[process_no] = True
+        ## 3. Post-process
+        # TODO: Need to consider if there are other cases that could cause failure
+        proc_status[curr_proc_name] = True
 
-        # Print the whole conversation in current process
-        logger.info(f"\n========== Complete Process {process_no} ==========")
+        # Record the whole conversation in current process
+        logger.info(f"\n========== Complete Process {proc_no} ==========")
         logger.info(f"Current message thread:\n{msg_thread}")
 
-    ############################################################
-    #################### STEP 2: Evaluation ####################
-    ############################################################
+    ## Step II: Get the final results based on multiple process results
+    # Vote the final results
+    valid_proc_dpaths = [os.path.join(output_dpath, proc_name) for proc_name, status in proc_status.items() if status]
+    final_res = vote_on_result(valid_proc_dpaths)
+    # Save
+    final_res_fpath = os.path.join(output_dpath, "result.json")
+    with open(final_res_fpath, "w") as f:
+        json.dump(final_res, f, indent=4)
 
-    proc_dpath_list = [os.path.join(output_dpath, f"process_{proc_id}") for proc_id, flag in process_status.items() if flag]
-    eval_result = task_evaluation(proc_dpath_list, state_manager.task.cwe_id)
-    eval_result.update({"process_count": len(proc_dpath_list),
-                        "process_status": process_status})
+    # -------------------------------- Evaluation -------------------------------- #
+
+    eval_result = task_evaluation(manager.task.commit_type, manager.task.cwe_id, valid_proc_dpaths, final_res_fpath)
+    eval_result["process_status"] = proc_status
 
     eval_res_path = Path(output_dpath, "evaluation.json")
     eval_res_path.write_text(json.dumps(eval_result, indent=4))
 
     logger.info("Ending workflow.")
 
-    return True
+    return proc_status
 
 
 def run_one_task(
         raw_commit_content: str,
         output_dpath: str,
-        state_manager: ProcessManager,
+        manager: ProcessManager,
         print_callback: Optional[Callable[[dict], None]] = None,
-) -> bool:
+) -> Dict:
     """
     Main entry point to run inference on one task.
 
     Args:
         raw_commit_content (str): The original commit content submitted to the task.
         output_dpath (str): Path to the output directory.
-        state_manager (ProcessManager): The already-initialized API manager.
+        manager (ProcessManager): The already-initialized API manager.
         print_callback:
     """
     print_banner("Starting Silent Patch Identification on the following commit")
     print_commit_content(raw_commit_content)
 
-    return start_conversation_round_stratified(output_dpath, state_manager, print_callback)
+    return start_conversation_round_stratified(output_dpath, manager, print_callback)

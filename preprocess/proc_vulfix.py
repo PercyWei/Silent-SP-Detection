@@ -48,11 +48,11 @@ def read_raw_vulfix():
 
     py_vulfix_fpath = "/root/projects/VDTest/dataset/VulFix/py_vulfix.json"
     with open(py_vulfix_fpath, 'w') as f:
-        json.dump(py.to_dict(orient='records'), f, indent=4)
+        json.dump(py.hyp_to_dict(orient='records'), f, indent=4)
 
     java_vulfix_fpath = "/root/projects/VDTest/dataset/VulFix/java_vulfix.json"
     with open(java_vulfix_fpath, 'w') as f:
-        json.dump(java.to_dict(orient='records'), f, indent=4)
+        json.dump(java.hyp_to_dict(orient='records'), f, indent=4)
 
 
 def build_sim_vulfix():

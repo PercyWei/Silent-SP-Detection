@@ -40,6 +40,49 @@ class CommitType(str, Enum):
         return [e.value for e in CommitType]
 
 
+"""CODE"""
+
+
+@dataclass
+class CodeSnippetLocation:
+    """Dataclass to hold the location of code snippet."""
+    file_path: str  # This is RELATIVE path
+    class_name: str | None
+    func_name: str | None
+    code: str
+
+    def to_tagged_upto_file(self) -> str:
+        """Convert the code snippet location to a tagged string, upto file path."""
+        file_part = f"<file>{self.file_path}</file>"
+        return file_part
+
+    def to_tagged_upto_class(self) -> str:
+        """Convert the code snippet location to a tagged string, upto class."""
+        prefix = self.to_tagged_upto_file()
+        class_part = f"<class>{self.class_name}</class> " if self.class_name is not None else ""
+        return f"{prefix}\n{class_part}"
+
+    def to_tagged_upto_func(self) -> str:
+        """Convert the code snippet location to a tagged string, upto function."""
+        prefix = self.to_tagged_upto_class()
+        func_part = f"<func>{self.func_name}</func>" if self.func_name is not None else ""
+        return f"{prefix}{func_part}"
+
+    def to_tagged_str(self) -> str:
+        """Convert the code snippet location to a tagged string."""
+        prefix = self.to_tagged_upto_func()
+        code_part = f"<code>\n{self.code}\n</code>"
+        return f"{prefix}\n{code_part}"
+
+    def to_dict(self) -> Dict:
+        return {
+            "file_path": self.file_path,
+            "class_name": self.class_name,
+            "func_name": self.func_name,
+            "code": self.code
+        }
+
+
 """SEARCH MANAGE"""
 
 

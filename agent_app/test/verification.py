@@ -12,10 +12,7 @@ from io import StringIO
 from loguru import logger
 
 
-from agent_app.commit.commit_util import (
-    extract_commit_content_info, get_file_after_commit, get_file_before_commit,
-    match_diff_structs_within_file
-)
+from agent_app.commit.commit_util import extract_commit_content_info, get_code_after_commit, get_code_before_commit
 from agent_app.static_analysis.parse import parse_python_file_locations as parse
 
 from agent_app.raw_tasks import RawLocalTask
@@ -56,7 +53,7 @@ def test1(local_repo_dpath, commit_hash, diff_file_info):
     diff_code_info = diff_file_info["code_diff"]
 
     # (1) Check old file (before commit)
-    old_file_content = get_file_before_commit(local_repo_dpath, commit_hash, old_fname)
+    old_file_content = get_code_before_commit(local_repo_dpath, commit_hash, old_fname)
     old_structs_lines = select_python_file_struct_ranges(old_file_content)
 
     if old_structs_lines is not None:
@@ -74,7 +71,7 @@ def test1(local_repo_dpath, commit_hash, diff_file_info):
             logger.info(f"Not in struct line ids: {old_file_not_in_struc_changed_lines}")
 
     # (2) Check new file (after commit)
-    new_file_content = get_file_after_commit(local_repo_dpath, commit_hash, new_fname)
+    new_file_content = get_code_after_commit(local_repo_dpath, commit_hash, new_fname)
     new_structs_lines = select_python_file_struct_ranges(new_file_content)
 
     if new_structs_lines is not None:
@@ -118,8 +115,8 @@ def test2(local_repo_dpath, commit_hash, diff_file_info):
     old_fname = diff_file_info["old_fpath"]
     new_fname = diff_file_info["new_fpath"]
 
-    old_file_content = get_file_before_commit(local_repo_dpath, commit_hash, old_fname)
-    new_file_content = get_file_after_commit(local_repo_dpath, commit_hash, new_fname)
+    old_file_content = get_code_before_commit(local_repo_dpath, commit_hash, old_fname)
+    new_file_content = get_code_after_commit(local_repo_dpath, commit_hash, new_fname)
 
     diff_classes_info, diff_funcs_info, diff_asyncFuncs_info = \
         match_diff_structs_within_file(old_file_content, new_file_content, diff_file_info)
@@ -173,8 +170,8 @@ def test3(local_repo_dpath, commit_hash, diff_file_info):
     old_fname = diff_file_info["old_fpath"]
     new_fname = diff_file_info["new_fpath"]
 
-    old_file_content = get_file_before_commit(local_repo_dpath, commit_hash, old_fname)
-    new_file_content = get_file_after_commit(local_repo_dpath, commit_hash, new_fname)
+    old_file_content = get_code_before_commit(local_repo_dpath, commit_hash, old_fname)
+    new_file_content = get_code_after_commit(local_repo_dpath, commit_hash, new_fname)
 
     old_res = parse(old_file_content)
     new_res = parse(new_file_content)
@@ -297,51 +294,73 @@ def test5():
     #
 
     code = """
-    import ast
-    import ast as st
-    import re, sys as sy, ast as aaa
-    from . import x
-    from .. import y
-    from .x import z
-    from a.b import c as abc, d
+import ast
+import ast as st
+import re, sys as sy, ast as aaa
+from . import x
+from .. import y
+from .x import z
+from a.b import c as abc, d
 
-    a = []
-    if len(a) > 1:
-        print(a["a"])
-    else:
-        a["b"] = 1
+a = []
+if len(a) > 1:
+    print(a["a"])
+else:
+    a["b"] = 1
 
-    def a(n):
-        return b+1
+def a(n):
+    return b+1
+"""
 
-    class item():
-        @override_settings(DEBUG=True, ALLOWED_HOSTS=['www.example.com'])
-        def test_https_bad_referer(self):
-            req = self._get_POST_request_with_token()
-            req._is_secure_override = True
-            req.META['HTTP_HOST'] = 'www.example.com'
-            req.META['HTTP_REFERER'] = 'https://www.evil.org/somepage'
-            req.META['SERVER_PORT'] = '443'
-            response = CsrfViewMiddleware().process_view(req, post_form_view, (), {})
-            self.assertContains(
-                response,
-                'Referer checking failed - https://www.evil.org/somepage does not '
-                'match any trusted origins.',
-                status_code=403,
-            )
+    code = """
+class item():
+    @override_settings(DEBUG=True, ALLOWED_HOSTS=['www.example.com'])
+    def test_https_bad_referer(self) -> int:
+        req = self._get_POST_request_with_token()
+        req._is_secure_override = True
+        req.META['HTTP_HOST'] = 'www.example.com'
+        req.META['HTTP_REFERER'] = 'https://www.evil.org/somepage'
+        req.META['SERVER_PORT'] = '443'
+        response = CsrfViewMiddleware().process_view(req, post_form_view, (), {})
+        self.assertContains(
+            response,
+            'Referer checking failed - https://www.evil.org/somepage does not '
+            'match any trusted origins.',
+            status_code=403,
+        )
+        return req
 
-    if __name__ == "__main__":
-        print(a)
-        """
+if __name__ == "__main__":
+    print(a)
+"""
+
+    code = """
+@skipIf(six.PY2 and salt.utils.platform.is_windows(), "Skipped on windows py2")
+class TestCleanPathLink(TestCase):
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.to_path = os.path.join(self.tmpdir, "linkto")
+        self.from_path = os.path.join(self.tmpdir, "linkfrom")
+        if six.PY2 or salt.utils.platform.is_windows():
+            kwargs = {}
+        else:
+            kwargs = {"target_is_directory": True}
+        if salt.utils.platform.is_windows():
+            symlink(self.to_path, self.from_path, **kwargs)
+        else:
+            os.symlink(self.to_path, self.from_path, **kwargs)
+    """
 
     print(code)
     tree = ast.parse(code)
     for node in ast.iter_child_nodes(tree):
         if isinstance(node, ast.ClassDef):
-            for child in ast.iter_child_nodes(node):
+            class_children = list(ast.iter_child_nodes(node))
+
+            for child in class_children:
                 if isinstance(child, ast.FunctionDef):
-                    children = list(ast.iter_child_nodes(child))
-                    print(ast.dump(children))
+                    class_function_children = list(ast.iter_child_nodes(child))
+                    print(class_function_children)
 
         # if isinstance(node, ast.FunctionDef):
         #     children = list(ast.iter_child_nodes(node))
@@ -392,7 +411,7 @@ if __name__ == '__main__':
     # tasks_map_fpath = "/root/projects/VDTest/output/TreeVul/TreeVul_valid_scsfCVE.json"
     # main_test_changed_lines_locations(local_repos_dir, tasks_map_fpath)
 
-    test6()
+    test5()
 
 
 

@@ -17,7 +17,6 @@ total_num_task_groups = 0
 num_completed_task_groups = multiprocessing.Value("i", 0)
 
 
-num_golden_match_tasks = multiprocessing.Value("i", 0)
 num_completed_ok_tasks = multiprocessing.Value("i", 0)
 
 
@@ -52,12 +51,6 @@ def inc_task_return_msg() -> str:
 def inc_task_group_return_msg() -> str:
     completed = inc_completed_task_groups()
     return f">>>>>> Completed {completed}/{total_num_task_groups} task groups."
-
-
-def inc_golden_match_tasks() -> int:
-    with num_golden_match_tasks.get_lock():
-        num_golden_match_tasks.value += 1
-    return num_golden_match_tasks.value
 
 
 def inc_completed_ok_tasks() -> int:

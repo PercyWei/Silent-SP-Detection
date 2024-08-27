@@ -107,8 +107,9 @@ class RawLocalTask(RawTask):
         return Task(
             repo_name=self.repo_name,
             commit_hash=self.commit_hash,
-            head_commit_hash=self.head_commit_hash,
-            local_repo_dpath=self.local_repo_dpath,
             commit_content=self.commit_content,
-            cwe_id=self.cwe_id
+            commit_type=self.commit_type,
+            cwe_id=self.cwe_id,
+            local_repo_dpath=self.local_repo_dpath,
+            head_commit_hash=self.head_commit_hash
         )

@@ -5,8 +5,8 @@ from collections import namedtuple
 
 from agent_app.commit.commit_util import (
     extract_commit_content_info,
-    get_file_before_commit,
-    filter_blank_lines_in_file, filter_blank_lines_in_commit,
+    get_code_before_commit,
+    filter_blank_and_comment_in_code, filter_blank_lines_in_commit,
     SourceFileType,
     ContIndStructType, ContIndClassType, ContIndType,
     DiffStructType, DiffClassType, DiffType,
@@ -103,14 +103,14 @@ class CommitManager:
         self.mod_files[new_fpath] = old_fpath
 
         ## (2)
-        old_file_content = get_file_before_commit(self.local_repo_dpath, self.commit_hash, old_fpath)
-        nb_old_file_content, old_line_id_lookup = filter_blank_lines_in_file(old_file_content)
+        old_file_content = get_code_before_commit(self.local_repo_dpath, self.commit_hash, old_fpath)
+        nb_old_file_content, old_line_id_lookup = filter_blank_and_comment_in_code(old_file_content)
         self.code_before[old_fpath] = nb_old_file_content
 
         abs_new_fpath = os.path.join(self.local_repo_dpath, new_fpath)
         with open(abs_new_fpath, "r") as f:
             new_file_content = f.read()
-        nb_new_file_content, new_line_id_lookup = filter_blank_lines_in_file(new_file_content)
+        nb_new_file_content, new_line_id_lookup = filter_blank_and_comment_in_code(new_file_content)
         self.code_after[new_fpath] = nb_new_file_content
 
         ## (3) and (4)
@@ -237,7 +237,7 @@ class CommitManager:
         abs_new_fpath = os.path.join(self.local_repo_dpath, new_fpath)
         with open(abs_new_fpath, "r") as f:
             new_file_content = f.read()
-        nb_new_file_content, new_line_id_lookup = filter_blank_lines_in_file(new_file_content)
+        nb_new_file_content, new_line_id_lookup = filter_blank_and_comment_in_code(new_file_content)
         self.code_after[new_fpath] = nb_new_file_content
 
     def _update_with_deleted_file(self, diff_file_info: Dict) -> None:
@@ -250,8 +250,8 @@ class CommitManager:
         self.del_files.append(old_fpath)
 
         # (2)
-        old_file_content = get_file_before_commit(self.local_repo_dpath, self.commit_hash, old_fpath)
-        nb_old_file_content, old_line_id_lookup = filter_blank_lines_in_file(old_file_content)
+        old_file_content = get_code_before_commit(self.local_repo_dpath, self.commit_hash, old_fpath)
+        nb_old_file_content, old_line_id_lookup = filter_blank_and_comment_in_code(old_file_content)
         self.code_before[old_fpath] = nb_old_file_content
 
     """ Convert files information to seq """
@@ -304,7 +304,7 @@ class CommitManager:
         struct_name: str = cont_line_struct.struct_name
         all_cont_lines: List[List[DiffLine]] = cont_line_struct.all_lines
 
-        global_types = (LocationType.GLOBAL, LocationType.CLASS_GLOBAL)
+        global_types = (LocationType.UNIT, LocationType.CLASS_UNIT)
         func_types = (LocationType.FUNCTION, LocationType.CLASS_FUNCTION)
         support_types = global_types + func_types
 

@@ -996,9 +996,9 @@ def group_diff_lines_by_struct_within_file(
     """
     ######################## Inner Function ########################
 
-    support_line_type = (LocationType.FUNCTION, LocationType.GLOBAL, LocationType.CLASS_GLOBAL, LocationType.CLASS_FUNCTION)
-    top_level_item_type = (LocationType.CLASS, LocationType.FUNCTION, LocationType.GLOBAL)
-    class_child_type = (LocationType.CLASS_GLOBAL, LocationType.CLASS_FUNCTION)
+    support_line_type = (LocationType.FUNCTION, LocationType.UNIT, LocationType.CLASS_UNIT, LocationType.CLASS_FUNCTION)
+    top_level_item_type = (LocationType.CLASS, LocationType.FUNCTION, LocationType.UNIT)
+    class_child_type = (LocationType.CLASS_UNIT, LocationType.CLASS_FUNCTION)
 
     def _new_group(_ind: int, _loc_type: LocationType) -> IndType:
         ind_struct = IndStructType(struct_type=_loc_type, indexes=[_ind])
@@ -1562,7 +1562,7 @@ def _parse_ind_struct(
     all_cont_indexes = _split_discontinuous_line_indexes(ind_struct.indexes)
 
     ## Case 1
-    if ind_struct.struct_type in (LocationType.GLOBAL, LocationType.CLASS_GLOBAL):
+    if ind_struct.struct_type in (LocationType.UNIT, LocationType.CLASS_UNIT):
         cont_ind_globals: List[ContIndStructType] = []
         diff_globals: List[DiffStructType] = []
 

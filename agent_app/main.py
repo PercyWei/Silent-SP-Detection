@@ -3,6 +3,7 @@
 
 import os
 import json
+import time
 
 from typing import *
 from pathlib import Path
@@ -131,9 +132,6 @@ def run_task_groups(
         print_with_time("Running in multi-process mode.")
         run_task_groups_parallel(task_groups, num_processes)
 
-    always_cprint(f"Golden match {globals_mut.num_golden_match_tasks.value}/{globals_mut.num_completed_ok_tasks.value}",
-                  style="bold green")
-
 
 def run_tasks_serial(tasks: List[RawTask]) -> None:
     """
@@ -215,13 +213,13 @@ def run_raw_task(task: RawTask, print_callback: Optional[Callable[[Dict], None]]
 
     log_and_always_print(f"============= Running task {task_id} =============")
 
-    run_ok = False
+    proc_status = None
 
     # Run a task formally
     try:
-        run_ok = do_inference(task.to_task(), task_output_dpath, print_callback)
+        proc_status = do_inference(task.to_task(), task_output_dpath, print_callback)
 
-        if run_ok:
+        if proc_status:
             run_status_message = f"Task {task_id} completed successfully."
         else:
             run_status_message = f"Task {task_id} failed without exception."
@@ -229,24 +227,23 @@ def run_raw_task(task: RawTask, print_callback: Optional[Callable[[Dict], None]]
         logger.exception(e)
         run_status_message = f"Task {task_id} failed with exception: {e}."
     finally:
-        # FIXME: Add other information
         other_info = {
             "completion_info": {
-                "complete": run_ok
+                "process_status": proc_status
             }
         }
         task.dump_meta_data(task_output_dpath, other_info)
 
     log_and_always_print(run_status_message)
 
-    return run_ok
+    return proc_status is not None
 
 
 def do_inference(
     python_task: Task,
     task_output_dir: str,
     print_callback: Optional[Callable[[Dict], None]] = None,
-) -> bool:
+) -> Dict | None:
     create_dir_if_not_exists(task_output_dir)
     current_task_log_path = os.path.join(task_output_dir, "info.log")
 
@@ -261,10 +258,9 @@ def do_inference(
 
     start_time = datetime.now()
 
-    import time
-    start = time.time()
-    state_manager = ProcessManager(python_task, task_output_dir)
-    print(f"Manager preparation: {time.time() - start}")
+    manager = ProcessManager(python_task, task_output_dir)
+
+    log_and_cprint(f"Manager preparation: {time.time() - start_time.timestamp()}")
 
     # print("=" * 100)
     # print(f"- Repo: {python_task.repo_name}")
@@ -274,13 +270,9 @@ def do_inference(
     # print(f"- Raw commit content: \n{python_task.commit_content}\n\n")
     # print(f"- Commit prompt: \n{state_manager.commit_manager.commit_files_info_seq()}\n\n")
 
+    proc_status = None
     try:
-        run_ok = inference.run_one_task(
-            python_task.commit_content,
-            state_manager.output_dpath,
-            state_manager,
-            print_callback
-        )
+        proc_status = inference.run_one_task(python_task.commit_content, manager.output_dpath, manager, print_callback)
 
         end_time = datetime.now()
 
@@ -288,7 +280,7 @@ def do_inference(
     finally:
         python_task.reset_project()
 
-    return run_ok
+    return proc_status
 
 
 def dump_cost(repo: str, commit_hash: str, start_time: datetime, end_time: datetime, task_output_dir: str):
@@ -315,6 +307,7 @@ def construct_tasks(tasks_map_file: str, local_repos_dpath: str) -> List[RawLoca
         local_repos_dpath (str): Path to the local directory for saving local repos cloned from GitHub.
     """
     all_tasks = []
+    checked_tasks = ["26-vulfix", "457-vulfix", "820-vulfix", "903-vulfix"]
 
     with open(tasks_map_file) as f:
         tasks_map = json.load(f)
@@ -323,6 +316,9 @@ def construct_tasks(tasks_map_file: str, local_repos_dpath: str) -> List[RawLoca
         if (globals.expr_type == "vul" and task_info["commit_type"] == 1) or \
                 (globals.expr_type == "safe" and task_info["commit_type"] == 0):
             task_id = f"{i}-" + task_info["source"]
+
+            if task_id in checked_tasks:
+                continue
 
             repo_name = task_info["repo"]
             assert len(repo_name.split('/')) == 2

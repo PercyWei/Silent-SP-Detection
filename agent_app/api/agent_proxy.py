@@ -21,32 +21,53 @@ from agent_app.util import parse_function_invocation
 
 
 class ProxyTask(str, Enum):
-    INIT_HYP_PROPOSAL = "INIT_HYP_PROPOSAL"
-    NEW_HYP_PROPOSAL = "NEW_HYP_PROPOSAL"
+    HYP_PROPOSAL = "HYP_PROPOSAL"
+    PATCH_EXTRACTION = "PATCH_EXTRACTION"
     CONTEXT_RETRIEVAL = "CONTEXT_RETRIEVAL"
     SCORE = "SCORE"
 
     def task_target(self) -> str:
-        if self == ProxyTask.INIT_HYP_PROPOSAL or self == ProxyTask.NEW_HYP_PROPOSAL:
+        if self == ProxyTask.HYP_PROPOSAL:
             return "hypothesis"
+        elif self == ProxyTask.PATCH_EXTRACTION:
+            return "patch_code"
         elif self == ProxyTask.CONTEXT_RETRIEVAL:
             return "search APIs"
         elif self == ProxyTask.SCORE:
             return "confidence score"
 
 
-INIT_HYP_PROPOSAL_PROMPT = """You are a helpful assistant to convert text containing the following information into json format.
-1. Whether the commit fixes the vulnerability?
-2. Where is the patch located?
-3. What types of vulnerabilities might it address?
+HYP_PROPOSAL_PROMPT = """You are a helpful assistant to convert text containing the following information into json format.
+1. Are new hypotheses being proposed?
 
-Extract commit type from question 1 (it must exist).
-Extract patch_locations and vulnerability_types from question 2 (leave empty if not exist).
+Extract new hypothesis from question 1, leave an empty list if you do not find any valid hypothesis.
 
-For "commit_type", choose its value from "vulnerability_patch" and "non_vulnerability_type". If the value of "commit_type" is "non_vulnerability_type", "patch_locations" and "vulnerability_types" should be empty.
-For "patch_locations", its value is a list in which each element is a list at least containing a "file" and a "code".
-For "vulnerability_types", its value is a list in which each element is a list containing the type of vulnerability and the corresponding confidence score (1-10).
-Provide your answer in JSON structure and consider the following TypeScript Interface for the JSON schema:
+interface VulPatchHypothesis {
+  commit_type: 'vulnerability_patch';
+  vulnerability_type: `CWE-${number}`;
+  confidence_score: number;
+}
+
+interface NonVulPatchHypothesis {
+  commit_type: 'non_vulnerability_patch';
+  vulnerability_type: '';
+  confidence_score: number;
+}
+
+type Hypothesis = VulPatchHypothesis | NonVulPatchHypothesis;
+
+interface HypothesisList {
+    hypothesis_list: Hypothesis[]
+};
+
+Now based on the given context, write a hypothesis_list section that conforms to the HypothesisList schema.
+"""
+
+
+PATCH_EXTRACTION_PROMPT = """You are a helpful assistant to convert text containing the following information into json format.
+1. Where is the patch located?
+
+Extract the locations of patch code snippet from question 1, and for each location, it at least contains a "file" and a "code".
 
 interface PatchLocation {
   file: string;
@@ -55,26 +76,13 @@ interface PatchLocation {
   code: string;
 }
 
-type CWEId = `CWE-${number}`;
-
-type VulnerabilityType = [CWEId, number];
-
-interface VulPatchHypothesis {
-  commit_type: 'vulnerability_patch';
+interface PatchLocations {
   patch_locations: PatchLocation[];
-  vulnerability_types: VulnerabilityType[];
 }
 
-interface NonVulPatchHypothesis {
-  commit_type: 'non_vulnerability_patch';
-  patch_locations: [];
-  vulnerability_types: [];
-}
-
-type Hypothesis = VulPatchHypothesis | NonVulPatchHypothesis;
-
-Now based on the given context, write a hypothesis section according to the Hypothesis schema.
+Now based on the given context, write a patch_locations section that conforms to the PatchLocations schema.
 """
+
 
 CONTEXT_RETRIEVAL_PROMPT = """You are a helpful assistant to convert text containing the following information into json format.
 1. How to construct search API calls to get more context of the project?
@@ -107,31 +115,6 @@ interface ApiCalls {
 Now based on the given context, write a api_calls section that conforms to the ApiCalls schema.
 """
 
-NEW_HYP_PROPOSAL_PROMPT = """You are a helpful assistant to convert text containing the following information into json format.
-1. Are new hypotheses being proposed?
-
-Extract new hypothesis from question 1, leave an empty list if you do not find any valid hypothesis.
-
-interface VulPatchHypothesis {
-  commit_type: 'vulnerability_patch';
-  vulnerability_type: `CWE-${number}`;
-  confidence_score: number;
-}
-
-interface NonVulPatchHypothesis {
-  commit_type: 'non_vulnerability_patch';
-  vulnerability_type: '';
-  confidence_score: number;
-}
-
-type Hypothesis = VulPatchHypothesis | NonVulPatchHypothesis;
-
-interface HypothesisList {
-    hypothesis_list: Hypothesis[]
-};
-
-Now based on the given context, write a hypothesis_list section that conforms to the HypothesisList schema.
-"""
 
 SCORE_PROMPT = """You are a helpful assistant to convert text containing the following information into json format.
 1. What confidence score is set for the current hypothesis?
@@ -226,59 +209,7 @@ def is_valid_response(data: List | Dict, task: ProxyTask) -> Tuple[bool, str]:
     if not isinstance(data, dict):
         return False, "Json is not a dict"
 
-    if task == ProxyTask.INIT_HYP_PROPOSAL:
-        """
-        {
-            "commit_type": "vulnerability_patch" | "non_vulnerability_patch", 
-            "patch_locations": [
-                [
-                    "file": str, required
-                    "code": str, required
-                    "class": str, not required
-                    "func": str, not required
-                ],
-                ...
-            ]
-            "vulnerability_types": [
-                [CWE-ID, confidence_score], 
-                ...
-            ]
-        }
-        """
-        if "commit_type" not in data:
-            return False, "Missing 'commit_type' key"
-
-        commit_type = data["commit_type"]
-        if commit_type not in ["vulnerability_patch", "non_vulnerability_patch"]:
-            return False, "'commit_type' is not 'vulnerability_patch' or 'non_vulnerability_patch'"
-
-        if "patch_locations" not in data:
-            return False, "Missing 'patch_locations' key"
-
-        if "vulnerability_types" not in data:
-            return False, "Missing 'vulnerability_types' key"
-
-        patch_locations = data["patch_locations"]
-        vul_types = data["vulnerability_types"]
-
-        if commit_type == "non_vulnerability_patch":
-            if len(patch_locations) != 0 or len(vul_types) != 0:
-                return False, "'patch_locations' and 'vulnerability_types' should be empty while 'commit_type' is 'non_vulnerability_patch'"
-        else:
-            if len(patch_locations) == 0 or len(vul_types) == 0:
-                return False, "'patch_locations' and 'vulnerability_types' should not be empty while 'commit_type' is 'vulnerability_patch'"
-
-            for loc in patch_locations:
-                if "file" in loc and "code" in loc:
-                    continue
-                return False, "For each location in 'patch_locations', at least a 'file' and a 'code' are required"
-
-            for vul in vul_types:
-                if len(vul) == 2 and re.fullmatch(r"CWE-\d+", vul[0]) and isinstance(vul[1], int):
-                    continue
-                return False, "For each vulnerability type in 'vulnerability_types', it should have a CWE-ID and an integer confidence score"
-
-    elif task == ProxyTask.NEW_HYP_PROPOSAL:
+    if task == ProxyTask.HYP_PROPOSAL:
         """
         {
             "hypothesis_list" : [
@@ -295,35 +226,57 @@ def is_valid_response(data: List | Dict, task: ProxyTask) -> Tuple[bool, str]:
             return False, "Missing 'hypothesis_list' key"
 
         hypothesis_list = data["hypothesis_list"]
-        if len(hypothesis_list) != 0:
-            for hypothesis in hypothesis_list:
-                if not isinstance(hypothesis, Dict):
-                    return False, "Every hypothesis must be a dict"
+        for hypothesis in hypothesis_list:
+            if not isinstance(hypothesis, Dict):
+                return False, "Every hypothesis must be a dict"
 
-                if "commit_type" not in hypothesis:
-                    return False, "For hypothesis, missing 'commit_type' key"
+            if "commit_type" not in hypothesis:
+                return False, "For hypothesis, missing 'commit_type' key"
 
-                if "vulnerability_type" not in hypothesis:
-                    return False, "For hypothesis, missing 'vulnerability_type' key"
+            if "vulnerability_type" not in hypothesis:
+                return False, "For hypothesis, missing 'vulnerability_type' key"
 
-                if "confidence_score" not in hypothesis:
-                    return False, "For hypothesis, missing 'confidence_score' key"
+            if "confidence_score" not in hypothesis:
+                return False, "For hypothesis, missing 'confidence_score' key"
 
-                commit_type = hypothesis["commit_type"]
-                vul_type = hypothesis["vulnerability_type"]
-                conf_score = hypothesis["confidence_score"]
+            commit_type = hypothesis["commit_type"]
+            vul_type = hypothesis["vulnerability_type"]
+            conf_score = hypothesis["confidence_score"]
 
-                if commit_type not in ["vulnerability_patch", "non_vulnerability_patch"]:
-                    return False, "For hypothesis, 'commit_type' is not 'vulnerability_patch' or 'non_vulnerability_patch'"
+            if commit_type not in ["vulnerability_patch", "non_vulnerability_patch"]:
+                return False, "For hypothesis, 'commit_type' is not 'vulnerability_patch' or 'non_vulnerability_patch'"
 
-                if commit_type == "non_vulnerability_patch" and vul_type != "":
-                    return False, "For hypothesis, 'vulnerability_type' should be empty while 'commit_type' is 'non_vulnerability_patch'"
+            if commit_type == "non_vulnerability_patch" and vul_type != "":
+                return False, "For hypothesis, 'vulnerability_type' should be empty while 'commit_type' is 'non_vulnerability_patch'"
 
-                if commit_type == "vulnerability_patch" and not re.fullmatch(r"CWE-\d+", vul_type):
-                    return False, "For hypothesis, 'vulnerability_type' should be a CWE-ID while 'commit_type' is 'vulnerability_patch'"
+            if commit_type == "vulnerability_patch" and not re.fullmatch(r"CWE-\d+", vul_type):
+                return False, "For hypothesis, 'vulnerability_type' should be a CWE-ID while 'commit_type' is 'vulnerability_patch'"
 
-                if not isinstance(conf_score, int):
-                    return False, "For hypothesis, 'confidence_score' is not an integer"
+            if not isinstance(conf_score, int):
+                return False, "For hypothesis, 'confidence_score' is not an integer"
+
+    elif task == ProxyTask.PATCH_EXTRACTION:
+        """
+        {
+            "patch_locations": [
+                [
+                    "file": str, required
+                    "code": str, required
+                    "class": str, not required
+                    "func": str, not required
+                ],
+                ...
+            ]
+        }
+        """
+        if "patch_locations" not in data:
+            return False, "Missing 'patch_locations' key"
+
+        patch_locations = data["patch_locations"]
+        for loc in patch_locations:
+            if "file" in loc and "code" in loc:
+                continue
+            return False, "For each location in 'patch_locations', at least a 'file' and a 'code' are required"
 
     elif task == ProxyTask.CONTEXT_RETRIEVAL:
         """
@@ -339,25 +292,24 @@ def is_valid_response(data: List | Dict, task: ProxyTask) -> Tuple[bool, str]:
             return False, "Missing 'api_calls' key"
 
         api_calls = data["api_calls"]
-        if len(api_calls) != 0:
-            for api_call in api_calls:
-                if not isinstance(api_call, str):
-                    return False, "Every API call must be a string"
+        for api_call in api_calls:
+            if not isinstance(api_call, str):
+                return False, "Every API call must be a string"
 
-                try:
-                    func_name, func_args = parse_function_invocation(api_call)
-                except Exception:
-                    return False, "Every API call must be of form api_call(arg1, ..., argn)"
+            try:
+                func_name, func_args = parse_function_invocation(api_call)
+            except Exception:
+                return False, "Every API call must be of form api_call(arg1, ..., argn)"
 
-                function = getattr(SearchManager, func_name, None)
-                if function is None:
-                    return False, f"The API call '{api_call}' calls a non-existent function"
+            function = getattr(SearchManager, func_name, None)
+            if function is None:
+                return False, f"The API call '{api_call}' calls a non-existent function"
 
-                arg_spec = inspect.getfullargspec(function)
-                arg_names = arg_spec.args[1:]  # first parameter is self
+            arg_spec = inspect.getfullargspec(function)
+            arg_names = arg_spec.args[1:]  # first parameter is self
 
-                if len(func_args) != len(arg_names):
-                    return False, f"The API call '{api_call}' has wrong number of arguments"
+            if len(func_args) != len(arg_names):
+                return False, f"The API call '{api_call}' has wrong number of arguments"
 
     elif task == ProxyTask.SCORE:
         """

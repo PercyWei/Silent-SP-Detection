@@ -9,6 +9,7 @@ from typing import *
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
+from functools import partial
 
 from loguru import logger
 
@@ -74,99 +75,50 @@ def replace_html_tags(content: str):
     return content
 
 
-def print_user(msg: str, desc="", print_callback: Optional[Callable[[Dict], None]] = None) -> None:
+"""ROLE CONVERSATION PRINT"""
+
+
+def print_role(
+        role: str,
+        msg: str,
+        border_style: str = "blue",
+        desc: str = "",
+        print_callback: Optional[Callable[[Dict], None]] = None
+) -> None:
     """
-    Print message provided by User
+    Print message provided by Role (system / user / actor agent / proxy agent)
     """
     if not print_stdout:
         return
 
-    # msg = replace_html_tags(msg)
-    # markdown = Markdown(msg)
-
-    name = "User"
     if desc:
-        title = f"{name} ({desc})"
+        title = f"{role} ({desc})"
     else:
-        title = name
+        title = role
 
-    panel = Panel(
-        msg, title=title, title_align="left", border_style="magenta", width=WIDTH
-    )
+    panel = Panel(msg, title=title, title_align="left", border_style=border_style, width=WIDTH)
     console.print(panel)
 
     if print_callback:
         print_callback(
             {
-                "title": f"{name} ({desc})",
+                "title": f"{title}",
                 "message": msg,
                 "category": "silent_patch_identification"
             }
         )
 
 
-def print_actor(msg: str, desc="", print_callback: Optional[Callable[[Dict], None]] = None) -> None:
-    """
-    Print message provided by the Actor Agent
-    """
-    if not print_stdout:
-        return
-
-    # msg = replace_html_tags(msg)
-    # markdown = Markdown(msg)
-
-    name = "Actor Agent"
-    if desc:
-        title = f"{name} ({desc})"
-    else:
-        title = name
-
-    panel = Panel(
-        msg, title=title, title_align="left", border_style="blue", width=WIDTH
-    )
-    console.print(panel)
-
-    if print_callback:
-        print_callback(
-            {
-                "title": f"{name} ({desc})",
-                "message": msg,
-                "category": "context_retrieval_agent"
-            }
-        )
+print_system = partial(print_role, role="System", border_style="green")
 
 
-def print_proxy(msg: str, desc="", print_callback: Optional[Callable[[Dict], None]] = None) -> None:
-    """
-    Print message provided by Proxy Agent
-    """
-    if not print_stdout:
-        return
+print_user = partial(print_role, role="User", border_style="magenta")
 
-    # msg = replace_html_tags(msg)
-    # markdown = Markdown(msg)
 
-    text = Text(json.dumps(msg, indent=4))
+print_actor = partial(print_role, role="Actor Agent", border_style="blue")
 
-    name = "Proxy Agent"
-    if desc:
-        title = f"{name} ({desc})"
-    else:
-        title = name
 
-    panel = Panel(
-        msg, title=title, title_align="left", border_style="yellow", width=WIDTH
-    )
-    console.print(panel)
-
-    if print_callback:
-        print_callback(
-            {
-                "title": f"{name} ({desc})",
-                "message": msg,
-                "category": "silent_patch_identification"
-            }
-        )
+print_proxy = partial(print_role, role="Proxy Agent", border_style="yellow")
 
 
 def print_commit_content(content: str, verbose: bool = False) -> None:

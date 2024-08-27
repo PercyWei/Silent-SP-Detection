@@ -1,7 +1,6 @@
 # This code is modified from https://github.com/nus-apr/auto-code-rover
 # Original file: agent_app/task.py
 
-from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 from agent_app.util import cd, repo_reset_and_clean_checkout, repo_checkout
@@ -12,12 +11,15 @@ class Task:
     """
     Tasks that only contain a codebase and a commit content.
     """
+    # Base info
     repo_name: str
     commit_hash: str
-    head_commit_hash: str
-    local_repo_dpath: str
     commit_content: str
+    commit_type: int
     cwe_id: str
+    # Setup info
+    local_repo_dpath: str
+    head_commit_hash: str
 
     @property
     def project_path(self) -> str:

@@ -851,3 +851,8 @@ class SearchManager:
             res_str = res.to_tagged_str()
             tool_output += f"- Search result {idx + 1}:\n```\n{res_str}\n```\n"
         return tool_output, SearchStatus.FIND_ANY, all_search_res
+
+
+    def get_classes_and_methods_in_file(self, file_name: str) -> Tuple[str, SearchStatus, List[SearchResult]]:
+        pass
+

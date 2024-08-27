@@ -3,9 +3,10 @@ import os
 from typing import *
 
 from agent_app.commit.commit_util import (
-    SourceFileType, DiffLineGroup,
-    extract_commit_content_info, get_file_before_commit,
-    parse_common_content_structs, analyse_modified_file
+    SourceFileType,
+    CombineInfo, DiffCodeSnippet,
+    extract_commit_content_info, get_code_before_commit,
+    build_struct_indexes_from_common_code, analyse_modified_file
 )
 from utils import LineRange
 
@@ -53,8 +54,8 @@ class CommitManager:
         self.file_classFunc_index: Dict[str, List[Tuple[str, List[Tuple[str, LineRange]]]]] = {}
 
         ####################### Information only for modified files #######################
-        # file_path -> description of file diff
-        self.mod_files_desc: Dict[str, str] = {}
+        # file_path -> [diff code snippet]
+        self.files_diff_code_snips: Dict[str, List[DiffCodeSnippet]] = {}
 
         ####################### Update #######################
         try:
@@ -62,7 +63,7 @@ class CommitManager:
         except Exception as e:
             raise e
 
-    """ Update """
+    """ UPDATE """
 
     def _update(self) -> None:
         commit_info = extract_commit_content_info(self.raw_commit_content)
@@ -93,17 +94,15 @@ class CommitManager:
 
         fpath = old_fpath
 
-        old_ori_content = get_file_before_commit(self.local_repo_dpath, self.commit_hash, old_fpath)
+        old_ori_content = get_code_before_commit(self.local_repo_dpath, self.commit_hash, old_fpath)
         abs_new_fpath = os.path.join(self.local_repo_dpath, new_fpath)
         with open(abs_new_fpath, "r") as f:
             new_ori_content = f.read()
 
-        file_diff_desc, old_nb_content, new_nb_content, comb_nb_content, \
-            old_comb_line_id_lookup, new_comb_line_id_lookup, \
-            comb_funcs, comb_classes, comb_classesFuncs = \
-            analyse_modified_file(old_ori_content, new_ori_content, diff_file_info)
+        comb_info, diff_code_snips, comb_funcs, comb_classes, comb_classesFuncs = \
+            analyse_modified_file(fpath, old_ori_content, new_ori_content, diff_file_info)
 
-        if file_diff_desc != "":
+        if len(diff_code_snips) != 0:
             self.valid_files_num += 1
 
             ## (1) File path
@@ -112,9 +111,9 @@ class CommitManager:
             self.mod_files.append(fpath)
 
             ## (2) File content (original, combined)
-            self.code_before[fpath] = old_nb_content
-            self.code_after[fpath] = new_nb_content
-            self.code_comb[fpath] = comb_nb_content
+            self.code_before[fpath] = comb_info.code_before
+            self.code_after[fpath] = comb_info.code_after
+            self.code_comb[fpath] = comb_info.code_comb
 
             ## (3) All structs in combined code (used for searching)
             self.file_func_index[fpath] = comb_funcs
@@ -122,11 +121,11 @@ class CommitManager:
             self.file_classFunc_index[fpath] = comb_classesFuncs
 
             ## (4) Line id lookup (used for searching)
-            self.before2comb_line_id_lookup[fpath] = old_comb_line_id_lookup
-            self.after2comb_line_id_lookup[fpath] = new_comb_line_id_lookup
+            self.before2comb_line_id_lookup[fpath] = comb_info.li_lookup_before2comb
+            self.after2comb_line_id_lookup[fpath] = comb_info.li_lookup_after2comb
 
             ## (5) Diff lines (used to prepare init commit prompt)
-            self.mod_files_desc[fpath] = file_diff_desc
+            self.files_diff_code_snips[fpath] = diff_code_snips
 
         else:
             # TODO: For test, delete later.
@@ -154,7 +153,7 @@ class CommitManager:
         self.code_comb[new_fpath] = diff_file_info["code_diff"]["diff_code_snippet"]
 
         ## (3) All structs in combined code (used to search in)
-        funcs, classes, classes_funcs = parse_common_content_structs(new_ori_content)
+        funcs, classes, classes_funcs = build_struct_indexes_from_common_code(new_ori_content)
         self.file_func_index[new_fpath] = funcs
         self.file_class_index[new_fpath] = classes
         self.file_classFunc_index[new_fpath] = classes_funcs
@@ -172,14 +171,14 @@ class CommitManager:
         self.del_files.append(old_fpath)
 
         ## (2) File content (original, combined)
-        old_ori_content = get_file_before_commit(self.local_repo_dpath, self.commit_hash, old_fpath)
+        old_ori_content = get_code_before_commit(self.local_repo_dpath, self.commit_hash, old_fpath)
         assert len(old_ori_content) == len(diff_file_info["code_diff"]["diff_code_snippet"])
 
         self.code_before[old_fpath] = old_ori_content
         self.code_comb[old_fpath] = diff_file_info["code_diff"]["diff_code_snippet"]
 
         ## (3) All structs in combined code (used to search in)
-        funcs, classes, classes_funcs = parse_common_content_structs(old_ori_content)
+        funcs, classes, classes_funcs = build_struct_indexes_from_common_code(old_ori_content)
         self.file_func_index[old_fpath] = funcs
         self.file_class_index[old_fpath] = classes
         self.file_classFunc_index[old_fpath] = classes_funcs
@@ -189,47 +188,47 @@ class CommitManager:
 
     """ Convert files information to seq """
 
-    def commit_files_info_seq(self) -> str:
-        add_file_seqs: List[str] = []
+    def describe_commit_files(self) -> str:
+        add_file_descs: Dict[str, str] = {}
         for fname in self.add_files:
-            add_file_seqs.append(self._add_file_info_seq(fname))
+            add_file_descs[fname] = self._add_file_info_desc(fname)
 
-        del_file_seqs: List[str] = []
+        del_file_descs: Dict[str, str] = {}
         for fname in self.del_files:
-            del_file_seqs.append(self._del_file_info_seq(fname))
+            del_file_descs[fname] = self._del_file_info_desc(fname)
 
-        mod_file_seqs: List[str] = []
-        for fname_after in self.mod_files:
-            mod_file_seqs.append(self._mod_file_info_seq(fname_after))
+        mod_file_descs: Dict[str, str] = {}
+        for fname in self.mod_files:
+            mod_file_descs[fname] = self._mod_file_info_desc(fname)
 
         file_num = 0
-        commit_seq = ""
-        if len(add_file_seqs) > 0:
-            commit_seq += "## ADD files:\n"
-            for file_seq in add_file_seqs:
+        commit_desc = ""
+        if len(add_file_descs) > 0:
+            commit_desc += "## ADD files:\n"
+            for fname, file_desc in add_file_descs.items():
                 file_num += 1
-                commit_seq += f"# File {file_num}\n"
-                commit_seq += file_seq + "\n"
+                commit_desc += f"# File {file_num}: {fname}\n"
+                commit_desc += file_desc + "\n"
 
-        if len(del_file_seqs) > 0:
-            commit_seq += "## DELETE files:\n"
-            for file_seq in del_file_seqs:
+        if len(del_file_descs) > 0:
+            commit_desc += "## DELETE files:\n"
+            for fname, file_desc in del_file_descs.items():
                 file_num += 1
-                commit_seq += f"# File {file_num}\n"
-                commit_seq += file_seq + "\n"
+                commit_desc += f"# File {file_num}: {fname}\n"
+                commit_desc += file_desc + "\n"
 
-        if len(mod_file_seqs) > 0:
-            commit_seq += "## MODIFY files:\n"
-            for file_seq in mod_file_seqs:
+        if len(mod_file_descs) > 0:
+            commit_desc += "## MODIFY files:\n"
+            for fname, file_desc in mod_file_descs.items():
                 file_num += 1
-                commit_seq += f"# File {file_num}\n"
-                commit_seq += file_seq + "\n"
+                commit_desc += f"# File {file_num}: {fname}\n"
+                commit_desc += file_desc + "\n"
 
-        commit_seq = f"<commit>\n{commit_seq}</commit>\n"
+        commit_desc = f"<commit>\n{commit_desc}</commit>"
 
-        return commit_seq
+        return commit_desc
 
-    def _mod_file_info_seq(self, fpath: str) -> str | None:
+    def _mod_file_info_desc(self, fpath: str) -> str | None:
         """
         For a modified file involved in the commit, return the sorted modified content.
 
@@ -241,13 +240,21 @@ class CommitManager:
         if fpath not in self.mod_files:
             return None
 
-        file_diff_desc = self.mod_files_desc[fpath]
-        file_seq = (f"<file>{fpath}</file>\n\n"
-                    f"{file_diff_desc}")
+        file_diff_desc = ""
+        for diff_code_snip in self.files_diff_code_snips[fpath]:
+            diff_code_str = diff_code_snip.get_only_diff_code()
 
-        return file_seq
+            prefix = ""
+            if diff_code_snip.class_name is not None:
+                prefix += "<class>" + diff_code_snip.class_name + "</class> "
+            if diff_code_snip.func_name is not None:
+                prefix += "<func>" + diff_code_snip.func_name + "</func>"
 
-    def _add_file_info_seq(self, fpath: str) -> str | None:
+            file_diff_desc += f"{prefix}\n<code>\n{diff_code_str}\n</code>\n\n"
+
+        return file_diff_desc
+
+    def _add_file_info_desc(self, fpath: str) -> str | None:
         if fpath not in self.add_files:
             return None
 
@@ -256,14 +263,13 @@ class CommitManager:
         if file_seq.splitlines()[-1].strip() != "":
             file_seq += "\n"
 
-        file_seq += (f"<file>{fpath}</file>\n\n"
-                     f"<code>\n"
-                     f"{file_seq}"
-                     f"</code>\n")
+        file_seq += (f"\n<code>"
+                     f"\n{file_seq}"
+                     f"\n</code>")
 
         return file_seq
 
-    def _del_file_info_seq(self, fpath: str) -> str | None:
+    def _del_file_info_desc(self, fpath: str) -> str | None:
         if fpath not in self.del_files:
             return None
 
@@ -272,10 +278,9 @@ class CommitManager:
         if file_seq.splitlines()[-1].strip() != "":
             file_seq += "\n"
 
-        file_seq += (f"<file>{fpath}</file>\n\n"
-                     f"<code>\n"
-                     f"{file_seq}"
-                     f"</code>\n")
+        file_seq += (f"\n<code>"
+                     f"\n{file_seq}"
+                     f"\n</code>")
 
         return file_seq
 
