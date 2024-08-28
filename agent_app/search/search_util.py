@@ -56,9 +56,6 @@ class SearchResult(CodeSnippetLocation):
         return res_str
 
 
-"""Extract Code Structs (Import / Class / Function / Class Function)"""
-
-
 def find_python_files(dir_path: str) -> List[str]:
     """Get all .py files recursively from a directory.
 
@@ -77,6 +74,9 @@ def find_python_files(dir_path: str) -> List[str]:
             continue
         res.append(abs_fpath)
     return res
+
+
+"""BUILD STRUCT INDEX"""
 
 
 def parse_python_code(file_content: str) -> Tuple[List, List, List, Dict] | None:
@@ -101,7 +101,7 @@ def parse_python_code(file_content: str) -> Tuple[List, List, List, Dict] | None
     class_to_funcs: Dict[str, List[Tuple[str, int, int]]] = {}
 
     for child in ast.iter_child_nodes(tree):
-        ###### For (1) ######
+        ###### (1) Import libraries ######
         if isinstance(child, ast.Import):
             for alias in child.names:
                 pkg_path = alias.name if alias.name is not None else ""
@@ -121,15 +121,15 @@ def parse_python_code(file_content: str) -> Tuple[List, List, List, Dict] | None
 
                 import_libs.append((module_path, attr_name, alias_name))
 
-        ###### For (2) ######
+        ###### (2) Function ######
         if isinstance(child, ast.FunctionDef) or isinstance(child, ast.AsyncFunctionDef):
             funcs.append((child.name, child.lineno, child.end_lineno))
 
         if isinstance(child, ast.ClassDef):
-            ###### For (3) ######
+            ###### (3) Class ######
             classes.append((child.name, child.lineno, child.end_lineno))
 
-            ###### For (4) ######
+            ###### (4) Class function ######
             class_funcs = [
                 (n.name, n.lineno, n.end_lineno)
                 for n in ast.walk(child)

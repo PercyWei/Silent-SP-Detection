@@ -26,6 +26,8 @@ from agent_app.util import create_dir_if_not_exists
 
 def get_args():
     parser = ArgumentParser()
+
+    ## Base settings
     parser.add_argument(
         "--output-dir",
         type=str,
@@ -42,7 +44,7 @@ def get_args():
         "--tasks-map-file",
         type=str,
         required=True,
-        help="Path to json file that contains the tasks information.",
+        help="Path to json file that stores information about the tasks.",
     )
     parser.add_argument(
         "--expr-type",
@@ -50,12 +52,22 @@ def get_args():
         required=True,
         help="Experiment name.",
     )
+
+    ## CWE settings
     parser.add_argument(
-        "--no-print",
-        action="store_true",
-        default=False,
-        help="Do not print most messages to stdout.",
+        "--cwe-entry-file",
+        type=str,
+        required=True,
+        help="Path to json file that stores information about the CWE entries.",
     )
+    parser.add_argument(
+        "--cwe-tree-file",
+        type=str,
+        required=True,
+        help="Path to json file that stores information about the CWE tree.",
+    )
+
+    ## Model settings
     parser.add_argument(
         "--model",
         type=str,
@@ -69,6 +81,8 @@ def get_args():
         default=0.0,
         help="The model temperature to use, for OpenAI models.",
     )
+
+    ## Process settings
     parser.add_argument(
         "--complete-process-limit",
         type=int,
@@ -93,6 +107,16 @@ def get_args():
         default=3,
         help="Hypothesis proposed limit in the process.",
     )
+
+    ## Print settings
+    parser.add_argument(
+        "--no-print",
+        action="store_true",
+        default=False,
+        help="Do not print most messages to stdout.",
+    )
+
+    ## Implementation settings
     parser.add_argument(
         "--num-processes",
         type=str,
@@ -250,10 +274,7 @@ def do_inference(
     logger.add(
         current_task_log_path,
         level="DEBUG",
-        format=(
-            "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level>"
-            " | <level>{message}</level>"
-        ),
+        format="<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | <level>{message}</level>"
     )
 
     start_time = datetime.now()
@@ -355,8 +376,8 @@ def group_local_tasks_by_repo(tasks: List[RawLocalTask]) -> Dict[str, List[RawLo
 
 
 def main(args):
-    ############ Set options ############
-    # Required
+    # ------------------------- Set options ------------------------- #
+    ## Required
     globals.output_dpath = os.path.abspath(args.output_dir)
     assert os.path.exists(globals.output_dpath)
 
@@ -369,6 +390,10 @@ def main(args):
     expr_dpath = os.path.join(globals.output_dpath, expr_name)
     globals.expr_dpath = os.path.abspath(expr_dpath)
     create_dir_if_not_exists(globals.expr_dpath)
+
+    # CWE
+    globals.cwe_entry_file = args.cwe_entry_file
+    globals.cwe_tree_file = args.cwe_tree_file
 
     # number of processes
     num_processes: int = int(args.num_processes)
@@ -384,17 +409,17 @@ def main(args):
     globals.state_round_limit = args.state_round_limit
     globals.hypothesis_limit = args.hypothesis_limit
 
-    ############ Save args ############
+    # ------------------------- Save args ------------------------- #
     json_args = vars(args)
     json_args["expr_name"] = expr_name
     expr_args_log = Path(globals.expr_dpath, "expr_args.json")
     expr_args_log.write_text(json.dumps(json_args, indent=4))
 
-    ############ Construct tasks ############
+    # ------------------------- Construct tasks ------------------------- #
     all_tasks: List[RawLocalTask] = construct_tasks(args.tasks_map_file, args.local_repos_dir)
     task_groups = group_local_tasks_by_repo(all_tasks)
 
-    ############ Run tasks ############
+    # ------------------------- Run tasks ------------------------- #
     run_task_groups(task_groups, num_processes)
 
 

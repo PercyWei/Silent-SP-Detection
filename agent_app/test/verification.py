@@ -406,12 +406,24 @@ def test6():
             f.write("\n\n" + "=" * 100 + "\n\n")
 
 
+def print_conversation():
+    conv_path = "/root/projects/VDTest/output/agent/vul_2024-08-28T11:03:41_SAVE/1231-vulfix_2024-08-28T11:03:42/process_1/loop_1_conversations.json"
+    with open(conv_path, 'r') as f:
+        convs = json.load(f)
+
+    save_path = "/root/projects/VDTest/agent_app/test/conversation.txt"
+    with open(save_path, 'w') as f:
+        for conv in convs:
+            f.write("ROLE: " + conv["role"] + "\n")
+            f.write("CONTENT: " + conv["content"] + "\n\n")
+
+
 if __name__ == '__main__':
     # local_repos_dir = "/root/projects/clone_projects"
     # tasks_map_fpath = "/root/projects/VDTest/output/TreeVul/TreeVul_valid_scsfCVE.json"
     # main_test_changed_lines_locations(local_repos_dir, tasks_map_fpath)
 
-    test5()
+    print_conversation()
 
 
 

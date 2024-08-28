@@ -17,6 +17,7 @@ from agent_app.search.search_manage import SearchResult, SearchManager
 from agent_app.data_structures import SearchStatus, FunctionCallIntent, MessageThread
 from agent_app.task import Task
 from agent_app.log import log_exception
+from agent_app import globals
 
 
 class ProcessManager:
@@ -51,18 +52,15 @@ class ProcessManager:
             "code_before": self.commit_manager.code_before,
             "code_after": self.commit_manager.code_after,
             "code_comb": self.commit_manager.code_comb,
-            "before2comb_line_id_lookup": self.commit_manager.before2comb_line_id_lookup,
-            "after2comb_line_id_lookup": self.commit_manager.after2comb_line_id_lookup,
+            "before2comb_line_id_lookup": self.commit_manager.line_id_before2comb,
+            "after2comb_line_id_lookup": self.commit_manager.line_id_after2comb,
             "file_func_index": self.commit_manager.file_func_index,
             "file_class_index": self.commit_manager.file_class_index,
             "file_classFunc_index": self.commit_manager.file_classFunc_index
         }
 
         ## For providing CWE information
-        # FIXME: Need update
-        cwe_items_fpath = "/root/projects/VDTest/agent_app/CWE/CWE_1003_items.json"
-        cwe_tree_fpath = "/root/projects/VDTest/agent_app/CWE/CWE_1003_tree.json"
-        self.cwe_manager = CWEManager(cwe_items_fpath, cwe_tree_fpath)
+        self.cwe_manager = CWEManager(globals.cwe_entry_file, globals.cwe_tree_file)
 
         ## For state context_retrieval
         # Build search manager

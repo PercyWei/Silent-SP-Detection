@@ -32,18 +32,16 @@ class CommitManager:
         self.mod_files: List[str] = []
 
         ######## (3) Record commit file content ########
-        # file_path (before commit) -> file_code
-        self.code_before: Dict[str, str] = {}  # NOTE: We remain the same, and do not add '-'
-        # file_path (after commit) -> file_code
-        self.code_after: Dict[str, str] = {}   # NOTE: We remain the same, and do not add '+'
-        # file_path (before / after commit) -> file_code
-        self.code_comb: Dict[str, str] = {}    # NOTE: We filter out blank lines and comment lines
+        # NOTE: We remain the same, and do not add '-'
+        self.code_before: Dict[str, str] = {}  # file_path (before commit) -> file_code
+        # NOTE: We remain the same, and do not add '+'
+        self.code_after: Dict[str, str] = {}   # file_path (after commit) -> file_code
+        # NOTE: We filter out blank lines and comment lines
+        self.code_comb: Dict[str, str] = {}    # file_path (before / after commit) -> file_code
 
         ######## (4) Record line id lookup dict ########
-        # code_before -> code_after
-        self.before2comb_line_id_lookup: Dict[str, Dict[int, int]] = {}
-        # code_after -> code_after
-        self.after2comb_line_id_lookup: Dict[str, Dict[int, int]] = {}
+        self.line_id_before2comb: Dict[str, Dict[int, int]] = {}  # code_before -> code_comb
+        self.line_id_after2comb: Dict[str, Dict[int, int]] = {}   # code_after  -> code_comb
 
         ######## (5) Record structs in combined code ########
         # file_path -> [(func_name, func_range)]
@@ -121,8 +119,8 @@ class CommitManager:
             self.file_classFunc_index[fpath] = comb_classesFuncs
 
             ## (4) Line id lookup (used for searching)
-            self.before2comb_line_id_lookup[fpath] = comb_info.li_lookup_before2comb
-            self.after2comb_line_id_lookup[fpath] = comb_info.li_lookup_after2comb
+            self.line_id_before2comb[fpath] = comb_info.li_lookup_before2comb
+            self.line_id_after2comb[fpath] = comb_info.li_lookup_after2comb
 
             ## (5) Diff lines (used to prepare init commit prompt)
             self.files_diff_code_snips[fpath] = diff_code_snips
@@ -159,7 +157,7 @@ class CommitManager:
         self.file_classFunc_index[new_fpath] = classes_funcs
 
         ## (4) Line id lookup (used for searching)
-        self.after2comb_line_id_lookup[new_fpath] = {i+1: i+1 for i in range(len(new_ori_content))}
+        self.line_id_after2comb[new_fpath] = {i + 1: i + 1 for i in range(len(new_ori_content))}
 
     def _update_with_deleted_file(self, diff_file_info: Dict) -> None:
         old_fpath = diff_file_info["old_fpath"]
@@ -184,7 +182,7 @@ class CommitManager:
         self.file_classFunc_index[old_fpath] = classes_funcs
 
         ## (4) Line id lookup (used for searching)
-        self.before2comb_line_id_lookup[old_fpath] = {i+1: i+1 for i in range(len(old_ori_content))}
+        self.line_id_before2comb[old_fpath] = {i + 1: i + 1 for i in range(len(old_ori_content))}
 
     """ Convert files information to seq """
 

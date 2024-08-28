@@ -707,6 +707,7 @@ def combine_locations_before_and_after(comb_info: CombineInfo, file_diff_lines: 
         return len(comb_locations)
 
     def _get_comb_name(old_name: str, new_name: str) -> str:
+        # NOTE: For modified class / function / class_function, it may have a name like ‘xx@xx’ or ‘xx’.
         return old_name if old_name == new_name else old_name + '@' + new_name
 
     def _get_comb_range(old_lo: Location | None, new_lo: Location | None) -> LineRange:
@@ -1139,16 +1140,24 @@ def build_struct_indexes_from_comb_info(
 
     loc_classes_funcs: Dict[int, List[Tuple[str, LineRange]]] = defaultdict(list)
 
+    # NOTE: Name of location may be "xx@xx" or "xx", so for name like "xx@xx",
+    #       we add both structs before and after, although they point to the same code snippet
     for _, loc_comb in locs_comb.items():
         if loc_comb.type == LocationType.FUNCTION:
-            funcs.append((loc_comb.name, loc_comb.range))
+            for name in loc_comb.name.split('@'):
+                if name != "":
+                    funcs.append((name, loc_comb.range))
 
         elif loc_comb.type == LocationType.CLASS:
-            classes.append((loc_comb.name, loc_comb.range))
+            for name in loc_comb.name.split('@'):
+                if name != "":
+                    classes.append((name, loc_comb.range))
 
         elif loc_comb.type == LocationType.CLASS_FUNCTION:
             class_id = locs_comb[loc_comb.father].id
-            loc_classes_funcs[class_id].append((loc_comb.name, loc_comb.range))
+            for name in loc_comb.name.split('@'):
+                if name != "":
+                    loc_classes_funcs[class_id].append((name, loc_comb.range))
 
     for class_id, class_funcs in loc_classes_funcs.items():
         classes_funcs.append((locs_comb[class_id].name, class_funcs))

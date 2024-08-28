@@ -19,13 +19,7 @@ FuncIndexType = MutableMapping[str, List[Tuple[str, LineRange]]]
 ClassIndexType = MutableMapping[str, List[Tuple[str, LineRange]]]
 ClassFuncIndexType = MutableMapping[str, MutableMapping[str, List[Tuple[str, LineRange]]]]
 
-FileFuncIndexType = MutableMapping[str, List[Tuple[str, LineRange]]]
-FileClassIndexType = MutableMapping[str, List[Tuple[str, LineRange]]]
-FileClassFuncIndexType = MutableMapping[str, List[Tuple[str, List[Tuple[str, LineRange]]]]]
-
 FileImportLibType = MutableMapping[str, List[Tuple[str, str, str]]]
-
-DiffFileType = namedtuple('DiffFileType', ["old", "new", "code"])
 
 
 RESULT_SHOW_LIMIT = 3
@@ -38,107 +32,62 @@ class SearchFileType(str, Enum):
 
 class SearchManager:
     def __init__(self, local_repo_dpath: str, commit_files_info: Dict):
-        #############################################
-        ############# Basic Information #############
-        #############################################
+        ## NOTE: All paths that appear below are RELATIVE paths (relative to repo root)
 
+        # -------------------------------- Basic Info -------------------------------- #
         self.local_repo_dpath = local_repo_dpath
         self.parsed_files: List[str] = []
         self.parsed_failed_files: List[str] = []
 
-        ####################################################
-        ############# Commit Files Information #############
-        ####################################################
-
-        ## NOTE: All paths that appear below are RELATIVE paths (relative to repo root)
+        # -------------------------------- Commit Files Info -------------------------------- #
         ## (1) File paths
         self.del_files: List[str] = []
         self.add_files: List[str] = []
         self.mod_files: List[str] = []
 
         ## (2) File contents
-        # 2.1 before commit: deleted file, modified file
-        self.code_before: Dict[str, str] = {}
-        # 2.2 after commit: added file, modified file
-        self.code_after: Dict[str, str] = {}
-        # 2.3 before + after commit: deleted file, added file,  modified file
-        self.code_comb: Dict[str, str] = {}
+        self.code_before: Dict[str, str] = {}  # file path -> file content before
+        self.code_after: Dict[str, str] = {}   # file path -> file content after
+        self.code_comb: Dict[str, str] = {}    # file path -> file content comb
 
         ## (3) Line id lookup
-        # 3.1 code_before -> code_comb: deleted file, modified file
-        self.before2comb_line_id_lookup: Dict[str, Dict[int, int]] = {}
-        # 3.2 code_before -> code_comb: added file, modified file
-        self.after2comb_line_id_lookup: Dict[str, Dict[int, int]] = {}
+        self.line_id_before2comb: Dict[str, Dict[int, int]] = {}  # file path -> {line id after  -> line id comb}
+        self.line_id_after2comb: Dict[str, Dict[int, int]] = {}   # file path -> {line id before -> line id comb}
 
-        # FIXME: Considering the accuracy of the search, should we keep the search API calls that
-        #        do not contain file path and the related index?
+        ## (4) Struct indexes
+        self.diff_func_index: FuncIndexType = {}            # func name  -> [(file path, line_range)]
+        self.diff_class_index: ClassIndexType = {}          # class name -> [(file path, line range)]
+        self.diff_classFunc_index: ClassFuncIndexType = {}  # class name -> {func name -> [(file path, line range)]}
 
-        ## (4) File structs
-        ## 4.1 For searching without file path
-        # func name -> [(file path, line_range)]
-        self.diff_func_index: FuncIndexType = {}
-        # class name -> [(file path, line range)]
-        self.diff_class_index: ClassIndexType = {}
-        # class name -> {classFunc name -> [(file path, line range)]}
-        self.diff_classFunc_index: ClassFuncIndexType = {}
+        ## (5) Imported libraries
+        self.diff_file_import_libs: FileImportLibType = {}  # file path -> [(package path, attr name, alias name)]
 
-        ## 4.2 For searching with file path
-        # file path -> [(func name, line range)]
-        self.diff_file_func_index: FileFuncIndexType = {}
-        # file path -> [(class name, line range)]
-        self.diff_file_class_index: FileClassIndexType = {}
-        # file path -> [(class name -> [(classFunc name, line range)])]
-        self.diff_file_classFunc_index: FileClassFuncIndexType = {}
-
-        ## 4.3 Imported library
-        # file path -> [(package path, attr name, alias name)]
-        self.diff_file_import_libs: FileImportLibType = {}
-
-        #######################################################
-        ############# Unchanged Files Information #############
-        #######################################################
-
+        # -------------------------------- Unchanged Files Info -------------------------------- #
         ## (1) File paths
         self.unchanged_files: List[str] = []
 
-        ## (2) File structs
-        ## 2.1 For searching without file path
-        # func_name -> [(file_name, line_range)]
-        self.nodiff_func_index: FuncIndexType = {}
-        # class name -> [(file path, line range)]
-        self.nodiff_class_index: ClassIndexType = {}
-        # class name -> {func name -> [(file path, line range)]}
-        self.nodiff_classFunc_index: ClassFuncIndexType = {}
+        ## (2) Struct indexes
+        self.nodiff_func_index: FuncIndexType = {}            # func_name  -> [(file_name, line_range)]
+        self.nodiff_class_index: ClassIndexType = {}          # class name -> [(file path, line range)]
+        self.nodiff_classFunc_index: ClassFuncIndexType = {}  # class name -> {func name -> [(file path, line range)]}
 
-        ## 2.2 For searching with file path
-        # file_name -> [(func_name, line_range)]
-        self.nodiff_file_func_index: FileFuncIndexType = {}
-        # file_name -> [(class_name, line_range)]
-        self.nodiff_file_class_index: FileClassIndexType = {}
-        # file path -> [(class name -> [(classFunc name, line range)])]
-        self.nodiff_file_classFunc_index: FileClassFuncIndexType = {}
+        ## (3) Imported libraries
+        self.nodiff_file_import_libs: FileImportLibType = {}  # file path -> [(package path, attr name, alias name)]
 
-        ## 2.3 Imported library
-        # file path -> [(package path, attr name, alias name)]
-        self.nodiff_file_import_libs: FileImportLibType = {}
-
-        ##################################
-        ############# Update #############
-        ##################################
-
+        # -------------------------------- Update -------------------------------- #
         self._update(commit_files_info)
 
 
     """Update attributes"""
 
     def _update(self, commit_files_info: Dict) -> None:
-        ############ Step I: Update commit files info ############
+        # Step I: Update commit files info
         self._update_commit_file_info(commit_files_info)
 
-        ############ Step II: Update unchanged files info ############
+        # Step II: Update unchanged files info
         self._update_nodiff_file_info()
 
-        ############ Step III: Summarize ############
+        # Step III: Summarize
         self.parsed_files: List[str] = self.del_files + self.add_files + self.mod_files + self.unchanged_files
 
     def _update_commit_file_info(self, commit_files_info: Dict) -> None:
@@ -158,31 +107,28 @@ class SearchManager:
         self.code_comb = commit_files_info['code_comb']
 
         # (3) Line id lookup
-        self.before2comb_line_id_lookup = commit_files_info['before2comb_line_id_lookup']
-        self.after2comb_line_id_lookup = commit_files_info['after2comb_line_id_lookup']
+        self.line_id_before2comb = commit_files_info['before2comb_line_id_lookup']
+        self.line_id_after2comb = commit_files_info['after2comb_line_id_lookup']
 
-        # (4) File structs
-        self.diff_file_func_index = commit_files_info['file_func_index']
-        self.diff_file_class_index = commit_files_info['file_class_index']
-        self.diff_file_classFunc_index = commit_files_info['file_classFunc_index']
-
+        # (4) Struct indexes
         self.diff_func_index: FuncIndexType = defaultdict(list)
         self.diff_class_index: ClassIndexType = defaultdict(list)
         self.diff_classFunc_index: ClassFuncIndexType = defaultdict(lambda: defaultdict(list))
 
-        for fpath, file_funcs in self.diff_file_func_index.items():
+        for fpath, file_funcs in commit_files_info['file_func_index'].items():
             for func_name, func_range in file_funcs:
                 self.diff_func_index[func_name].append((fpath, func_range))
 
-        for fpath, file_classes in self.diff_file_class_index.items():
+        for fpath, file_classes in commit_files_info['file_class_index'].items():
             for class_name, class_range in file_classes:
                 self.diff_class_index[class_name].append((fpath, class_range))
 
-        for fpath, class_to_funcs in self.diff_file_classFunc_index.items():
+        for fpath, class_to_funcs in commit_files_info['file_classFunc_index'].items():
             for class_name, classFuncs in class_to_funcs:
                 for classFunc_name, classFunc_range in classFuncs:
                     self.diff_classFunc_index[class_name][classFunc_name].append((fpath, classFunc_range))
 
+        # (5) Imported libraries
         self.diff_file_import_libs: FileImportLibType = defaultdict(list)
 
         for fpath in self.del_files + self.add_files + self.mod_files:
@@ -197,14 +143,22 @@ class SearchManager:
 
         Process: Traverse the python files in the local repo and analyze them individually.
         """
+        self.nodiff_file_import_libs: FileImportLibType = defaultdict(list)
+
+        self.nodiff_func_index: FuncIndexType = defaultdict(list)
+        self.nodiff_class_index: ClassIndexType = defaultdict(list)
+        self.nodiff_classFunc_index: ClassFuncIndexType = defaultdict(lambda: defaultdict(list))
+
         abs_py_fpaths = search_util.find_python_files(self.local_repo_dpath)
 
         for abs_py_fpath in abs_py_fpaths:
             rel_py_fpath = os.path.relpath(abs_py_fpath, self.local_repo_dpath)
+
+            ## Step 1: Filter out diff files (in commit)
             if rel_py_fpath in self.del_files + self.add_files + self.mod_files:
-                # Current file is modified in the commit
                 continue
 
+            ## Step 2: Parse the code
             file_content = pathlib.Path(abs_py_fpath).read_text()
             struct_info = search_util.parse_python_code(file_content)
 
@@ -214,37 +168,24 @@ class SearchManager:
 
             self.unchanged_files.append(rel_py_fpath)
 
-            ########### Build search index ###########
+            ## Step 3: Build search indexes
             libs, funcs, classes, class_to_funcs = struct_info
 
-            self.nodiff_func_index: FuncIndexType = defaultdict(list)
-            self.nodiff_class_index: ClassIndexType = defaultdict(list)
-            self.nodiff_classFunc_index: ClassFuncIndexType = defaultdict(lambda: defaultdict(list))
+            # (1) Collect imported libs
+            self.nodiff_file_import_libs[rel_py_fpath] = libs
 
-            self.nodiff_file_func_index: FileFuncIndexType = defaultdict(list)
-            self.nodiff_file_class_index: FileClassIndexType = defaultdict(list)
-            self.nodiff_file_classFunc_index: FileClassFuncIndexType = defaultdict(list)
-
-            # (1) Build (top-level) function index and file function index
+            # (2) Build (top-level) function index and file function index
             for f, start, end in funcs:
                 self.nodiff_func_index[f].append((rel_py_fpath, LineRange(start, end)))
-                self.nodiff_file_func_index[rel_py_fpath].append((f, LineRange(start, end)))
 
-            # (2) Build class index and file class index
+            # (3) Build class index and file class index
             for c, start, end in classes:
                 self.nodiff_class_index[c].append((rel_py_fpath, LineRange(start, end)))
-                self.nodiff_file_class_index[rel_py_fpath].append((c, LineRange(start, end)))
 
-            # (3) Build classFunction index and file classFunction index
+            # (4) Build classFunction index and file classFunction index
             for c, class_funcs in class_to_funcs.items():
-                cur_classFuncs = []
                 for f, start, end in class_funcs:
                     self.nodiff_classFunc_index[c][f].append((rel_py_fpath, LineRange(start, end)))
-                    cur_classFuncs.append((f, LineRange(start, end)))
-                self.nodiff_file_classFunc_index[rel_py_fpath].append((c, cur_classFuncs))
-
-            # (4) Collect imported libs
-            self.nodiff_file_import_libs[rel_py_fpath] = libs
 
 
     """Get Code Snippet Functions"""
@@ -288,7 +229,10 @@ class SearchManager:
 
 
     def _get_class_signature_in_file(self, class_name: str, fpath: str) -> str:
-        """Get class signature from specific file."""
+        """Get class signature from specific file.
+
+        By default, We assume that no class with the same name can appear in a single file.
+        """
         if fpath in self.unchanged_files:
             abs_fpath = os.path.join(self.local_repo_dpath, fpath)
             class_sig = search_util.get_class_signature_in_repo(abs_fpath, class_name)
@@ -297,10 +241,10 @@ class SearchManager:
             file_before = self.code_before[fpath] if fpath in self.code_before else None
             file_after = self.code_after[fpath] if fpath in self.code_after else None
 
-            before2comb_line_id_lookup = self.before2comb_line_id_lookup[fpath] \
-                if fpath in self.before2comb_line_id_lookup else None
-            after2comb_line_id_lookup = self.after2comb_line_id_lookup[fpath] \
-                if fpath in self.after2comb_line_id_lookup else None
+            before2comb_line_id_lookup = self.line_id_before2comb[fpath] \
+                if fpath in self.line_id_before2comb else None
+            after2comb_line_id_lookup = self.line_id_after2comb[fpath] \
+                if fpath in self.line_id_after2comb else None
 
             class_sig = search_util.get_class_signature_in_file(
                 file_comb, class_name,
@@ -372,154 +316,219 @@ class SearchManager:
         return None
 
 
-    def _search_func_in_class(self, func_name: str, class_name: str, source: SearchFileType) -> List[SearchResult]:
-        """
-        Search for the function name in the specific class.
+    # def _search_func_in_class_in_file(self, func_name: str, class_name: str, fpath: str) -> List[SearchResult]:
+    #     """Search for the function name in the specific class of specific file.
+    #
+    #     NOTE: We have confirmed that this class exists in this file.
+    #     Args:
+    #         func_name (str): Function name.
+    #         class_name (str): Class name.
+    #         fpath (str): Relative file path.
+    #     Returns:
+    #         The list of code snippets searched.
+    #     """
+    #     result: List[SearchResult] = []
+    #
+    #     if fpath in self.unchanged_files:
+    #         file_classFunc_index = self.nodiff_classFunc_index[fpath]
+    #     else:
+    #         file_classFunc_index = self.diff_classFunc_index[fpath]
+    #
+    #     class_to_funcs: List[Tuple[str, List[Tuple[str, LineRange]]]] = []
+    #     for c, classFuncs in file_classFunc_index:
+    #         if c == class_name:
+    #             class_to_funcs.append((c, classFuncs))
+    #
+    #     assert class_to_funcs
+    #
+    #     for _, classFuncs in class_to_funcs:
+    #         for classFunc, (start, end) in classFuncs:
+    #             if classFunc == func_name:
+    #                 classFunc_code = self._get_code_snippet_in_file(fpath, start, end)
+    #
+    #                 res = SearchResult(fpath, class_name, func_name, classFunc_code)
+    #                 result.append(res)
+    #
+    #     return result
+    #
+    #
+    # def _search_func_in_classes_in_file(self, func_name: str, fpath: str) -> List[SearchResult]:
+    #     """Search for the function name in all classes of the specific file.
+    #
+    #     NOTE: We have confirmed that this file exists.
+    #     Args:
+    #         func_name (str): Function name.
+    #         fpath (str): Relative file path.
+    #     Returns:
+    #         The list of code snippets searched.
+    #     """
+    #     result: List[SearchResult] = []
+    #
+    #     if fpath in self.unchanged_files:
+    #         class_index = self.nodiff_class_index
+    #     else:
+    #         class_index = self.diff_class_index
+    #
+    #     for class_name, locs in class_index.items():
+    #         for file, _ in locs:
+    #             if file == fpath:
+    #                 res = self._search_func_in_class_in_file(func_name, class_name, fpath)
+    #                 result.extend(res)
+    #                 break
+    #     return result
+    #
+    #
+    # def _search_top_level_func_in_file(self, func_name: str, fpath: str) -> List[SearchResult]:
+    #     """Search for the function name in all top level functions of the specific file.
+    #
+    #     NOTE: We have confirmed that this file exists.
+    #     Args:
+    #         func_name (str): Function name.
+    #         fpath (str): Relative file path.
+    #     Returns:
+    #         List: The list of code snippets searched.
+    #     """
+    #     result: list[SearchResult] = []
+    #
+    #     if fpath in self.unchanged_files:
+    #         func_index = self.nodiff_func_index
+    #     else:
+    #         func_index = self.diff_func_index
+    #
+    #     if func_name not in func_index:
+    #         return result
+    #
+    #     for fpath, (start, end) in func_index[func_name]:
+    #         func_code = self._get_code_snippet_in_file(fpath, start, end)
+    #         res = SearchResult(fpath, None, func_name, func_code)
+    #         result.append(res)
+    #
+    #     return result
+    #
+    #
+    # def _search_func_in_file(self, func_name: str, fpath: str) -> List[SearchResult]:
+    #     """Search for this function in specific file, including top-level functions and class functions.
+    #
+    #     NOTE: We have confirmed that this file exists.
+    #     """
+    #     result: List[SearchResult] = []
+    #
+    #     # (1) Search in top level functions
+    #     top_level_res = self._search_top_level_func_in_file(func_name, fpath)
+    #     result.extend(top_level_res)
+    #
+    #     # (2) Search in class functions
+    #     class_res = self._search_func_in_classes_in_file(func_name, fpath)
+    #     result.extend(class_res)
+    #
+    #     return result
 
-        NOTE: We have confirmed that this class exists.
-        Args:
-            func_name (str): Name of the function.
-            class_name (str): Name of the class.
-            source (SearchFileType): Whether the searched file was modified in the commit.
-        Returns:
-            The list of code snippets searched.
-        """
-        result: List[SearchResult] = []
 
-        classFunc_index = getattr(self, f"{source}_classFunc_index")
-
-        assert class_name in classFunc_index
-
-        if func_name not in classFunc_index[class_name]:
-            return result
-
-        for fpath, (start, end) in classFunc_index[class_name][func_name]:
-            if source == SearchFileType.NO_DIFF:
-                # For unchanged file, get code snippet from repo
-                abs_fpath = os.path.join(self.local_repo_dpath, fpath)
-                classFunc_code = search_util.get_code_snippets_in_repo(abs_fpath, start, end)
-            else:
-                # For modified file, get code snippet directly from the saved combined file
-                file = self.code_comb[fpath]
-                classFunc_code = search_util.get_code_snippet_in_file(file, start, end)
-
-            res = SearchResult(fpath, class_name, func_name, classFunc_code)
-            result.append(res)
-
-        return result
-
-
-    def _search_func_in_class_in_file(self, func_name: str, class_name: str, fpath: str) -> List[SearchResult]:
-        """
-        Search for the function name in the specific class of specific file.
-
-        NOTE: We have confirmed that this class exists in this file.
+    def _search_func_in_class(self, func_name: str, class_name: str) -> List[SearchResult]:
+        """Search for the function name in the specific class.
         Args:
             func_name (str): Function name.
             class_name (str): Class name.
-            fpath (str): Relative file path.
         Returns:
             The list of code snippets searched.
         """
         result: List[SearchResult] = []
 
-        if fpath in self.unchanged_files:
-            file_classFunc_index = self.nodiff_file_classFunc_index[fpath]
-        else:
-            file_classFunc_index = self.diff_file_classFunc_index[fpath]
+        if class_name in self.nodiff_classFunc_index and func_name in self.nodiff_classFunc_index[class_name]:
+            for fpath, (start, end) in self.nodiff_classFunc_index[class_name][func_name]:
+                func_code = self._get_code_snippet_in_file(fpath, start, end)
+                res = SearchResult(fpath, class_name, func_name, func_code)
+                result.append(res)
 
-        class_to_funcs: List[Tuple[str, List[Tuple[str, LineRange]]]] = []
-        for c, classFuncs in file_classFunc_index:
-            if c == class_name:
-                class_to_funcs.append((c, classFuncs))
-
-        assert class_to_funcs
-
-        for _, classFuncs in class_to_funcs:
-            for classFunc, (start, end) in classFuncs:
-                if classFunc == func_name:
-                    classFunc_code = self._get_code_snippet_in_file(fpath, start, end)
-
-                    res = SearchResult(fpath, class_name, func_name, classFunc_code)
-                    result.append(res)
+        if class_name in self.diff_classFunc_index and func_name in self.diff_classFunc_index[class_name]:
+            for fpath, (start, end) in self.diff_classFunc_index[class_name][func_name]:
+                func_code = self._get_code_snippet_in_file(fpath, start, end)
+                res = SearchResult(fpath, class_name, func_name, func_code)
+                result.append(res)
 
         return result
 
 
-    def _search_func_in_classes_in_file(self, func_name: str, fpath: str) -> List[SearchResult]:
-        """
-        Search for the function name in all classes of specific file.
-
-        NOTE: We have confirmed that this file exists.
+    def _search_func_in_classes(self, func_name: str) -> List[SearchResult]:
+        """Search for the function name in all classes.
         Args:
             func_name (str): Function name.
-            fpath (str): Relative file path.
         Returns:
             The list of code snippets searched.
         """
         result: List[SearchResult] = []
 
-        if fpath in self.unchanged_files:
-            file_class_index = self.nodiff_file_class_index[fpath]
-        else:
-            file_class_index = self.diff_file_class_index[fpath]
+        for class_name in self.nodiff_class_index:
+            ress = self._search_func_in_class(func_name, class_name)
+            result.extend(ress)
 
-        for class_name, _ in file_class_index:
-            res = self._search_func_in_class_in_file(func_name, class_name, fpath)
-            result.extend(res)
+        for class_name in self.diff_class_index:
+            ress = self._search_func_in_class(func_name, class_name)
+            result.extend(ress)
+
         return result
 
 
-    def _search_top_level_func_in_file(self, func_name: str, fpath: str) -> List[SearchResult]:
-        """
-        Search for the function name in all top level functions of specific file.
-
-        NOTE: We have confirmed that this file exists.
+    def _search_top_level_func(self, func_name: str) -> List[SearchResult]:
+        """Search for the function name in all top level functions.
         Args:
             func_name (str): Function name.
-            fpath (str): Relative file path.
         Returns:
             List: The list of code snippets searched.
         """
         result: List[SearchResult] = []
 
-        if fpath in self.unchanged_files:
-            file_func_index = self.nodiff_file_func_index[fpath]
-        else:
-            file_func_index = self.diff_file_func_index[fpath]
-
-        for f, (start, end) in file_func_index:
-            if f == func_name:
+        if func_name in self.nodiff_func_index:
+            for fpath, (start, end) in self.nodiff_func_index[func_name]:
                 func_code = self._get_code_snippet_in_file(fpath, start, end)
+                res = SearchResult(fpath, None, func_name, func_code)
+                result.append(res)
 
+        if func_name in self.diff_func_index:
+            for fpath, (start, end) in self.diff_func_index[func_name]:
+                func_code = self._get_code_snippet_in_file(fpath, start, end)
                 res = SearchResult(fpath, None, func_name, func_code)
                 result.append(res)
 
         return result
 
 
-    def _search_func_in_file(self, func_name: str, fpath: str) -> List[SearchResult]:
-        """
-        Search for this function in specific file, including top-level functions and class functions.
-
-        NOTE: We have confirmed that this file exists.
+    def _search_func_in_repo(self, func_name: str) -> List[SearchResult]:
+        """Search for this function in the repo, including top-level functions and class functions.
+        Args:
+            func_name (str): Function name.
+        Returns:
+            List: The list of code snippets searched.
         """
         result: List[SearchResult] = []
 
         # (1) Search in top level functions
-        top_level_res = self._search_top_level_func_in_file(func_name, fpath)
+        top_level_res = self._search_top_level_func(func_name)
         result.extend(top_level_res)
 
         # (2) Search in class functions
-        class_res = self._search_func_in_classes_in_file(func_name, fpath)
+        class_res = self._search_func_in_classes(func_name)
         result.extend(class_res)
 
         return result
 
 
+    def _search_pre_check(self, **kwargs) -> Tuple[bool, str]:
+        empty_args = [arg_name for arg_name, value in kwargs.items() if isinstance(value, str) and value == ""]
+
+        if empty_args:
+            if len(empty_args) == 1:
+                tool_output = f"All parameters must be specified, however, {empty_args[0]} is an empty string."
+            else:
+                args = ", ".join(empty_args)
+                tool_output = f"All parameters must be specified, however, {args} are empty strings."
+            return False, tool_output
+
+        return True, ""
+
+
     def _search_with_file_before(self, file_name: str) -> Tuple[bool, str, str | None]:
-        """
-        Determine if the given file name is detailed enough to specify a unique file.
+        """Determine if the given file name is detailed enough to specify a unique file.
 
         This function should be called before calling a search Interface which requires a file name.
         Args:
@@ -547,8 +556,8 @@ class SearchManager:
 
     """Interfaces"""
 
-
     # FIXME: Not complete
+
     def search_code_in_file(self, code_str: str, fpath: str) -> Tuple[str, str, bool]:
         """
         Search for this code string in specific file.
@@ -587,22 +596,27 @@ class SearchManager:
 
 
     def search_class(self, class_name: str) -> Tuple[str, SearchStatus, List[SearchResult]]:
-        """
-        Search for class in the entire repo.
+        """Search class in the entire repo.
 
         Args:
-            class_name (str): Name of the class.
+            class_name (str): Class name.
         Returns:
             str: Detailed output of the current search API call.
             SearchStatus: Status of the search.
             List[SearchResult]: All search results.
         """
-        ######### (1) Check whether the class exists #########
+        # ----------------- (1) Check if the arg is an empty str ----------------- #
+        cont_search, tool_output = self._search_pre_check(class_name=class_name)
+
+        if not cont_search:
+            return tool_output, SearchStatus.INVALID_ARGUMENT, []
+
+        # ----------------- (2) Search the class in the repo ----------------- #
         if class_name not in self.diff_class_index and class_name not in self.nodiff_class_index:
             tool_output = f"Could not find class '{class_name}' in the repo."
             return tool_output, SearchStatus.FIND_NONE, []
 
-        ######### (2) Get the signatures of these classes #########
+        # ----------------- (3) Get the signature of the class ----------------- #
         all_search_res: List[SearchResult] = []
 
         if class_name in self.diff_class_index:
@@ -619,7 +633,7 @@ class SearchManager:
                 res = SearchResult(fpath, class_name, None, class_code)
                 all_search_res.append(res)
 
-        ######### (3) Prepare the response #########
+        # ----------------- (4) Prepare the response ----------------- #
         tool_output = f"Found {len(all_search_res)} classes with name '{class_name}' in the repo:\n\n"
         if len(all_search_res) > RESULT_SHOW_LIMIT:
             # Too much classes, simplified representation
@@ -634,61 +648,66 @@ class SearchManager:
 
 
     def search_class_in_file(self, class_name: str, file_name: str) -> Tuple[str, SearchStatus, List[SearchResult]]:
-        """
-        Search for class in the specific file.
+        """Search class in the specific file.
 
         Args:
-            class_name (str): Name of the class.
-            file_name (str): Name of the file.
+            class_name (str): Class name.
+            file_name (str): File name.
         Returns:
             str: Detailed output of the current search API call.
             SearchStatus: Status of the search.
             List[SearchResult]: All search results.
         """
-        ######### (1) Check whether the file is valid and unique #########
-        detailed_fname, tool_output, fpath = self._search_with_file_before(file_name)
+        # ----------------- (1) Check if the arg is an empty str ----------------- #
+        cont_search, tool_output = self._search_pre_check(class_name=class_name, file_name=file_name)
 
-        if not detailed_fname:
+        if not cont_search:
+            return tool_output, SearchStatus.INVALID_ARGUMENT, []
+
+        # ----------------- (2) Check whether the file is valid and unique ----------------- #
+        cont_search, tool_output, fpath = self._search_with_file_before(file_name)
+
+        if not cont_search:
             return tool_output, SearchStatus.NON_UNIQUE_FILE, []
 
         if fpath is None:
             tool_output = f"Could not find file '{file_name}' in the repo."
             return tool_output, SearchStatus.FIND_NONE, []
 
-        ######### (2) Search for this class in the specific file #########
+        # ----------------- (3) Search the class in the specific file  ----------------- #
         if fpath in self.unchanged_files:
-            file_class_index = self.nodiff_file_class_index[fpath]
+            class_index = self.nodiff_class_index
         else:
-            file_class_index = self.diff_class_index[fpath]
+            class_index = self.diff_class_index
 
+        ## 3.1 Search in the class definitions of the specific file
         class_exist = False
-        for c, _ in file_class_index:
-            if c == class_name:
-                class_exist = True
-                break
+        if class_name in class_index:
+            for file, _ in class_index[class_name]:
+                if file == file_name:
+                    class_exist = True
+                    break
 
         if not class_exist:
-            ######### (3) Search for this class in the imports of the specific file #########
-            # Search in libs when there is no related class definition
+            ## 3.2 Search in the imports of the specific file
             res = self._search_class_or_func_in_file_import_libs(class_name, fpath)
 
             if res:
-                desc, search_res = res
+                import_desc, search_res = res
 
                 tool_output = f"Found class '{class_name}' is imported in file '{fpath}'.\n\n"
-                tool_output = tool_output + desc
+                tool_output = tool_output + import_desc
 
                 return tool_output, SearchStatus.FIND_ANY, [search_res]
             else:
-                tool_output = summary = f"Could not find class '{class_name}' in file '{fpath}'."
+                tool_output = f"Could not find class '{class_name}' in file '{fpath}'."
                 return tool_output, SearchStatus.FIND_NONE, []
 
-        ######### (4) Get the signature of this class in the specific file #########
-        # By default: We assume that no class with the same name can appear in a single file.
+        # ----------------- (4) Get the signature of the class ----------------- #
         class_sig = self._get_class_signature_in_file(class_name, fpath)
         search_res = SearchResult(fpath, class_name, None, class_sig)
 
-        ######### (5) Prepare the response #########
+        # ----------------- (5) Prepare the response ----------------- #
         tool_output = f"Found 1 class with name '{class_name}' in file '{fpath}':\n\n"
         res_str = search_res.to_tagged_str()
         tool_output += f"- Search result:\n```\n{res_str}\n```\n"
@@ -696,47 +715,56 @@ class SearchManager:
 
 
     def search_method_in_file(self, method_name: str, file_name: str) -> Tuple[str, SearchStatus, List[SearchResult]]:
-        """
-        Search for function (top level functions + class functions) in the specific file.
+        """Search function in the specific file.
 
+        NOTE: Including top level functions and class functions
         Args:
-            method_name (str): Name of the function.
-            file_name (str): Name of the file.
+            method_name (str): Function name.
+            file_name (str): File name.
         Returns:
             str: Detailed output of the current search API call.
             SearchStatus: Status of the search.
             List[SearchResult]: All search results.
         """
-        ######### (1) Check whether the file is valid and unique #########
-        detailed_fname, tool_output, fpath = self._search_with_file_before(file_name)
+        # ----------------- (1) Check if the arg is an empty str ----------------- #
+        cont_search, tool_output = self._search_pre_check(method_name=method_name, file_name=file_name)
 
-        if not detailed_fname:
+        if not cont_search:
+            return tool_output, SearchStatus.INVALID_ARGUMENT, []
+
+        # ----------------- (2) Check whether the file is valid and unique ----------------- #
+        cont_search, tool_output, fpath = self._search_with_file_before(file_name)
+
+        if not cont_search:
             return tool_output, SearchStatus.NON_UNIQUE_FILE, []
 
         if fpath is None:
             tool_output = f"Could not find file '{file_name}' in the repo."
             return tool_output, SearchStatus.FIND_NONE, []
 
-        ######### (2) Search for this function in the specific file #########
-        all_search_res: List[SearchResult] = self._search_func_in_file(method_name, fpath)
+        # ----------------- (3) Search the function in the repo (filter later) ----------------- #
+        all_search_res: List[SearchResult] = self._search_func_in_repo(method_name)
+
+        # ----------------- (4) Search the function in the specific file ----------------- #
+        ## 4,1 Filter
+        all_search_res = [res for res in all_search_res if res.file_path == file_name]
 
         if not all_search_res:
-            ######### (3) Search for this function in the imports of the specific file #########
-            # Search in libs when there is no related function definition
+            ## 4.2 Search in the imports of the specific file
             res = self._search_class_or_func_in_file_import_libs(method_name, fpath)
 
             if res:
-                desc, search_res = res
+                import_desc, search_res = res
 
                 tool_output = f"Found method '{method_name}' is imported in file '{fpath}'.\n\n"
-                tool_output = tool_output + desc
+                tool_output = tool_output + import_desc
 
                 return tool_output, SearchStatus.FIND_ANY, [search_res]
             else:
                 tool_output = f"Could not find method '{method_name}' in file '{fpath}'."
                 return tool_output, SearchStatus.FIND_NONE, []
 
-        ######### (4) Prepare the response #########
+        # ----------------- (5) Prepare the response ----------------- #
         tool_output = f"Found {len(all_search_res)} methods with name '{method_name}' in file '{fpath}':\n\n"
 
         # NOTE: When searching for a method in one file, it's rare that there are many candidates,
@@ -746,41 +774,39 @@ class SearchManager:
             tool_output += f"- Search result {idx + 1}:\n```\n{res_str}\n```\n"
         return tool_output, SearchStatus.FIND_ANY, all_search_res
 
-
+    # TODO: Considering the accuracy of the search, should we keep the search API calls that
+    #        do not contain file path and the related index?
     def search_method_in_class(self, method_name: str, class_name: str) -> Tuple[str, SearchStatus, List[SearchResult]]:
-        """
-        Search for class function in the specific class.
+        """Search class function in the specific class.
 
         Args:
-            method_name (str): Name of the function.
-            class_name (str): Name of the class.
+            method_name (str): Function name.
+            class_name (str): Class name.
         Returns:
             str: Detailed output of the current search API call.
             SearchStatus: Status of the search.
             List[SearchResult]: All search results.
         """
-        ######### (1) Check whether the class exists #########
+        # ----------------- (1) Check if the arg is an empty str ----------------- #
+        cont_search, tool_output = self._search_pre_check(method_name=method_name, class_name=class_name)
+
+        if not cont_search:
+            return tool_output, SearchStatus.INVALID_ARGUMENT, []
+
+        # ----------------- (2) Check whether the class exists ----------------- #
         if class_name not in self.diff_class_index and class_name not in self.nodiff_class_index:
-            tool_output = f"Could not find class {class_name} in the repo."
+            tool_output = f"Could not find class '{class_name}' in the repo."
             return tool_output, SearchStatus.FIND_NONE, []
 
-        ######### (2) Search for this function in the specific classes #########
-        all_search_res: List[SearchResult] = []
-
-        if class_name in self.diff_class_index:
-            res = self._search_func_in_class(method_name, class_name, SearchFileType.DIFF)
-            all_search_res.extend(res)
-
-        if class_name in self.nodiff_class_index:
-            res = self._search_func_in_class(method_name, class_name, SearchFileType.NO_DIFF)
-            all_search_res.extend(res)
+        # ----------------- (3) Search the function in the specific classes ----------------- #
+        all_search_res: List[SearchResult] = self._search_func_in_class(method_name, class_name)
 
         if not all_search_res:
-            tool_output = f"Could not find method {method_name} in class {class_name}`."
+            tool_output = f"Could not find method '{method_name}' in class '{class_name}'."
             return tool_output, SearchStatus.FIND_NONE, []
 
-        ######### (3) Prepare the response #########
-        tool_output = f"Found {len(all_search_res)} methods with name {method_name} in class {class_name}:\n\n"
+        # ----------------- (4) Prepare the response ----------------- #
+        tool_output = f"Found {len(all_search_res)} methods with name '{method_name}' in class '{class_name}':\n\n"
 
         # NOTE: There can be multiple classes defined in multiple files, which contain the same method,
         #       so we still trim the result, just in case
@@ -798,55 +824,74 @@ class SearchManager:
 
 
     def search_method_in_class_in_file(self, method_name: str, class_name: str, file_name: str) -> Tuple[str, SearchStatus, List[SearchResult]]:
-        """
-        Search for class function in the specific class and file.
+        """Search class function in the specific class and file.
 
         Args:
-            method_name (str): Name of the method.
-            class_name (str): Name of the class.
-            file_name (str): Name of the file.
+            method_name (str): Function name.
+            class_name (str): Class name.
+            file_name (str): File name.
         Returns:
             str: Detailed output of the current search API call.
             SearchStatus: Status of the search.
             List[SearchResult]: All search results.
         """
-        ######### (1) Check whether the file is valid and unique #########
-        detailed_fname, tool_output, fpath = self._search_with_file_before(file_name)
+        # ----------------- (1) Check if the arg is an empty str ----------------- #
+        cont_search, tool_output = \
+            self._search_pre_check(method_name=method_name, class_name=class_name, file_name=file_name)
 
-        if not detailed_fname:
+        if not cont_search:
+            return tool_output, SearchStatus.INVALID_ARGUMENT, []
+
+        # ----------------- (2) Check whether the file is valid and unique ----------------- #
+        cont_search, tool_output, fpath = self._search_with_file_before(file_name)
+
+        if not cont_search:
             return tool_output, SearchStatus.NON_UNIQUE_FILE, []
 
         if fpath is None:
             tool_output = f"Could not find file '{file_name}' in the repo."
             return tool_output, SearchStatus.FIND_NONE, []
 
-        ######### (2) Search for this class in the specific file #########
+        # ----------------- (3) Search the class in the specific file ----------------- #
         if fpath in self.unchanged_files:
-            file_classFunc_index = self.nodiff_file_classFunc_index[fpath]
+            class_index = self.nodiff_class_index
         else:
-            file_classFunc_index = self.diff_classFunc_index[fpath]
+            class_index = self.diff_class_index
 
+        ## 3.1 Search in the class definitions of the specific file
         class_exist = False
-        for c, _ in file_classFunc_index:
-            if c == class_name:
-                class_exist = True
-                break
+        if class_name in class_index:
+            for file, _ in class_index[class_name]:
+                if file == file_name:
+                    class_exist = True
+                    break
 
         if not class_exist:
-            # NOTE: Since the tool also needs to find the function in the class, and if the class is imported
-            #       in the current file, we should found function in the imported file, but not current file.
-            tool_output = f"Could not find class '{class_name}' in file '{fpath}'."
-            return tool_output, SearchStatus.FIND_NONE, []
+            ## 3.2 Search in the imports of the specific file
+            res = self._search_class_or_func_in_file_import_libs(class_name, fpath)
 
-        ######### (3) Search for this method in the specific class and file #########
-        all_search_res: List[SearchResult] = self._search_func_in_class_in_file(method_name, class_name, fpath)
+            if res:
+                import_desc, search_res = res
+
+                tool_output = f"Found class '{class_name}' is imported in file '{fpath}'.\n\n"
+                tool_output = tool_output + import_desc
+
+                return tool_output, SearchStatus.FIND_NONE, []
+            else:
+                tool_output = f"Could not find class '{class_name}' in file '{fpath}'."
+                return tool_output, SearchStatus.FIND_NONE, []
+
+        # ----------------- (4) Search the function in the specific class and file ----------------- #
+        all_search_res: List[SearchResult] = self._search_func_in_class(method_name, class_name)
+
+        all_search_res = [res for res in all_search_res if res.file_path == file_name]
 
         if not all_search_res:
             tool_output = f"Could not find method '{method_name}' in class '{class_name}' in file '{fpath}'."
             return tool_output, SearchStatus.FIND_NONE, []
 
-        ######### (4) Prepare the response #########
-        tool_output = summary = f"Found {len(all_search_res)} methods with name '{method_name}' in class '{class_name}' in file '{fpath}':\n\n"
+        # ----------------- (5) Prepare the response ----------------- #
+        tool_output = f"Found {len(all_search_res)} methods with name '{method_name}' in class '{class_name}' in file '{fpath}':\n\n"
         for idx, res in enumerate(all_search_res):
             res_str = res.to_tagged_str()
             tool_output += f"- Search result {idx + 1}:\n```\n{res_str}\n```\n"
