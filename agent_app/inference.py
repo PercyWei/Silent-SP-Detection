@@ -313,10 +313,16 @@ def _ask_proxy_agent_and_save_msg(
 
     # (2) Save the conversations with the Proxy Agent
     proxy_messages = [thread.to_msg() for thread in proxy_msg_threads]
-    with open(proxy_conv_fpath, "a") as f:
-        f.write(f"{proxy_conv_title}\n\n")
-        json.dump(proxy_messages, f, indent=4)
-        f.write("\n\n")
+
+    convs = []
+    if os.path.exists(proxy_conv_fpath):
+        with open(proxy_conv_fpath, "r") as f:
+            convs = json.load(f)
+
+    convs.append({proxy_conv_title: proxy_messages})
+
+    with open(proxy_conv_fpath, "w") as f:
+        json.dump(convs, f, indent=4)
 
     return json_text
 
