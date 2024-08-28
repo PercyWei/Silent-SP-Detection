@@ -212,12 +212,29 @@ class OpenaiModel(Model):
             raise e
 
 
+"""GPT-4o mini"""
+
+
+class Gpt4o_mini(OpenaiModel):
+    def __init__(self):
+        super().__init__(
+            "gpt-4o-mini", 0.00000015, 0.0000006, parallel_tool_call=True
+        )
+        self.note = "Multimodal model. Up to Oct 2023."
+
+
+"""GPT-4o"""
+
+
 class Gpt4o_20240513(OpenaiModel):
     def __init__(self):
         super().__init__(
             "gpt-4o-2024-05-13", 0.000005, 0.000015, parallel_tool_call=True
         )
         self.note = "Multimodal model. Up to Oct 2023."
+
+
+"""GPT-4 and GPT-4 Turbo"""
 
 
 class Gpt4_Turbo20240409(OpenaiModel):
@@ -242,6 +259,15 @@ class Gpt4_1106Preview(OpenaiModel):
             "gpt-4-1106-preview", 0.00001, 0.00003, parallel_tool_call=True
         )
         self.note = "Turbo. Up to Apr 2023."
+
+
+class Gpt4_0613(OpenaiModel):
+    def __init__(self):
+        super().__init__("gpt-4-0613", 0.00003, 0.00006)
+        self.note = "Not turbo. Up to Sep 2021."
+
+
+"""GPT-3 Turbo"""
 
 
 class Gpt35_Turbo0125(OpenaiModel):
@@ -272,8 +298,3 @@ class Gpt35_Turbo0613(OpenaiModel):
         super().__init__("gpt-3.5-turbo-0613", 0.0000015, 0.000002)
         self.note = "Turbo. Deprecated. Only 4k window. Up to Sep 2021."
 
-
-class Gpt4_0613(OpenaiModel):
-    def __init__(self):
-        super().__init__("gpt-4-0613", 0.00003, 0.00006)
-        self.note = "Not turbo. Up to Sep 2021."
