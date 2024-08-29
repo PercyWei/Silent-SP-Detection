@@ -1,46 +1,10 @@
+import os
 import re
 import json
+import requests
 
 from typing import *
 from tqdm import tqdm
-
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-
-
-def search_nvd_and_extract_cwe(driver, cve_id):
-    nvd_url = 'https://nvd.nist.gov/vuln/search'
-    driver.get(nvd_url)
-
-    wait = WebDriverWait(driver, 10)
-    search_box = wait.until(EC.presence_of_element_located((By.ID, 'Keywords')))
-    search_box.clear()
-    search_box.send_keys(cve_id)
-
-    search_button = driver.find_element(By.ID, 'vuln-search-submit')
-    search_button.click()
-
-    try:
-        result_xpath = f"//a[contains(@href, '/vuln/detail/{cve_id}')]"
-        result_link = wait.until(EC.presence_of_element_located((By.XPATH, result_xpath)))
-        result_link.click()
-    except Exception as e:
-        return None
-
-    cve_detail = wait.until(EC.presence_of_element_located((By.ID, 'vulnTechnicalDetailsDiv')))
-    cwe_xpath = "//div[@id='vulnTechnicalDetailsDiv']//a[contains(@href, 'cwe.mitre.org') and contains(text(), 'CWE-')]"
-    cwe_elements = wait.until(EC.presence_of_all_elements_located((By.XPATH, cwe_xpath)))
-
-    # 提取所有CWE-ID并输出
-    cwe_ids = [element.text for element in cwe_elements]
-
-    driver.back()
-
-    return cwe_ids
 
 
 def find_github_relevant_ref(refs: List[Dict]) -> List[str]:
@@ -53,9 +17,8 @@ def find_github_relevant_ref(refs: List[Dict]) -> List[str]:
     return github_urls
 
 
-def build_new_dataset():
-    nvdcve_file = "/root/projects/VDTest/NVD/raw/nvdcve-1.1-2022.json"
-    with open(nvdcve_file, 'r') as f:
+def build_new_dataset(nvdcve_fpath):
+    with open(nvdcve_fpath, 'r') as f:
         content = json.load(f)
 
     cve_items = content["CVE_Items"]
@@ -84,27 +47,167 @@ def build_new_dataset():
 
             pb.update(1)
 
-    dataset_fpath = "/root/projects/VDTest/NVD/filter/nvdcve_2022_v1.json"
-    with open(dataset_fpath, 'w') as f:
+    ori_fname = nvdcve_fpath.split('/')[-1]
+
+    v1_dataset_fpath = nvdcve_fpath[:-len(ori_fname)] + ori_fname.split('.')[0] + "_v1.json"
+    with open(v1_dataset_fpath, 'w') as f:
         json.dump(dateset_items, f, indent=4)
 
 
-def filter_dataset():
-    dataset_fpath = "/root/projects/VDTest/NVD/filter/nvdcve_2022_v1.json"
-    with open(dataset_fpath, 'r') as f:
+def filter_dataset_v1(v1_dataset_fpath):
+    """
+    v1 -> v1-1 + v1-2
+    - v1-1: url has '.py'
+    - v1-2:
+
+    We found that the majority of the github urls where '.py' appears are in blob mode (see below),
+    based on which we select python items from the dataset v1.
+    """
+    with open(v1_dataset_fpath, 'r') as f:
         dateset_items = json.load(f)
 
-    blob_pattern = r"^https://github\.com/([\w-]+/[\w-]+)/blob/([^/]+)/(.*?)(?:#L\d+)?$"
+    # ex: https://github.com/openstack/horizon/blob/master/horizon/workflows/views.py#L96-L102
+    # - repo: openstack/horizon
+    # - tag:  master
+    # - file: horizon/workflows/views.py
+    # - line range: #L96-L102
+    blob_pattern = r"^https://github\.com/([\w-]+/[\w-]+)/blob/([^/]+)/(.*?)(#L\d+(-L\d+)?)?$"
+
+    py_items = []
+    unchecked_items = []
 
     for item in dateset_items:
         urls = item["urls"]
 
+        py_flag = False
+        not_py_flag = False
+
         for url in urls:
+            match = re.match(blob_pattern, url)
+
+            if match:
+                repo = match.group(1)
+                tag = match.group(2)
+                file_path = match.group(3)
+
+                if file_path.endswith(".py"):
+                    py_flag = True
+                    continue
+                # We do not consider commits that contain files with the following suffixes
+                elif any(file_path.endswith(suffix) for suffix in ['.c', '.h', '.cpp', '.java', '.php']):
+                    py_flag = False
+                    not_py_flag = True
+                    break
+
+        if py_flag:
+            py_items.append(item)
+
+        if not py_flag and not not_py_flag:
+            unchecked_items.append(item)
+
+    ori_fname = v1_dataset_fpath.split('/')[-1]
+
+    v1_1_dataset_fpath = v1_dataset_fpath[:-len(ori_fname)] + ori_fname.split('_')[0] + "_v1-1.json"
+    with open(v1_1_dataset_fpath, 'w') as f:
+        json.dump(py_items, f, indent=4)
+
+    v1_2_dataset_fpath = v1_dataset_fpath[:-len(ori_fname)] + ori_fname.split('_')[0] + "_v1-2.json"
+    with open(v1_2_dataset_fpath, 'w') as f:
+        json.dump(unchecked_items, f, indent=4)
+
+
+def select_from_dataset_v1_2(v1_2_dataset_fpath):
+    """
+    v1-2 -> v1-2-1 + v1-2-2
+    - v1-2-1: has commit url
+    - v1-2-2: rest
+    """
+    with open(v1_2_dataset_fpath, 'r') as f:
+        items = json.load(f)
+
+    commit_pattern = r"^https://github\.com/([\w-]+/[\w-]+)/commit/([a-fA-F0-9]+)$"
+
+    selected_items = []
+    rest_items = []
+
+    for item in items:
+        add_flag = False
+        for url in item["urls"]:
+            match = re.match(commit_pattern, url)
+            if match:
+                add_flag = True
+                break
+
+        if add_flag:
+            selected_items.append(item)
+        else:
+            rest_items.append(item)
+
+    ori_fname = v1_2_dataset_fpath.split('/')[-1]
+
+    v1_2_1_dataset_fpath = v1_2_dataset_fpath[:-len(ori_fname)] + ori_fname.split('_')[0] + "_v1-2-1.json"
+    with open(v1_2_1_dataset_fpath, 'w') as f:
+        json.dump(selected_items, f, indent=4)
+
+    v1_2_2_dataset_fpath = v1_2_dataset_fpath[:-len(ori_fname)] + ori_fname.split('_')[0] + "_v1-2-2.json"
+    with open(v1_2_2_dataset_fpath, 'w') as f:
+        json.dump(rest_items, f, indent=4)
+
+
+def select_from_dataset_v1_2_1(v1_2_1_dataset_fpath):
+    with open(v1_2_1_dataset_fpath, 'r') as f:
+        items = json.load(f)
+
+    token = os.getenv("TOKEN")
+
+    commit_pattern = r"^https://github\.com/([\w-]+/[\w-]+)/commit/([a-fA-F0-9]+)$"
+
+    for item in items:
+
+        repo = None
+        commit_hash = None
+
+        for url in item["urls"]:
+            match = re.match(commit_pattern, url)
+            if match:
+                repo = match.group(1)
+                commit_hash = match.group(2)
+                break
+
+        assert repo is not None and commit_hash is not None
+
+        url = f"https://api.github.com/repos/{repo}/commits/{commit_hash}"
+        headers = {
+            "Authorization": token,
+            "Accept": "application/vnd.github.v3+json"
+        }
+
+        response = requests.get(url, headers=headers)
+
+        if response.status_code == 200:
+            commit_data = response.json()
 
 
 
-    filtered_dateset_fpath = "/root/projects/VDTest/NVD/filter/nvdcve_2022_v2.json"
 
 
+# nvdcve_fpath = "/root/projects/VDTest/NVD/raw/nvdcve-2022.json"
+# v1_dataset_fpath = "/root/projects/VDTest/NVD/filter/nvdcve-2022_v1.json"
+# v1_2_dataset_fpath = "/root/projects/VDTest/NVD/filter/nvdcve-2022_v1-2.json"
 
-build_new_dataset()
+
+token = os.getenv("TOKEN")
+
+
+url = f"https://api.github.com/repos/livehelperchat/livehelperchat/commits/fbed8728be59040a7218610e72f6eceb5f8bc152"
+headers = {
+    "Authorization": token,
+    "Accept": "application/vnd.github.v3+json"
+}
+
+response = requests.get(url, headers=headers)
+
+if response.status_code == 200:
+    commit_data = response.json()
+    print(json.dumps(commit_data, indent=4))
+
