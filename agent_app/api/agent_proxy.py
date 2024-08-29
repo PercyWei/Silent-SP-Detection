@@ -140,12 +140,12 @@ def get_task_prompt(task: ProxyTask) -> str:
 
 def run_with_retries(text: str, task: ProxyTask, retries: int = 3) -> Tuple[str | None, List[MessageThread]]:
     """
-
+    Main method to ask the LLM Agent to extract JSON answer from the given text with retries.
 
     Args:
         text (str): Response from Actor Agent.
         task (ProxyTask): Task of Proxy Agent.
-        retries (int): Number of retries with Proxy Agent.
+        retries (int): Number of retries for Proxy Agent.
     Returns:
         respond text: Valid response in json format from Poxy Agent, None if .
         msg_threads: List of all MessageThread instances.
@@ -301,15 +301,21 @@ def is_valid_response(data: List | Dict, task: ProxyTask) -> Tuple[bool, str]:
             except Exception:
                 return False, "Every API call must be of form api_call(arg1, ..., argn)"
 
+            # NOTE: Generally speaking, the name of the api called by LLM is not wrong
             function = getattr(SearchManager, func_name, None)
             if function is None:
                 return False, f"The API call '{api_call}' calls a non-existent function"
 
-            arg_spec = inspect.getfullargspec(function)
-            arg_names = arg_spec.args[1:]  # first parameter is self
+            # NOTE: We found that in many cases, the LLM could not understand the search api correctly, resulting
+            #       in mismatched parameters, while repeated queries to get the right format api tended to result
+            #       in too many useless conversations, so we do not check the parameters here, but provide specific
+            #       feedback later while calling the api.
 
-            if len(func_args) != len(arg_names):
-                return False, f"The API call '{api_call}' has wrong number of arguments"
+            # arg_spec = inspect.getfullargspec(function)
+            # arg_names = arg_spec.args[1:]  # first parameter is self
+            #
+            # if len(func_args) != len(arg_names):
+            #     return False, f"The API call '{api_call}' has wrong number of arguments"
 
     elif task == ProxyTask.SCORE:
         """

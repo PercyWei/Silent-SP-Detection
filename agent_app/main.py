@@ -206,9 +206,7 @@ def run_task_group(task_group_id: str, task_group_items: List[RawTask]) -> None:
         run_task_in_subprocess(task)
         log.print_with_time(globals_mut.inc_task_return_msg())
 
-    log.print_with_time(
-        f"{globals_mut.inc_task_group_return_msg()} Finished task group {task_group_id}."
-    )
+    log.print_with_time(f"{globals_mut.inc_task_group_return_msg()} Finished task group {task_group_id}.")
 
 
 def run_task_in_subprocess(task: RawTask) -> None:

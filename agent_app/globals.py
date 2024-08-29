@@ -22,7 +22,7 @@ cwe_entry_file: str = ""
 cwe_tree_file: str = ""
 
 # Task
-task_limit: int = 2
+task_limit: int = 100
 
 # Complete process: start state -> ... -> end state
 complete_process_limit: int = 3

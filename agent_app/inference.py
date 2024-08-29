@@ -873,8 +873,6 @@ def run_in_context_retrieval_state(
             func_arg_spec = inspect.getfullargspec(getattr(SearchManager, func_name))
             func_arg_names = func_arg_spec.args[1:]  # first parameter is self
 
-            assert len(func_arg_values) == len(func_arg_names), f"Number of argument is wrong in API call: {api_call}"
-
             func_arg_kwargs = dict(zip(func_arg_names, func_arg_values))
             intent = FunctionCallIntent(func_name, func_arg_kwargs, None)
             tool_output, search_status, all_search_res = manager.dispatch_intent(intent)
@@ -1145,8 +1143,6 @@ def start_conversation_round_stratified(
             ########## (4) Hypothesis verify ##########
             continue_loop = run_in_hypothesis_verify_state(
                 proc_no, loop_no, proc_all_hyp, curr_proc_dirs, msg_thread, manager, print_callback)
-
-            print(len(proc_all_hyp.verified))
 
             if not continue_loop:
                 break

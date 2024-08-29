@@ -407,7 +407,7 @@ def test6():
 
 
 def print_conversation():
-    conv_path = "/root/projects/VDTest/output/agent/vul_2024-08-28T11:03:41_SAVE/1231-vulfix_2024-08-28T11:03:42/process_1/loop_1_conversations.json"
+    conv_path = "/root/projects/VDTest/output/agent/vul_2024-08-29T10:06:05/77263-treevul_2024-08-29T10:26:59/process_1/loop_1_conversations.json"
     with open(conv_path, 'r') as f:
         convs = json.load(f)
 
@@ -418,12 +418,35 @@ def print_conversation():
             f.write("CONTENT: " + conv["content"] + "\n\n")
 
 
+def test7():
+    from agent_app.util import parse_function_invocation
+
+    s1 = "search_class"
+    s2 = "search_class()"
+    s3 = "search_class('class')"
+
+    try:
+        s1_func_name, s1_func_args = parse_function_invocation(s1)
+        print(s1_func_name, s1_func_args)
+    except Exception as e:
+        print("Parse s1 failed")
+
+    try:
+        s2_func_name, s2_func_args = parse_function_invocation(s2)
+        print(s2_func_name, s2_func_args)
+    except Exception as e:
+        print("Parse s2 failed")
+
+    try:
+        s3_func_name, s3_func_args = parse_function_invocation(s3)
+        print(s3_func_name, s3_func_args)
+    except Exception as e:
+        print("Parse s3 failed")
+
+
 if __name__ == '__main__':
     # local_repos_dir = "/root/projects/clone_projects"
     # tasks_map_fpath = "/root/projects/VDTest/output/TreeVul/TreeVul_valid_scsfCVE.json"
     # main_test_changed_lines_locations(local_repos_dir, tasks_map_fpath)
 
-    print_conversation()
-
-
-
+    test7()

@@ -11,7 +11,6 @@ from dataclasses import dataclass
 from openai.types.chat import ChatCompletionMessageToolCall
 from openai.types.chat.chat_completion_message_tool_call import Function as OpenaiFunction
 
-
 """MANAGER"""
 
 
@@ -92,7 +91,8 @@ class SearchStatus(str, Enum):
     INVALID_ARGUMENT = "INVALID_ARGUMENT"
     NON_UNIQUE_FILE = "NON_UNIQUE_FILE"
     FIND_NONE = "FIND_NONE"
-    FIND_ANY = "FIND_ANY"
+    FIND_IMPORT = "FIND_IMPORT"
+    FIND_CODE = "FIND_CODE"
 
 
 class FunctionCallIntent:
@@ -103,10 +103,12 @@ class FunctionCallIntent:
 
     def __init__(
             self,
+            call_stmt: str,
             func_name: str,
             arguments: Mapping[str, str],
             openai_func: Optional[OpenaiFunction]
     ):
+        self.call_stmt = call_stmt
         self.func_name = func_name
         self.arg_values: Dict = {}
         self.arg_values.update(arguments)

@@ -176,7 +176,7 @@ class ProcessManager:
             error = str(e)
             call_res = (error, SearchStatus.DISPATCH_ERROR, [])
 
-        logger.debug("Result of dispatch_intent: {}", call_res)
+        logger.debug(f"Result of {intent.call_stmt}: {call_res}")
 
         # Record this call and its result separately
         _, search_status, _ = call_res
@@ -187,6 +187,8 @@ class ProcessManager:
         self.tool_call_layers[-1].append(intent.to_dict_with_result(search_status))
 
         return call_res
+
+    """SAVE TOOL CALLs"""
 
     def dump_tool_call_sequence_to_file(self, tool_call_output_dpath: str, prefix_fname: str = ""):
         """Dump the sequence of tool calls to a file."""
@@ -202,7 +204,7 @@ class ProcessManager:
         with open(tool_call_file, "w") as f:
             json.dump(self.tool_call_layers, f, indent=4)
 
-    """Search APIs"""
+    """SEARCH APIs"""
 
     # Not a search API - just to get full class definition when only the class is specified
     def get_class_full_snippet(self, class_name: str):
@@ -289,7 +291,7 @@ class ProcessManager:
         """
         return self.search_manager.search_method_in_class_in_file(method_name, class_name, file_name)
 
-    """Ask agent proxy"""
+    """PROXY AGENT"""
 
     def call_proxy_apis(self, text: str, task: ProxyTask) -> Tuple[str | None, str, List[MessageThread]]:
         """Proxy APIs to another agent."""

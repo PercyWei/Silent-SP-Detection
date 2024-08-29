@@ -5,9 +5,8 @@ import re
 import pathlib
 
 from typing import *
-from collections import defaultdict, namedtuple
+from collections import defaultdict
 from collections.abc import MutableMapping
-from enum import Enum
 
 from agent_app.search import search_util
 from agent_app.search.search_util import SearchResult
@@ -23,11 +22,6 @@ FileImportLibType = MutableMapping[str, List[Tuple[str, str, str]]]
 
 
 RESULT_SHOW_LIMIT = 3
-
-
-class SearchFileType(str, Enum):
-    NO_DIFF = "nodiff"
-    DIFF = "diff"
 
 
 class SearchManager:
@@ -78,7 +72,7 @@ class SearchManager:
         self._update(commit_files_info)
 
 
-    """Update attributes"""
+    """UPDATE"""
 
     def _update(self, commit_files_info: Dict) -> None:
         # Step I: Update commit files info
@@ -188,7 +182,7 @@ class SearchManager:
                     self.nodiff_classFunc_index[c][f].append((rel_py_fpath, LineRange(start, end)))
 
 
-    """Get Code Snippet Functions"""
+    """GET CODE SNIPPET FUNCTIONS"""
 
     def _get_full_call(self, ori_call: str, fpath: str) -> str:
         """
@@ -269,7 +263,7 @@ class SearchManager:
         return code
 
 
-    """Search Functions"""
+    """SEARCH FUNCTIONS"""
 
 
     def _search_class_or_func_in_file_import_libs(self, call_name: str, fpath: str) -> Tuple[str, SearchResult] | None:
@@ -314,114 +308,6 @@ class SearchManager:
                 return desc, res
 
         return None
-
-
-    # def _search_func_in_class_in_file(self, func_name: str, class_name: str, fpath: str) -> List[SearchResult]:
-    #     """Search for the function name in the specific class of specific file.
-    #
-    #     NOTE: We have confirmed that this class exists in this file.
-    #     Args:
-    #         func_name (str): Function name.
-    #         class_name (str): Class name.
-    #         fpath (str): Relative file path.
-    #     Returns:
-    #         The list of code snippets searched.
-    #     """
-    #     result: List[SearchResult] = []
-    #
-    #     if fpath in self.unchanged_files:
-    #         file_classFunc_index = self.nodiff_classFunc_index[fpath]
-    #     else:
-    #         file_classFunc_index = self.diff_classFunc_index[fpath]
-    #
-    #     class_to_funcs: List[Tuple[str, List[Tuple[str, LineRange]]]] = []
-    #     for c, classFuncs in file_classFunc_index:
-    #         if c == class_name:
-    #             class_to_funcs.append((c, classFuncs))
-    #
-    #     assert class_to_funcs
-    #
-    #     for _, classFuncs in class_to_funcs:
-    #         for classFunc, (start, end) in classFuncs:
-    #             if classFunc == func_name:
-    #                 classFunc_code = self._get_code_snippet_in_file(fpath, start, end)
-    #
-    #                 res = SearchResult(fpath, class_name, func_name, classFunc_code)
-    #                 result.append(res)
-    #
-    #     return result
-    #
-    #
-    # def _search_func_in_classes_in_file(self, func_name: str, fpath: str) -> List[SearchResult]:
-    #     """Search for the function name in all classes of the specific file.
-    #
-    #     NOTE: We have confirmed that this file exists.
-    #     Args:
-    #         func_name (str): Function name.
-    #         fpath (str): Relative file path.
-    #     Returns:
-    #         The list of code snippets searched.
-    #     """
-    #     result: List[SearchResult] = []
-    #
-    #     if fpath in self.unchanged_files:
-    #         class_index = self.nodiff_class_index
-    #     else:
-    #         class_index = self.diff_class_index
-    #
-    #     for class_name, locs in class_index.items():
-    #         for file, _ in locs:
-    #             if file == fpath:
-    #                 res = self._search_func_in_class_in_file(func_name, class_name, fpath)
-    #                 result.extend(res)
-    #                 break
-    #     return result
-    #
-    #
-    # def _search_top_level_func_in_file(self, func_name: str, fpath: str) -> List[SearchResult]:
-    #     """Search for the function name in all top level functions of the specific file.
-    #
-    #     NOTE: We have confirmed that this file exists.
-    #     Args:
-    #         func_name (str): Function name.
-    #         fpath (str): Relative file path.
-    #     Returns:
-    #         List: The list of code snippets searched.
-    #     """
-    #     result: list[SearchResult] = []
-    #
-    #     if fpath in self.unchanged_files:
-    #         func_index = self.nodiff_func_index
-    #     else:
-    #         func_index = self.diff_func_index
-    #
-    #     if func_name not in func_index:
-    #         return result
-    #
-    #     for fpath, (start, end) in func_index[func_name]:
-    #         func_code = self._get_code_snippet_in_file(fpath, start, end)
-    #         res = SearchResult(fpath, None, func_name, func_code)
-    #         result.append(res)
-    #
-    #     return result
-    #
-    #
-    # def _search_func_in_file(self, func_name: str, fpath: str) -> List[SearchResult]:
-    #     """Search for this function in specific file, including top-level functions and class functions.
-    #
-    #     NOTE: We have confirmed that this file exists.
-    #     """
-    #     result: List[SearchResult] = []
-    #
-    #     # (1) Search in top level functions
-    #     top_level_res = self._search_top_level_func_in_file(func_name, fpath)
-    #     result.extend(top_level_res)
-    #
-    #     # (2) Search in class functions
-    #     class_res = self._search_func_in_classes_in_file(func_name, fpath)
-    #     result.extend(class_res)
-    #
-    #     return result
 
 
     def _search_func_in_class(self, func_name: str, class_name: str) -> List[SearchResult]:
@@ -554,7 +440,7 @@ class SearchManager:
             return False, tool_output, None
 
 
-    """Interfaces"""
+    """INTERFACES"""
 
     # FIXME: Not complete
 
@@ -644,7 +530,7 @@ class SearchManager:
             for idx, res in enumerate(all_search_res):
                 res_str = res.to_tagged_str()
                 tool_output += f"- Search result {idx + 1}:\n```\n{res_str}\n```\n"
-        return tool_output, SearchStatus.FIND_ANY, all_search_res
+        return tool_output, SearchStatus.FIND_CODE, all_search_res
 
 
     def search_class_in_file(self, class_name: str, file_name: str) -> Tuple[str, SearchStatus, List[SearchResult]]:
@@ -698,7 +584,7 @@ class SearchManager:
                 tool_output = f"Found class '{class_name}' is imported in file '{fpath}'.\n\n"
                 tool_output = tool_output + import_desc
 
-                return tool_output, SearchStatus.FIND_ANY, [search_res]
+                return tool_output, SearchStatus.FIND_IMPORT, [search_res]
             else:
                 tool_output = f"Could not find class '{class_name}' in file '{fpath}'."
                 return tool_output, SearchStatus.FIND_NONE, []
@@ -711,7 +597,7 @@ class SearchManager:
         tool_output = f"Found 1 class with name '{class_name}' in file '{fpath}':\n\n"
         res_str = search_res.to_tagged_str()
         tool_output += f"- Search result:\n```\n{res_str}\n```\n"
-        return tool_output, SearchStatus.FIND_ANY, [search_res]
+        return tool_output, SearchStatus.FIND_CODE, [search_res]
 
 
     def search_method_in_file(self, method_name: str, file_name: str) -> Tuple[str, SearchStatus, List[SearchResult]]:
@@ -759,7 +645,7 @@ class SearchManager:
                 tool_output = f"Found method '{method_name}' is imported in file '{fpath}'.\n\n"
                 tool_output = tool_output + import_desc
 
-                return tool_output, SearchStatus.FIND_ANY, [search_res]
+                return tool_output, SearchStatus.FIND_IMPORT, [search_res]
             else:
                 tool_output = f"Could not find method '{method_name}' in file '{fpath}'."
                 return tool_output, SearchStatus.FIND_NONE, []
@@ -772,7 +658,7 @@ class SearchManager:
         for idx, res in enumerate(all_search_res):
             res_str = res.to_tagged_str()
             tool_output += f"- Search result {idx + 1}:\n```\n{res_str}\n```\n"
-        return tool_output, SearchStatus.FIND_ANY, all_search_res
+        return tool_output, SearchStatus.FIND_CODE, all_search_res
 
     # TODO: Considering the accuracy of the search, should we keep the search API calls that
     #        do not contain file path and the related index?
@@ -820,7 +706,7 @@ class SearchManager:
         if rest := all_search_res[RESULT_SHOW_LIMIT:]:
             tool_output += "Other results are in these files:\n"
             tool_output += SearchResult.collapse_to_file_level(rest)
-        return tool_output, SearchStatus.FIND_ANY, all_search_res
+        return tool_output, SearchStatus.FIND_CODE, all_search_res
 
 
     def search_method_in_class_in_file(self, method_name: str, class_name: str, file_name: str) -> Tuple[str, SearchStatus, List[SearchResult]]:
@@ -876,7 +762,7 @@ class SearchManager:
                 tool_output = f"Found class '{class_name}' is imported in file '{fpath}'.\n\n"
                 tool_output = tool_output + import_desc
 
-                return tool_output, SearchStatus.FIND_NONE, []
+                return tool_output, SearchStatus.FIND_IMPORT, []
             else:
                 tool_output = f"Could not find class '{class_name}' in file '{fpath}'."
                 return tool_output, SearchStatus.FIND_NONE, []
@@ -895,7 +781,7 @@ class SearchManager:
         for idx, res in enumerate(all_search_res):
             res_str = res.to_tagged_str()
             tool_output += f"- Search result {idx + 1}:\n```\n{res_str}\n```\n"
-        return tool_output, SearchStatus.FIND_ANY, all_search_res
+        return tool_output, SearchStatus.FIND_CODE, all_search_res
 
 
     def get_classes_and_methods_in_file(self, file_name: str) -> Tuple[str, SearchStatus, List[SearchResult]]:
