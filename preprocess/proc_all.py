@@ -107,4 +107,29 @@ def mod_cwe_list():
         json.dump(py_items, f, indent=4)
 
 
-mod_cwe_list()
+def count_cwe_list_len():
+    py_items_fpath = "/root/projects/VDTest/output/dataset/py_items_v1.json"
+
+    with open(py_items_fpath, "r") as f:
+        py_items = json.load(f)
+
+    normal_patch = 0
+    level_1_cwe_list_num = 0
+    level_2_cwe_list_num = 0
+    for py_item in py_items:
+        if py_item["cwe_id"] is not None:
+            if len(py_item["cwe_list"]) == 1:
+                level_1_cwe_list_num += 1
+            elif len(py_item["cwe_list"]) == 2:
+                level_2_cwe_list_num += 1
+            else:
+                raise RuntimeError
+        else:
+            normal_patch += 1
+
+    print(normal_patch)
+    print(level_1_cwe_list_num)
+    print(level_2_cwe_list_num)
+
+
+count_cwe_list_len()
