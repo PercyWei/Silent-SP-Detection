@@ -659,6 +659,10 @@ def run_in_reflexion_state(
     # Open a new conversation
     msg_thread = MessageThread()
 
+    ################################
+    # Prepare the reflexion prompt #
+    ################################
+
     # (1) System prompt
     _add_system_msg_and_print(SYSTEM_PROMPT, msg_thread, print_desc, print_callback)
 
@@ -671,7 +675,7 @@ def run_in_reflexion_state(
     # 3.1 Hypothesis description and analysis
     proc_all_hypothesis.sort_verified()
 
-    # TODO: Briefly summary the analysis of previous hypothesis
+    # TODO: Briefly summary the analysis of previous hypothesis?
 
     loop_summary = "In the previous analysis, you have made and analysed the following hypothesis:"
     for i, hyp in enumerate(proc_all_hypothesis.verified):
@@ -711,9 +715,9 @@ def run_in_hypothesis_check_state(
     if len(proc_all_hypothesis.unverified) == 0:
         assert len(proc_all_hypothesis.verified) > 0
 
-        ######################################################################
-        ########## Step I-1: Ask Actor Agent to make new hypothesis ##########
-        ######################################################################
+        ####################################################
+        # Step I-1: Ask Actor Agent to make new hypothesis #
+        ####################################################
 
         hyp_prop_prompt = (f"Based on the previous hypothesis and analyses, answer the below question:"
                            f"\n- Are there any better hypothesis: make hypothesis that differ from those already made. (leave it empty if there is no more appropriate hypothesis)"
@@ -738,9 +742,9 @@ def run_in_hypothesis_check_state(
 
         print_proxy(msg=raw_hypothesis, desc=print_desc, print_callback=print_callback)
 
-        #######################################################################
-        ########## Step I-2: Choose next step: end / continue verify ##########
-        #######################################################################
+        #####################################################
+        # Step I-2: Choose next step: end / continue verify #
+        #####################################################
 
         json_hypothesis = json.loads(raw_hypothesis)
         hypothesis_list = json_hypothesis["hypothesis_list"]
@@ -799,9 +803,9 @@ def run_in_context_retrieval_state(
 ):
     print_desc = f"state {State.CONTEXT_RETRIEVAL_STATE} | process {process_no} | loop {loop_no}"
 
-    ###############################################################
-    ########## Step I: Prepare the init retrieval prompt ##########
-    ###############################################################
+    #############################################
+    # Step I: Prepare the init retrieval prompt #
+    #############################################
 
     # TODO: We can simplify the conversation by modifying what we asked before after getting the desired code context
 
@@ -812,14 +816,15 @@ def run_in_context_retrieval_state(
     )
     _add_usr_msg_and_print(init_retrieval_prompt, msg_thread, print_desc, print_callback)
 
-    ############################################################
-    ########## Step II: Multi-round context retrieval ##########
-    ############################################################
+    ##########################################
+    # Step II: Multi-round context retrieval #
+    ##########################################
 
     manager.reset_too_call_recordings()
 
     for round_no in range(1, globals.state_round_limit + 1):
         round_print_desc = f"{print_desc} | round {round_no}"
+
         # For recording tool calls in current round
         manager.start_new_tool_call_layer()
 
@@ -836,36 +841,23 @@ def run_in_context_retrieval_state(
             proxy_conv_fpath=proxy_conv_fpath
         )
 
-        ##############################################
-        ########### Case 1: Invalid respond ##########
-        ##############################################
-
+        # Retry
         if selected_apis is None:
             retry_msg = "The search API calls seem not valid. Please check the arguments you give carefully and try again."
             _add_usr_msg_and_print(retry_msg, msg_thread, round_print_desc, print_callback)
             continue
-
-        #############################################
-        ########### Case 2: Valid respond ###########
-        #############################################
 
         print_proxy(msg=selected_apis, desc=print_desc, print_callback=print_callback)
 
         selected_apis_json = json.loads(selected_apis)
         json_api_calls = selected_apis_json["api_calls"]
 
-        ########### Case 2-1: Stop searching ###########
+        # Stop searching
         if len(json_api_calls) == 0:
             break
 
-        ########### Case 2-2: Continue searching ###########
         # Invoke tools and prepare response according to api function calls
         collated_tool_response = ""
-
-        # deal_special = False
-        #
-        # detail_instruction = "The file name in the following calls is not detailed enough, please select the more precise file name and then provide the full form of these calls.\n\n"
-        # special_case_response = ""
 
         for api_call in json_api_calls:
             func_name, func_arg_values = parse_function_invocation(api_call)
@@ -874,18 +866,12 @@ def run_in_context_retrieval_state(
             func_arg_names = func_arg_spec.args[1:]  # first parameter is self
 
             func_arg_kwargs = dict(zip(func_arg_names, func_arg_values))
-            intent = FunctionCallIntent(func_name, func_arg_kwargs, None)
+            intent = FunctionCallIntent(api_call, func_name, func_arg_kwargs, None)
             tool_output, search_status, all_search_res = manager.dispatch_intent(intent)
 
-            # FIXME: Complete procedure processing calls with file name not detailed enough
-            # Consider special case -> the iven file name points to a file that is not unique
-            # if search_status == SearchStatus.NON_UNIQUE_FILE:
-            #     deal_special = True
-            #     special_case_response += f"Result of {api_call}:\n\n"
-            #     collated_tool_response += tool_output + "\n\n"
-            # else:
-            #     collated_tool_response += f"Result of {api_call}:\n\n"
-            #     collated_tool_response += tool_output + "\n\n"
+            # TODO: For searches that do not meet the requirements, i.e. search_status = DISPATCH_ERROR /
+            #       INVALID_ARGUMENT / NON_UNIQUE_FILE, consider whether to ask separately first to get the
+            #       format api calls and then return the results together
 
             # (1) Collect str response
             collated_tool_response += f"Result of {api_call}:\n\n"
@@ -895,20 +881,6 @@ def run_in_context_retrieval_state(
             for res in all_search_res:
                 code_snip = CodeContext(res.file_path, res.class_name, res.func_name, res.code)
                 proc_all_hypothesis.code_context.append(code_snip)
-
-        # if deal_special:
-        #     _add_usr_msg_and_print(
-        #         msg_thread=msg_thread,
-        #         usr_msg=special_case_response,
-        #         print_desc=f"process {process_no} - state {state_manager.curr_state} - round {state_round_no}",
-        #         print_callback=print_callback
-        #     )
-        #
-        #     respond_text = _ask_actor_agent_and_print_response(
-        #         msg_thread=msg_thread,
-        #         print_desc=f"process {process_no} - state {state_manager.curr_state} - round {state_round_no}",
-        #         print_callback=print_callback
-        #     )
 
         _add_usr_msg_and_print(collated_tool_response, msg_thread, round_print_desc, print_callback)
 
@@ -939,9 +911,9 @@ def run_in_context_retrieval_state(
     else:
         logger.info("Too many rounds. Try to verify the hypothesis anyway.")
 
-    ################################################################
-    ########## Step III: Save the called search API calls ##########
-    ################################################################
+    ##############################################
+    # Step III: Save the called search API calls #
+    ##############################################
 
     manager.dump_tool_call_sequence_to_file(curr_proc_dirs.tool_call_dpath, f"loop_{loop_no}")
     manager.dump_tool_call_layers_to_file(curr_proc_dirs.tool_call_dpath, f"loop_{loop_no}")
@@ -960,9 +932,9 @@ def run_in_hypothesis_verify_state(
 ) -> bool:
     print_desc = f"state {State.HYPOTHESIS_VERIFY_STATE} | process {process_no} | loop {loop_no}"
 
-    ###################################################
-    ########## Step I: Verify the hypothesis ##########
-    ###################################################
+    #################################
+    # Step I: Verify the hypothesis #
+    #################################
 
     assert proc_all_hypothesis.cur_hyp is not None
 
@@ -992,9 +964,9 @@ def run_in_hypothesis_verify_state(
     # Ask the Actor Agent
     analysis_text = _ask_actor_agent_and_print_response(msg_thread, print_desc, print_callback)
 
-    ######################################################
-    ########## Step II: Re-score the hypothesis ##########
-    ######################################################
+    ####################################
+    # Step II: Re-score the hypothesis #
+    ####################################
 
     # Prepare re-score prompt
     score_prompt = (
@@ -1016,9 +988,9 @@ def run_in_hypothesis_verify_state(
     assert score is not None
     print_proxy(msg=score, desc=print_desc, print_callback=print_callback)
 
-    #########################################################
-    ########## Step III: Update all the hypothesis ##########
-    #########################################################
+    #######################################
+    # Step III: Update all the hypothesis #
+    #######################################
 
     # (1) Update the confidence score of the current hypothesis
     proc_all_hypothesis.cur_hyp.confidence_score = json.loads(score)["confidence_score"]
@@ -1029,17 +1001,17 @@ def run_in_hypothesis_verify_state(
     proc_all_hypothesis.verified.append(ver_hyp)
     proc_all_hypothesis.unverified.pop(0)
 
-    ####################################################
-    ########## Step IV: Save the conversation ##########
-    ####################################################
+    ##################################
+    # Step IV: Save the conversation #
+    ##################################
 
     # Save the conversation of the current loop
     curr_loop_conversation_file = os.path.join(curr_proc_dirs.root, f"loop_{loop_no}_conversations.json")
     msg_thread.save_to_file(curr_loop_conversation_file)
 
-    ##############################################
-    ########## Step V: Decide next step ##########
-    ##############################################
+    ############################
+    # Step V: Decide next step #
+    ############################
 
     if len(proc_all_hypothesis.verified) >= globals.hypothesis_limit:
         log_and_print("Too many verified hypothesis. End anyway.")
