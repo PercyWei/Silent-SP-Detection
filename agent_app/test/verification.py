@@ -444,9 +444,42 @@ def test7():
         print("Parse s3 failed")
 
 
+def test8():
+    exps_root = "/root/projects/VDTest/output/agent/vul_2024-08-29T10:06:05"
+
+    total_num = 0
+    commit_type_match_num = 0
+    vul_type_top_1_match_num = 0
+    vul_type_top_3_match_num = 0
+
+    exps = os.listdir(exps_root)
+    for exp in exps:
+        eval_fpath = os.path.join(exps_root, exp, "evaluation.json")
+        if os.path.exists(eval_fpath):
+            total_num += 1
+
+            with open(eval_fpath, 'r') as f:
+                eval = json.load(f)
+            final_result = eval["final_result"]
+
+            if final_result["commit_type_match_rank"] == 1:
+                commit_type_match_num += 1
+
+            if final_result["vul_type_match_rank"] is not None:
+                if final_result["vul_type_match_rank"] == 1:
+                    vul_type_top_1_match_num += 1
+
+                if final_result["vul_type_match_rank"] <= 3:
+                    vul_type_top_3_match_num += 1
+
+    print(f"commit type match: {commit_type_match_num} / {total_num}")
+    print(f"vul type top-1 match: {vul_type_top_1_match_num} / {total_num}")
+    print(f"vul type top-3 match: {vul_type_top_3_match_num} / {total_num}")
+
+
 if __name__ == '__main__':
     # local_repos_dir = "/root/projects/clone_projects"
     # tasks_map_fpath = "/root/projects/VDTest/output/TreeVul/TreeVul_valid_scsfCVE.json"
     # main_test_changed_lines_locations(local_repos_dir, tasks_map_fpath)
 
-    test7()
+    test8()
