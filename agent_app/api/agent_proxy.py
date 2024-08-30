@@ -6,6 +6,7 @@ A proxy agent. Process raw response into json format.
 """
 
 import re
+import json
 import inspect
 
 from typing import *
@@ -15,8 +16,7 @@ from loguru import logger
 
 from agent_app.model import common
 from agent_app.search.search_manage import SearchManager
-from agent_app.data_structures import State, MessageThread
-from agent_app.post_process import ExtractStatus, is_valid_json
+from agent_app.data_structures import MessageThread
 from agent_app.util import parse_function_invocation
 
 
@@ -157,9 +157,9 @@ def run_with_retries(text: str, task: ProxyTask, retries: int = 3) -> Tuple[str 
         respond_text, new_thread = run(text, task)
         msg_threads.append(new_thread)
 
-        extract_status, data = is_valid_json(respond_text)
+        is_valid, data = is_valid_json(respond_text)
 
-        if extract_status != ExtractStatus.IS_VALID_JSON:
+        if not is_valid:
             logger.debug("Invalid json. Will retry.")
             continue
 
@@ -193,6 +193,23 @@ def run(text: str, task: ProxyTask) -> Tuple[str, MessageThread]:
     msg_thread.add_model(respond_text, [])
 
     return respond_text, msg_thread
+
+
+def is_valid_json(json_str: str) -> Tuple[bool, Union[List, Dict, None]]:
+    """
+    Check whether a json string is valid.
+
+    Args:
+        json_str: A string to check if in json format
+    Returns:
+        bool: Whether is valid json.
+        Union[List, Dict, None]: List or Dict if in json format, otherwise None
+    """
+    try:
+        data = json.loads(json_str)
+    except json.decoder.JSONDecodeError:
+        return False, None
+    return True, data
 
 
 def is_valid_response(data: List | Dict, task: ProxyTask) -> Tuple[bool, str]:
