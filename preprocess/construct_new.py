@@ -154,7 +154,22 @@ def select_from_dataset_v1_2(v1_2_dataset_fpath):
         json.dump(rest_items, f, indent=4)
 
 
-def select_from_dataset_v1_2_1(v1_2_1_dataset_fpath):
+def test_request():
+    token = os.getenv("TOKEN")
+
+    url = f"https://api.github.com/repos/livehelperchat/livehelperchat/commits/fbed8728be59040a7218610e72f6eceb5f8bc152"
+    headers = {
+        "Authorization": token,
+        "Accept": "application/vnd.github.v3+json"
+    }
+
+    response = requests.get(url, headers=headers)
+
+    if response.status_code == 200:
+        print(json.dumps(response.json(), indent=4))
+
+
+def get_pl_list_for_dataset_v1_2_1(v1_2_1_dataset_fpath):
     with open(v1_2_1_dataset_fpath, 'r') as f:
         items = json.load(f)
 
@@ -162,52 +177,99 @@ def select_from_dataset_v1_2_1(v1_2_1_dataset_fpath):
 
     commit_pattern = r"^https://github\.com/([\w-]+/[\w-]+)/commit/([a-fA-F0-9]+)$"
 
-    for item in items:
+    with tqdm(total=len(items)) as pb:
+        for i, item in enumerate(items):
 
-        repo = None
-        commit_hash = None
+            if "PL_list" not in item:
+                repo = None
+                commit_hash = None
 
-        for url in item["urls"]:
-            match = re.match(commit_pattern, url)
-            if match:
-                repo = match.group(1)
-                commit_hash = match.group(2)
-                break
+                for url in item["urls"]:
+                    match = re.match(commit_pattern, url)
+                    if match:
+                        repo = match.group(1)
+                        commit_hash = match.group(2)
+                        break
 
-        assert repo is not None and commit_hash is not None
+                assert repo is not None and commit_hash is not None
 
-        url = f"https://api.github.com/repos/{repo}/commits/{commit_hash}"
-        headers = {
-            "Authorization": token,
-            "Accept": "application/vnd.github.v3+json"
-        }
+                url = f"https://api.github.com/repos/{repo}/commits/{commit_hash}"
+                headers = {
+                    "Authorization": token,
+                    "Accept": "application/vnd.github.v3+json"
+                }
 
-        response = requests.get(url, headers=headers)
+                try:
+                    response = requests.get(url, headers=headers, timeout=10)
+                except requests.exceptions.SSLError as ssl_err:
+                    pass
+                except requests.exceptions.HTTPError as http_err:
+                    pass
+                except requests.exceptions.RequestException as req_err:
+                    pass
+                except Exception as e:
+                    pass
 
-        if response.status_code == 200:
-            commit_data = response.json()
+                if response.status_code == 200:
+                    commit_data = response.json()
 
+                    pl_list = []
 
+                    for file_info in commit_data["files"]:
+                        fname = file_info["filename"]
 
+                        if fname.endswith(".py") and "Python" not in pl_list:
+                            pl_list.append("Python")
+                        elif (fname.endswith(".c") or fname.endswith(".h")) and "C" not in pl_list:
+                            pl_list.append("C")
+                        elif (fname.endswith(".cpp") or fname.endswith(".cc")) and "C++" not in pl_list:
+                            pl_list.append("C++")
+                        elif fname.endswith(".java") and "Java" not in pl_list:
+                            pl_list.append("Java")
+                        elif (fname.endswith(".php") or fname.endswith(".phpt")) and "PHP" not in pl_list:
+                            pl_list.append("PHP")
+                        elif (fname.endswith(".js") or fname.endswith(".jsx")) and "JavaScript" not in pl_list:
+                            pl_list.append("JavaScript")
+                        elif fname.endswith(".cs") and "C#" not in pl_list:
+                            pl_list.append("C#")
+                        elif fname.endswith(".ts") and "TypeScript" not in pl_list:
+                            pl_list.append("TypeScript")
+                        elif fname.endswith(".rb") and "Ruby" not in pl_list:
+                            pl_list.append("Ruby")
+                        elif fname.endswith(".go") and "Go" not in pl_list:
+                            pl_list.append("Go")
+                        elif fname.endswith(".html") and "HTML" not in pl_list:
+                            pl_list.append("HTML")
+                        elif (fname.endswith(".pm") or fname.endswith(".t")) and "Perl" not in pl_list:
+                            pl_list.append("Perl")
+                        elif fname.endswith(".rs") and "Rust" not in pl_list:
+                            pl_list.append("Rust")
+                        elif fname.endswith(".cshtml"):
+                            if "C#" not in pl_list:
+                                pl_list.append("C#")
+                            if "HTML" not in pl_list:
+                                pl_list.append("HTML")
+                        elif fname.endswith(".vue"):
+                            if "JavaScript" not in pl_list:
+                                pl_list.append("JavaScript")
+                            if "HTML" not in pl_list:
+                                pl_list.append("HTML")
+                        else:
+                            pass
+
+                    item["PL_list"] = pl_list
+
+            items[i] = item
+            pb.update(1)
+
+    with open(v1_2_1_dataset_fpath, 'w') as f:
+        json.dump(items, f, indent=4)
 
 
 # nvdcve_fpath = "/root/projects/VDTest/NVD/raw/nvdcve-2022.json"
 # v1_dataset_fpath = "/root/projects/VDTest/NVD/filter/nvdcve-2022_v1.json"
 # v1_2_dataset_fpath = "/root/projects/VDTest/NVD/filter/nvdcve-2022_v1-2.json"
+v1_2_1_dataset_fpath = "/root/projects/VDTest/NVD/filter/nvdcve-2022_v1-2-1.json"
 
-
-token = os.getenv("TOKEN")
-
-
-url = f"https://api.github.com/repos/livehelperchat/livehelperchat/commits/fbed8728be59040a7218610e72f6eceb5f8bc152"
-headers = {
-    "Authorization": token,
-    "Accept": "application/vnd.github.v3+json"
-}
-
-response = requests.get(url, headers=headers)
-
-if response.status_code == 200:
-    commit_data = response.json()
-    print(json.dumps(commit_data, indent=4))
+get_pl_list_for_dataset_v1_2_1(v1_2_1_dataset_fpath)
 

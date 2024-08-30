@@ -155,14 +155,14 @@ def log_and_always_print(msg):
     """
     logger.info(msg)
     # always include time for important messages
-    console.print(f"\n[{get_timestamp()}] {msg}")
+    console.print(f"\n[[{get_timestamp()}]] {msg}")
 
 
 def print_with_time(msg):
     """
     Print a msg to console with timestamp.
     """
-    console.print(f"\n[{get_timestamp()}] {msg}")
+    console.print(f"\n[[{get_timestamp()}]] {msg}")
 
 
 def always_cprint(msg, **kwargs):
