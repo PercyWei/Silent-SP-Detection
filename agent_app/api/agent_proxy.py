@@ -25,6 +25,7 @@ class ProxyTask(str, Enum):
     PATCH_EXTRACTION = "PATCH_EXTRACTION"
     CONTEXT_RETRIEVAL = "CONTEXT_RETRIEVAL"
     SCORE = "SCORE"
+    RANK = "RANK"
 
     def task_target(self) -> str:
         if self == ProxyTask.HYP_PROPOSAL:
@@ -35,6 +36,8 @@ class ProxyTask(str, Enum):
             return "search APIs"
         elif self == ProxyTask.SCORE:
             return "confidence score"
+        elif self == ProxyTask.RANK:
+            return "ranking"
 
 
 HYP_PROPOSAL_PROMPT = """You are a helpful assistant to convert text containing the following information into json format.
@@ -57,7 +60,7 @@ interface NonVulPatchHypothesis {
 type Hypothesis = VulPatchHypothesis | NonVulPatchHypothesis;
 
 interface HypothesisList {
-    hypothesis_list: Hypothesis[]
+    hypothesis_list: Hypothesis[];
 };
 
 Now based on the given context, write a hypothesis_list section that conforms to the HypothesisList schema.
@@ -109,7 +112,7 @@ type ApiCall =
   | `search_method_in_class_in_file(${string}, ${string}, ${string})`;
 
 interface ApiCalls {
-    api_calls: ApiCall[]
+    api_calls: ApiCall[];
 };
 
 Now based on the given context, write a api_calls section that conforms to the ApiCalls schema.
@@ -124,10 +127,25 @@ Extract the confidence score from question 1.
 The confidence score should be an integer value between 1 and 10.
 
 interface Score {
-    confidence_score: number
+    confidence_score: number;
 };
 
 Now based on the given context, write a confidence_score section that conforms to the Score schema.
+"""
+
+
+RANK_PROMPT = """You are a helpful assistant to convert text containing the following information into json format.
+1. What is the ranking of the hypothesis?
+
+Extract the ranking from question 1.
+
+The ranking should be a list consisting of integers, e.g. [2, 3, 1].
+
+interface Ranking {
+    ranking: number[];
+};
+
+Now based on the given context, write a ranking section that conforms to the Ranking schema.
 """
 
 
@@ -138,48 +156,95 @@ def get_task_prompt(task: ProxyTask) -> str:
     return system_prompt
 
 
-def run_with_retries(text: str, task: ProxyTask, retries: int = 3) -> Tuple[str | None, List[MessageThread]]:
-    """
-    Main method to ask the LLM Agent to extract JSON answer from the given text with retries.
+def run_with_retries(
+        actor_response: str,
+        task: ProxyTask,
+        retries: int = 3,
+        with_summary: bool = False
+) -> Tuple[str | None, str | None, List[MessageThread]]:
+    """Main method to ask the LLM Agent to extract JSON answer from the given text with retries.
 
     Args:
-        text (str): Response from Actor Agent.
+        actor_response (str): Response from Actor Agent.
         task (ProxyTask): Task of Proxy Agent.
         retries (int): Number of retries for Proxy Agent.
+        with_summary (bool): Use the summary of previous failed retries in the next attempt if True, otherwise not.
     Returns:
-        respond text: Valid response in json format from Poxy Agent, None if .
-        msg_threads: List of all MessageThread instances.
+        str | None: Valid response in JSON format if the extraction succeed, otherwise None.
+        str | None: Failure summary if the extraction failed, otherwise None.
+        List[MessageThread]: List of all MessageThread instances.
     """
     msg_threads = []
+
+    proxy_responses: List[str] = []
+    failure_simp_reasons: List[str] = []
+    failure_verb_reasons: List[str] = []
+
+    ## Step 1: Ask the Proxy Agent with retries
     for idx in range(1, retries + 1):
         logger.debug(f"Trying to select {task.task_target()} in json. Try {idx} of {retries}.")
 
-        respond_text, new_thread = run(text, task)
+        # Summarize the previous failed retries
+        prev_summary = None
+        if with_summary and idx > 1:
+            prev_summary = "Previous retries have failed, and their results and reasons for failure are as below:"
+            for i, (res, simp_reason) in enumerate(zip(proxy_responses, failure_simp_reasons)):
+                prev_summary += (f"\n\nRetry {i + 1}: "
+                                 f"\n - Result: {res}"
+                                 f"\n - Reason: {simp_reason}")
+            prev_summary += "\n\nPlease avoid making the same mistake in your next answer."
+
+        # Ask the LLM
+        proxy_response, new_thread = run(task, actor_response, prev_summary)
         msg_threads.append(new_thread)
 
-        is_valid, data = is_valid_json(respond_text)
-
+        # Check the format
+        is_valid, data = is_valid_json(proxy_response)
         if not is_valid:
-            logger.debug("Invalid json. Will retry.")
+            logger.debug("Extracted a result in invalid json.")
+
+            proxy_responses.append(proxy_response)
+            failure_simp_reasons.append("Invalid json")
+            failure_verb_reasons.append("Invalid json")
             continue
 
-        valid, diagnosis = is_valid_response(data, task)
+        # Check the content
+        valid, simp_reason, verb_reason = is_valid_response(data, task)
         if not valid:
-            logger.debug(f"{diagnosis}. Will retry.")
+            logger.debug(f"Extracted a invalid result in json. Reason: {verb_reason}.")
+
+            proxy_responses.append(proxy_response)
+            failure_simp_reasons.append(simp_reason)
+            failure_verb_reasons.append(verb_reason)
             continue
 
-        logger.debug("Extracted a valid json")
-        return respond_text, msg_threads
-    return None, msg_threads
+        logger.debug("Extracted a valid result in json.")
+        return proxy_response, None, msg_threads
+
+    ## Step 2: Extraction failed, summary the failure reasons and return
+    failure_summary = f"We failed to extract valid {task.task_target()} in JSON format with retries. "
+
+    if len(set(failure_simp_reasons)) == 1:
+        # Retires failed for the same reason
+        failure_summary += f"The reason is: {failure_simp_reasons[0]}."
+    else:
+        # Retires failed for the different reasons
+        # TODO: For multiple failure reasons, do we need to use LLM to summary?
+        failure_summary += "The reasons include:"
+        for i, reason in enumerate(failure_simp_reasons):
+            failure_summary += f"\n - {i + 1}: {reason}"
+
+    return None, failure_summary, msg_threads
 
 
-def run(text: str, task: ProxyTask) -> Tuple[str, MessageThread]:
+def run(task: ProxyTask, actor_response: str, prev_summary: str | None = None) -> Tuple[str, MessageThread]:
     """
     Run the agent to extract useful information in json format.
 
     Args:
-        text (str): Response from Actor Agent.
         task (ProxyTask): Task of Proxy Agent.
+        actor_response (str): Response from Actor Agent.
+        prev_summary (str): The summary of the previous failed retries.
     Returns:
         respond_text (str): Response text in json format from Agent.
         msg_threads (MessageThread): MessageThread instance containing current conversation with Proxy Agent.
@@ -187,7 +252,9 @@ def run(text: str, task: ProxyTask) -> Tuple[str, MessageThread]:
     msg_thread = MessageThread()
     task_prompt = get_task_prompt(task)
     msg_thread.add_system(task_prompt)
-    msg_thread.add_user(text)
+    msg_thread.add_user(actor_response)
+    if prev_summary is not None:
+        msg_thread.add_user(prev_summary)
     respond_text, *_ = common.SELECTED_MODEL.call(msg_thread.to_msg(), response_format="json_object")
 
     msg_thread.add_model(respond_text, [])
@@ -212,7 +279,7 @@ def is_valid_json(json_str: str) -> Tuple[bool, Union[List, Dict, None]]:
     return True, data
 
 
-def is_valid_response(data: List | Dict, task: ProxyTask) -> Tuple[bool, str]:
+def is_valid_response(data: List | Dict, task: ProxyTask) -> Tuple[bool, str, str]:
     """
     Check if input data is a valid response
 
@@ -220,11 +287,13 @@ def is_valid_response(data: List | Dict, task: ProxyTask) -> Tuple[bool, str]:
         data (List | Dict | None): Json data.
         task (ProxyTask): Task of Proxy Agent.
     Returns:
-        bool: True if input data is a valid response, False otherwise
-        str: Statement of cause of failure
+        bool: True if input data is a valid response, otherwise False.
+        str: Simplified statement of failure reason.
+        str: Verbose statement of failure reason.
     """
     if not isinstance(data, dict):
-        return False, "Json is not a dict"
+        simp_reason = verb_reason = "JSON is not a Dict"
+        return False, simp_reason, verb_reason
 
     if task == ProxyTask.HYP_PROPOSAL:
         """
@@ -240,37 +309,54 @@ def is_valid_response(data: List | Dict, task: ProxyTask) -> Tuple[bool, str]:
         }
         """
         if "hypothesis_list" not in data:
-            return False, "Missing 'hypothesis_list' key"
+            simp_reason = verb_reason = "Missing 'hypothesis_list' key"
+            return False, simp_reason, verb_reason
 
         hypothesis_list = data["hypothesis_list"]
         for hypothesis in hypothesis_list:
             if not isinstance(hypothesis, Dict):
-                return False, "Every hypothesis must be a dict"
+                simp_reason = verb_reason = "A hypothesis is not a Dict"
+                verb_reason += f" and the hypothesis is: {hypothesis}"
+                return False, simp_reason, verb_reason
 
             if "commit_type" not in hypothesis:
-                return False, "For hypothesis, missing 'commit_type' key"
+                simp_reason = verb_reason = "A hypothesis missing 'commit_type' key"
+                verb_reason += f" and the hypothesis is: {hypothesis}"
+                return False, simp_reason, verb_reason
 
             if "vulnerability_type" not in hypothesis:
-                return False, "For hypothesis, missing 'vulnerability_type' key"
+                simp_reason = verb_reason = "A hypothesis missing 'vulnerability_type' key"
+                verb_reason += f" and the hypothesis is: {hypothesis}"
+                return False, simp_reason, verb_reason
 
             if "confidence_score" not in hypothesis:
-                return False, "For hypothesis, missing 'confidence_score' key"
+                simp_reason = verb_reason = "A hypothesis missing 'confidence_score' key"
+                verb_reason += f" and the hypothesis is: {hypothesis}"
+                return False, simp_reason, verb_reason
 
             commit_type = hypothesis["commit_type"]
             vul_type = hypothesis["vulnerability_type"]
             conf_score = hypothesis["confidence_score"]
 
             if commit_type not in ["vulnerability_patch", "non_vulnerability_patch"]:
-                return False, "For hypothesis, 'commit_type' is not 'vulnerability_patch' or 'non_vulnerability_patch'"
+                simp_reason = verb_reason = "The 'commit_type' of a hypothesis is not 'vulnerability_patch' or 'non_vulnerability_patch'"
+                verb_reason += f" and the hypothesis is: {hypothesis}"
+                return False, simp_reason, verb_reason
 
             if commit_type == "non_vulnerability_patch" and vul_type != "":
-                return False, "For hypothesis, 'vulnerability_type' should be empty while 'commit_type' is 'non_vulnerability_patch'"
+                simp_reason = verb_reason = "The 'vulnerability_type' of a hypothesis is not an empty string while the 'commit_type' is 'non_vulnerability_patch'"
+                verb_reason += f" and the hypothesis is: {hypothesis}"
+                return False, simp_reason, verb_reason
 
             if commit_type == "vulnerability_patch" and not re.fullmatch(r"CWE-\d+", vul_type):
-                return False, "For hypothesis, 'vulnerability_type' should be a CWE-ID while 'commit_type' is 'vulnerability_patch'"
+                simp_reason = verb_reason = "The 'vulnerability_type' of a hypothesis is not a CWE-ID while the 'commit_type' is 'vulnerability_patch'"
+                verb_reason += f" and the hypothesis is: {hypothesis}"
+                return False, simp_reason, verb_reason
 
             if not isinstance(conf_score, int):
-                return False, "For hypothesis, 'confidence_score' is not an integer"
+                simp_reason = verb_reason = "The 'confidence_score' of a hypothesis is not an integer"
+                verb_reason += f" and the hypothesis is: {hypothesis}"
+                return False, simp_reason, verb_reason
 
     elif task == ProxyTask.PATCH_EXTRACTION:
         """
@@ -287,13 +373,16 @@ def is_valid_response(data: List | Dict, task: ProxyTask) -> Tuple[bool, str]:
         }
         """
         if "patch_locations" not in data:
-            return False, "Missing 'patch_locations' key"
+            simp_reason = verb_reason = "Missing 'patch_locations' key"
+            return False, simp_reason, verb_reason
 
         patch_locations = data["patch_locations"]
         for loc in patch_locations:
             if "file" in loc and "code" in loc:
                 continue
-            return False, "For each location in 'patch_locations', at least a 'file' and a 'code' are required"
+            simp_reason = verb_reason = "A location missing the required 'file' and 'code'"
+            verb_reason += f" and the location is: {loc}"
+            return False, simp_reason, verb_reason
 
     elif task == ProxyTask.CONTEXT_RETRIEVAL:
         """
@@ -306,33 +395,34 @@ def is_valid_response(data: List | Dict, task: ProxyTask) -> Tuple[bool, str]:
         }
         """
         if "api_calls" not in data:
-            return False, "Missing 'api_calls' key"
+            simp_reason = verb_reason = "Missing 'api_calls' key"
+            return False, simp_reason, verb_reason
 
         api_calls = data["api_calls"]
         for api_call in api_calls:
             if not isinstance(api_call, str):
-                return False, "Every API call must be a string"
+                simp_reason = verb_reason = "An API call is not a string"
+                verb_reason += f" and the API call is: {api_call}"
+                return False, simp_reason, verb_reason
 
             try:
                 func_name, func_args = parse_function_invocation(api_call)
             except Exception:
-                return False, "Every API call must be of form api_call(arg1, ..., argn)"
+                simp_reason = verb_reason = "An API call is not in the form api_call(arg1, ..., argn)"
+                verb_reason += f" and the API call is: {api_call}"
+                return False, simp_reason, verb_reason
 
             # NOTE: Generally speaking, the name of the api called by LLM is not wrong
             function = getattr(SearchManager, func_name, None)
             if function is None:
-                return False, f"The API call '{api_call}' calls a non-existent function"
+                simp_reason = verb_reason = "An API call invokes a non-existent function"
+                verb_reason += f" and the API call is: {api_call}"
+                return False, simp_reason, verb_reason
 
             # NOTE: We found that in many cases, the LLM could not understand the search api correctly, resulting
             #       in mismatched parameters, while repeated queries to get the right format api tended to result
             #       in too many useless conversations, so we do not check the parameters here, but provide specific
             #       feedback later while calling the api.
-
-            # arg_spec = inspect.getfullargspec(function)
-            # arg_names = arg_spec.args[1:]  # first parameter is self
-            #
-            # if len(func_args) != len(arg_names):
-            #     return False, f"The API call '{api_call}' has wrong number of arguments"
 
     elif task == ProxyTask.SCORE:
         """
@@ -341,10 +431,32 @@ def is_valid_response(data: List | Dict, task: ProxyTask) -> Tuple[bool, str]:
        }
        """
         if "confidence_score" not in data:
-            return False, "Missing 'confidence_score' key"
+            simp_reason = verb_reason = "Missing 'confidence_score' key"
+            return False, simp_reason, verb_reason
 
         score = data["confidence_score"]
         if not isinstance(score, int):
-            return False, "'confidence_score' is not an integer"
+            simp_reason = verb_reason = "The 'confidence_score' is not an integer"
+            return False, simp_reason, verb_reason
 
-    return True, "OK"
+    elif task == ProxyTask.RANK:
+        """
+       {
+           "ranking": List[int]
+       }
+       """
+        if "ranking" not in data:
+            simp_reason = verb_reason = "Missing 'ranking' key"
+            return False, simp_reason, verb_reason
+
+        ranking = data["ranking"]
+        if not isinstance(ranking, List):
+            simp_reason = verb_reason = "The 'ranking' is not a List"
+            return False, simp_reason, verb_reason
+
+        for hyp_id in ranking:
+            if not isinstance(hyp_id, int):
+                simp_reason = verb_reason = "The 'ranking' is not a List consisting of integers"
+                return False, simp_reason, verb_reason
+
+    return True, "OK", "OK"
