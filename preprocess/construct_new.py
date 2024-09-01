@@ -202,13 +202,13 @@ def get_pl_list_for_dataset_v1_2_1(v1_2_1_dataset_fpath):
                 try:
                     response = requests.get(url, headers=headers, timeout=10)
                 except requests.exceptions.SSLError as ssl_err:
-                    pass
+                    continue
                 except requests.exceptions.HTTPError as http_err:
-                    pass
+                    continue
                 except requests.exceptions.RequestException as req_err:
-                    pass
+                    continue
                 except Exception as e:
-                    pass
+                    continue
 
                 if response.status_code == 200:
                     commit_data = response.json()

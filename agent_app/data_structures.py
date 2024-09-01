@@ -21,6 +21,7 @@ class State(str, Enum):
     CONTEXT_RETRIEVAL_STATE = "context_retrieval"
     HYPOTHESIS_VERIFY_STATE = "hypothesis_verify"
     END_STATE = "end"
+    POST_PROCESS_STATE = "post_process"
 
     @staticmethod
     def attributes():
@@ -141,6 +142,9 @@ class MessageThread:
 
     def __init__(self, messages=None):
         self.messages: List[Dict] = messages or []
+
+    def reset(self):
+        self.messages: List[Dict] = []
 
     def add(self, role: str, message: str):
         """

@@ -157,7 +157,7 @@ def get_task_prompt(task: ProxyTask) -> str:
 
 
 def run_with_retries(
-        actor_response: str,
+        text: str,
         task: ProxyTask,
         retries: int = 3,
         with_summary: bool = False
@@ -165,7 +165,7 @@ def run_with_retries(
     """Main method to ask the LLM Agent to extract JSON answer from the given text with retries.
 
     Args:
-        actor_response (str): Response from Actor Agent.
+        text (str): Text to be extracted.
         task (ProxyTask): Task of Proxy Agent.
         retries (int): Number of retries for Proxy Agent.
         with_summary (bool): Use the summary of previous failed retries in the next attempt if True, otherwise not.
@@ -195,7 +195,7 @@ def run_with_retries(
             prev_summary += "\n\nPlease avoid making the same mistake in your next answer."
 
         # Ask the LLM
-        proxy_response, new_thread = run(task, actor_response, prev_summary)
+        proxy_response, new_thread = run(task, text, prev_summary)
         msg_threads.append(new_thread)
 
         # Check the format
@@ -221,7 +221,7 @@ def run_with_retries(
         logger.debug("Extracted a valid result in json.")
         return proxy_response, None, msg_threads
 
-    ## Step 2: Extraction failed, summary the failure reasons and return
+    ## Step 2: Extraction failed, summarize the failure reasons and return
     failure_summary = f"We failed to extract valid {task.task_target()} in JSON format with retries. "
 
     if len(set(failure_simp_reasons)) == 1:
@@ -237,13 +237,13 @@ def run_with_retries(
     return None, failure_summary, msg_threads
 
 
-def run(task: ProxyTask, actor_response: str, prev_summary: str | None = None) -> Tuple[str, MessageThread]:
+def run(task: ProxyTask, text: str, prev_summary: str | None = None) -> Tuple[str, MessageThread]:
     """
     Run the agent to extract useful information in json format.
 
     Args:
         task (ProxyTask): Task of Proxy Agent.
-        actor_response (str): Response from Actor Agent.
+        text (str): Text to be extracted.
         prev_summary (str): The summary of the previous failed retries.
     Returns:
         respond_text (str): Response text in json format from Agent.
@@ -252,7 +252,7 @@ def run(task: ProxyTask, actor_response: str, prev_summary: str | None = None) -
     msg_thread = MessageThread()
     task_prompt = get_task_prompt(task)
     msg_thread.add_system(task_prompt)
-    msg_thread.add_user(actor_response)
+    msg_thread.add_user(text)
     if prev_summary is not None:
         msg_thread.add_user(prev_summary)
     respond_text, *_ = common.SELECTED_MODEL.call(msg_thread.to_msg(), response_format="json_object")
