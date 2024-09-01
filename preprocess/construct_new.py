@@ -105,13 +105,13 @@ def filter_dataset_v1(v1_dataset_fpath):
         if not py_flag and not not_py_flag:
             unchecked_items.append(item)
 
-    ori_fname = v1_dataset_fpath.split('/')[-1]
+    dpath = os.path.dirname(v1_dataset_fpath)
 
-    v1_1_dataset_fpath = v1_dataset_fpath[:-len(ori_fname)] + ori_fname.split('_')[0] + "_v1-1.json"
+    v1_1_dataset_fpath = os.path.join(dpath, "v1-1.json")
     with open(v1_1_dataset_fpath, 'w') as f:
         json.dump(py_items, f, indent=4)
 
-    v1_2_dataset_fpath = v1_dataset_fpath[:-len(ori_fname)] + ori_fname.split('_')[0] + "_v1-2.json"
+    v1_2_dataset_fpath = os.path.join(dpath, "v1-2.json")
     with open(v1_2_dataset_fpath, 'w') as f:
         json.dump(unchecked_items, f, indent=4)
 
@@ -143,13 +143,13 @@ def select_from_dataset_v1_2(v1_2_dataset_fpath):
         else:
             rest_items.append(item)
 
-    ori_fname = v1_2_dataset_fpath.split('/')[-1]
+    dpath = os.path.dirname(v1_2_dataset_fpath)
 
-    v1_2_1_dataset_fpath = v1_2_dataset_fpath[:-len(ori_fname)] + ori_fname.split('_')[0] + "_v1-2-1.json"
+    v1_2_1_dataset_fpath = os.path.join(dpath, "v1-2-1.json")
     with open(v1_2_1_dataset_fpath, 'w') as f:
         json.dump(selected_items, f, indent=4)
 
-    v1_2_2_dataset_fpath = v1_2_dataset_fpath[:-len(ori_fname)] + ori_fname.split('_')[0] + "_v1-2-2.json"
+    v1_2_2_dataset_fpath = os.path.join(dpath, "v1-2-2.json")
     with open(v1_2_2_dataset_fpath, 'w') as f:
         json.dump(rest_items, f, indent=4)
 
@@ -267,9 +267,24 @@ def get_pl_list_for_dataset_v1_2_1(v1_2_1_dataset_fpath):
 
 
 # nvdcve_fpath = "/root/projects/VDTest/NVD/raw/nvdcve-2022.json"
-# v1_dataset_fpath = "/root/projects/VDTest/NVD/filter/nvdcve-2022_v1.json"
-# v1_2_dataset_fpath = "/root/projects/VDTest/NVD/filter/nvdcve-2022_v1-2.json"
-v1_2_1_dataset_fpath = "/root/projects/VDTest/NVD/filter/nvdcve-2022_v1-2-1.json"
+# nvdcve_fpath = "/root/projects/VDTest/NVD/raw/nvdcve-2023.json"
+# nvdcve_fpath = "/root/projects/VDTest/NVD/raw/nvdcve-2024.json"
+# build_new_dataset(nvdcve_fpath)
 
+
+# v1_dataset_fpath = "/root/projects/VDTest/NVD/filter/nvdcve-2022/v1.json"
+# v1_dataset_fpath = "/root/projects/VDTest/NVD/filter/nvdcve-2023/v1.json"
+# v1_dataset_fpath = "/root/projects/VDTest/NVD/filter/nvdcve-2024/v1.json"
+# filter_dataset_v1(v1_dataset_fpath)
+
+
+# v1_2_dataset_fpath = "/root/projects/VDTest/NVD/filter/nvdcve-2022/v1-2.json"
+# v1_2_dataset_fpath = "/root/projects/VDTest/NVD/filter/nvdcve-2023/v1-2.json"
+# v1_2_dataset_fpath = "/root/projects/VDTest/NVD/filter/nvdcve-2024/v1-2.json"
+# select_from_dataset_v1_2(v1_2_dataset_fpath)
+
+# v1_2_1_dataset_fpath = "/root/projects/VDTest/NVD/filter/nvdcve-2022/v1-2-1.json"
+v1_2_1_dataset_fpath = "/root/projects/VDTest/NVD/filter/nvdcve-2023/v1-2-1.json"
+# v1_2_1_dataset_fpath = "/root/projects/VDTest/NVD/filter/nvdcve-2024/v1-2-1.json"
 get_pl_list_for_dataset_v1_2_1(v1_2_1_dataset_fpath)
 
