@@ -53,27 +53,6 @@ A hypothesis contains three attributes: commit type, vulnerability type and conf
 """
 
 
-START_INSTRUCTION = """In this step, first, you need to make hypothesis about the functionality of the commit.
-1.
- - Question: What is the commit type?
- - Description: Judge if the commit fixes the vulnerability.
- - Constraints: Choose answer from "vulnerability_patch" and "non_vulnerability_patch".
-2. 
- - Question: Where is the patch located?
- - Description: Go through the files involved in the commit one by one, and select the code that might be a patch.
- - Constraints: 
-  - If you choose "non_vulnerability_patch" for question 1, leave this question empty.
-  - If you choose "vulnerability_patch" for question 1, provide at least one location.
-  - For each location provided, you should at least indicate its "file_name" and "code", and "class_name" and "func_name" are not required.
-3. 
- - Question: What types of vulnerabilities might it address?
- - Description: Give the type of vulnerability that was fixed by this commit and the level of reliability (confidence score) of that answer. The vulnerability type is denoted by CWE-ID. 
- - Constraints: 
-  - If you choose "non_vulnerability_patch" for question 1, leave this question empty. 
-  - If you are not sure about the vulnerability type, provide multiple CWE-IDs and the corresponding confidence scores (1-10), otherwise provide only one CWE-ID with a confidence score of value 10.
-"""
-
-
 API_CALLS_DESCRIPTION = """You can use the following search APIs to get more context.
 - search_class(class_name: str): Search for a class in the codebase
 - search_class_in_file(class_name: str, file_name: str): Search for a class in a given file
@@ -194,7 +173,7 @@ class CodeContext(CodeSnippetLocation):
 
 @dataclass
 class Hypothesis:
-    """Dataclass to hold hypothesis."""
+    """Dataclass to hold the basic hypothesis."""
     commit_type: CommitType
     vulnerability_type: str
     confidence_score: int | float
@@ -214,22 +193,50 @@ class Hypothesis:
 
 @dataclass
 class VerifiedHypothesis(Hypothesis):
+    """Dataclass to hold the verified hypothesis with its analysis."""
     analysis: str
 
     def to_dict(self) -> Dict:
         info = super().to_dict()
         info.update({"analysis": self.analysis})
-
         return info
 
     def to_str(self) -> str:
         seq = super().to_str()
         seq += f"\n- analysis: {self.analysis}"
-
         return seq
 
 
-def get_unverified_hypothesis(commit_type: str, vul_type: str, conf_score: int) -> Hypothesis:
+@dataclass
+class FinalHypothesis(Hypothesis):
+    """Dataclass to hold the final hypothesis obtained from the results of multiple processes."""
+    count: int
+
+    def to_dict(self) -> Dict:
+        info = super().to_dict()
+        info.update({"count": self.count})
+        return info
+
+    def to_str(self) -> str:
+        seq = super().to_str()
+        seq += f"\n- count: {self.count}"
+        return seq
+
+
+def get_hyp_description(hyp: Hypothesis, with_score: bool = True) -> str:
+    """Describe the given hypothesis."""
+    if hyp.commit_type == CommitType.NonVulnerabilityPatch:
+        desc = f"The given commit does not fix a vulnerability"
+    else:
+        desc = f"The given commit fixes a vulnerability of type {hyp.vulnerability_type}"
+
+    if with_score:
+        desc += f", and the confidence score is {hyp.confidence_score}/10"
+
+    return desc
+
+
+def get_basic_hyp(commit_type: str, vul_type: str, conf_score: int) -> Hypothesis:
     # (1) Check commit type
     try:
         commit_type = CommitType(commit_type)
@@ -249,22 +256,7 @@ def get_unverified_hypothesis(commit_type: str, vul_type: str, conf_score: int) 
     return Hypothesis(commit_type, vul_type, conf_score)
 
 
-def describe_hypothesis(hyp: Hypothesis, with_score: bool = True) -> str:
-    """
-    Describe the given hypothesis (unverified / verified).
-    """
-    if hyp.commit_type == CommitType.NonVulnerabilityPatch:
-        desc = f"The given commit does not fix a vulnerability"
-    else:
-        desc = f"The given commit fixes a vulnerability of type {hyp.vulnerability_type}"
-
-    if with_score:
-        desc += f", and the confidence score is {hyp.confidence_score}/10"
-
-    return desc
-
-
-def verify_hypothesis(hyp: Hypothesis, analysis: str) -> VerifiedHypothesis:
+def update_hyp_with_analysis(hyp: Hypothesis, analysis: str) -> VerifiedHypothesis:
     ver_hyp = VerifiedHypothesis(
         commit_type=hyp.commit_type,
         vulnerability_type=hyp.vulnerability_type,
@@ -272,6 +264,16 @@ def verify_hypothesis(hyp: Hypothesis, analysis: str) -> VerifiedHypothesis:
         analysis=analysis
     )
     return ver_hyp
+
+
+def update_hyp_with_count(hyp: Hypothesis, count: int) -> FinalHypothesis:
+    final_hyp = FinalHypothesis(
+        commit_type=hyp.commit_type,
+        vulnerability_type=hyp.vulnerability_type,
+        confidence_score=hyp.confidence_score,
+        count=count
+    )
+    return final_hyp
 
 
 """ACTION WITH AGENT"""
@@ -453,7 +455,7 @@ def run_in_start_state(
 
     raw_hyps = json.loads(json_hyps)["hypothesis_list"]
     for hyp in raw_hyps:
-        hyp = get_unverified_hypothesis(hyp["commit_type"], hyp["vulnerability_type"], hyp["confidence_score"])
+        hyp = get_basic_hyp(hyp["commit_type"], hyp["vulnerability_type"], hyp["confidence_score"])
         if not proc_all_hypothesis.in_unverified(hyp):
             proc_all_hypothesis.unverified.append(hyp)
 
@@ -562,7 +564,7 @@ def run_in_reflexion_state(
         # TODO: Consider how to briefly summarize the analysis of previous hypothesis.
         loop_summary = "In the previous analysis, you have made and analysed the following hypothesis:"
         for i, hyp in enumerate(proc_all_hypothesis.verified):
-            desc = describe_hypothesis(hyp)
+            desc = get_hyp_description(hyp)
             loop_summary += (f"\n\nHypothesis id {i + 1}:"
                              f"\n - Description: {desc}"
                              f"\n - Analysis: {hyp.analysis}")
@@ -631,7 +633,7 @@ def run_in_hypothesis_check_state(
 
         # Filter verified hypothesis
         for hyp in raw_hyps:
-            hyp = get_unverified_hypothesis(hyp["commit_type"], hyp["vulnerability_type"], hyp["confidence_score"])
+            hyp = get_basic_hyp(hyp["commit_type"], hyp["vulnerability_type"], hyp["confidence_score"])
             if not proc_all_hypothesis.in_verified(hyp):
                 proc_all_hypothesis.unverified.append(hyp)
 
@@ -661,7 +663,7 @@ def run_in_hypothesis_check_state(
         # Just in case
         suffix_prompt = ""
 
-    cur_hyp_str = describe_hypothesis(proc_all_hypothesis.cur_hyp)
+    cur_hyp_str = get_hyp_description(proc_all_hypothesis.cur_hyp)
     hyp_select_prompt = (
         f"Now your target is to justify the hypothesis: {cur_hyp_str}."
         f"\n{suffix_prompt}"
@@ -833,7 +835,7 @@ def run_in_hypothesis_verify_state(
                          "(1) Analyze the key variables and fix methods commonly involved in this CWE.\n"
                          "(2) Find the corresponding key variables and fix methods in the code snippet involved in this commit.")
 
-    cur_hyp_str = describe_hypothesis(proc_all_hypothesis.cur_hyp)
+    cur_hyp_str = get_hyp_description(proc_all_hypothesis.cur_hyp)
     hyp_verify_prompt = (
         "Now you have enough context, please re-analyze the correctness of your previous hypothesis.\n"
         f"Your hypothesis is: {cur_hyp_str}.\n"
@@ -881,7 +883,7 @@ def run_in_hypothesis_verify_state(
     proc_all_hypothesis.cur_hyp.confidence_score = json.loads(json_score)["confidence_score"]
 
     # (2) Update the current hypothesis from unverified to verified
-    ver_hyp = verify_hypothesis(proc_all_hypothesis.cur_hyp, analysis_text)
+    ver_hyp = update_hyp_with_analysis(proc_all_hypothesis.cur_hyp, analysis_text)
 
     proc_all_hypothesis.verified.append(ver_hyp)
     proc_all_hypothesis.unverified.pop(0)
@@ -921,7 +923,11 @@ def run_in_end_state(
 """POST-PROCESS"""
 
 
-def calculate_final_confidence_score(all_hyps: List[Hypothesis], proc_num: int, cal_type: int = 0) -> List[Hypothesis]:
+def calculate_final_confidence_score(
+        all_hyps: List[Hypothesis],
+        proc_num: int,
+        cal_type: int = 0
+) -> List[FinalHypothesis]:
     """Calculate the final confidence score of hypothesis based on multi-processes.
 
     Args:
@@ -949,50 +955,49 @@ def calculate_final_confidence_score(all_hyps: List[Hypothesis], proc_num: int, 
     ## CASE 1: Process number = 1
     if proc_num == 1:
         all_hyps = sorted(all_hyps, key=lambda x: x.confidence_score, reverse=True)
-        return all_hyps
+        final_hyps: List[FinalHypothesis] = [update_hyp_with_count(hyp, 1) for hyp in all_hyps]
+        return final_hyps
 
     ## CASE 2: Process number > 1
-    hyp_score = defaultdict(lambda: {"count": 0, "total_score": 0})
+    hyp_conds = defaultdict(lambda: {"count": 0, "total_score": 0, "final_score": 0.})
 
     if cal_type == 0:
         for hyp in all_hyps:
             hyp_name = hyp.commit_type + "." + hyp.vulnerability_type
-            hyp_score[hyp_name]["count"] += 1
-            hyp_score[hyp_name]["total_score"] += _normalize(hyp.confidence_score)
+            hyp_conds[hyp_name]["count"] += 1
+            hyp_conds[hyp_name]["total_score"] += _normalize(hyp.confidence_score)
 
-        hyp_final_score = {
-            hyp_name: data["total_score"] / proc_num
-            for hyp_name, data in hyp_score.items()
-        }
+        for hyp_name, data in hyp_conds.items():
+            ave_score = data["total_score"] / proc_num
+            hyp_conds[hyp_name]["final_score"] = _round_score(_denormalize(ave_score))
     elif cal_type == 1:
         for hyp in all_hyps:
             hyp_name = hyp.commit_type + "." + hyp.vulnerability_type
-            hyp_score[hyp_name]["count"] += 1
-            hyp_score[hyp_name]["total_score"] += _normalize(hyp.confidence_score)
+            hyp_conds[hyp_name]["count"] += 1
+            hyp_conds[hyp_name]["total_score"] += _normalize(hyp.confidence_score)
 
-        hyp_final_score = {
-            hyp_name: (data["total_score"] / data["count"]) * (1 + math.log(data["count"] + 1))
-            for hyp_name, data in hyp_score.items()
-        }
+        for hyp_name, data in hyp_conds.items():
+            ave_score = (data["total_score"] / data["count"]) * (1 + math.log(data["count"] + 1))
+            hyp_conds[hyp_name]["final_score"] = _round_score(_denormalize(ave_score))
     elif cal_type == 2:
         # TODO: Not complete
         pass
     else:
         raise RuntimeError
 
-    hyp_final_score = {
-        hyp_name: _round_score(_denormalize(score))
-        for hyp_name, score in hyp_final_score.items()
-    }
-
-    final_hyps: List[Hypothesis] = [Hypothesis(hyp_name.split('.')[0], hyp_name.split('.')[1], score)
-                                    for hyp_name, score in hyp_final_score.items()]
+    final_hyps: List[FinalHypothesis] = [
+        FinalHypothesis(commit_type=hyp_name.split('.')[0],
+                        vulnerability_type=hyp_name.split('.')[1],
+                        confidence_score=data["final_score"],
+                        count=data["count"])
+        for hyp_name, data in hyp_conds.items()
+    ]
     final_hyps = sorted(final_hyps, key=lambda x: x.confidence_score, reverse=True)
 
     return final_hyps
 
 
-def vote_on_result(proc_dpaths: List[str]) -> List[Hypothesis]:
+def vote_on_result(proc_dpaths: List[str]) -> List[FinalHypothesis]:
     all_ver_hyps: List[Hypothesis] = []
 
     for proc_dpath in proc_dpaths:
@@ -1004,13 +1009,13 @@ def vote_on_result(proc_dpaths: List[str]) -> List[Hypothesis]:
                 hyp = Hypothesis(ver_hyp["commit_type"], ver_hyp["vulnerability_type"], ver_hyp["confidence_score"])
                 all_ver_hyps.append(hyp)
 
-    ver_hyps = calculate_final_confidence_score(all_ver_hyps, proc_num=len(proc_dpaths))
+    final_hyps = calculate_final_confidence_score(all_ver_hyps, proc_num=len(proc_dpaths))
 
-    return ver_hyps
+    return final_hyps
 
 
 def post_process(
-        final_hyps: List[Hypothesis],
+        final_hyps: List[FinalHypothesis],
         proc_all_hypothesis: ProcHypothesis,
         curr_proc_outs: ProcessOutPaths,
         msg_thread: MessageThread,
@@ -1031,10 +1036,10 @@ def post_process(
 
     # TODO: For now, we are only interested in hypothesis with the highest confidence score
     # ------------------ 2.1 Select the hypothesis with the highest confidence score ------------------ #
-    final_hyps = sorted(final_hyps, key=lambda x: x["confidence_score"], reverse=True)
+    final_hyps = sorted(final_hyps, key=lambda x: x.confidence_score, reverse=True)
 
     max_conf_score = None
-    pending_hyps: List[Hypothesis] = []
+    pending_hyps: List[FinalHypothesis] = []
     for hyp in final_hyps:
         if max_conf_score is None:
             max_conf_score = hyp.confidence_score
@@ -1067,7 +1072,7 @@ def post_process(
         # 2.3 Description of hypothesis with the same confidence score
         hyp_desc = f"After analysing and verifying, you give the following hypothesis the same high score {max_conf_score}/10:"
         for i, hyp in enumerate(pending_hyps):
-            desc = describe_hypothesis(hyp, with_score=False)
+            desc = get_hyp_description(hyp, with_score=False)
             hyp_desc += f"\nHypothesis id {i + 1}: {desc}"
 
         # 2.4 Instruction
@@ -1120,15 +1125,21 @@ def post_process(
             else:
                 break
 
+        # ------------------ 2.4 Rank the final hypothesis ------------------ #
         if json_ranking is None:
             # FIXME: Check whether the ranking failure could occur.
             # TODO: Heuristic: 1. more occurrences -> higher ranking
             #                  2. vulnerability fix > non-vulnerability fix
-            pass
+            commit_type_priority = {CommitType.VulnerabilityPatch: 1, CommitType.NonVulnerabilityPatch: 0}
+            ranking_hyps = sorted(
+                pending_hyps,
+                key=lambda x: (x.count, commit_type_priority[x.commit_type]),
+                reverse=True
+            )
         else:
             raw_ranking = json.loads(json_ranking)["ranking"]
             ranking_hyps = [pending_hyps[i - 1] for i in raw_ranking]
-            final_hyps = ranking_hyps + final_hyps[len(pending_hyps):]
+        final_hyps = ranking_hyps + final_hyps[len(pending_hyps):]
 
     return final_hyps
 
