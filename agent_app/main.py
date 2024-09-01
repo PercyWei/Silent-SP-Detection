@@ -217,7 +217,7 @@ def run_task_in_subprocess(task: RawTask) -> None:
             globals_mut.inc_completed_ok_tasks()
 
 
-def run_raw_task(task: RawTask, print_callback: Optional[Callable[[Dict], None]] = None) -> bool:
+def run_raw_task(task: RawTask, print_callback: Callable[[dict], None] | None = None) -> bool:
     """
     High-level entry for running one task.
 
@@ -261,11 +261,7 @@ def run_raw_task(task: RawTask, print_callback: Optional[Callable[[Dict], None]]
     return proc_status is not None
 
 
-def do_inference(
-    python_task: Task,
-    task_output_dir: str,
-    print_callback: Optional[Callable[[Dict], None]] = None,
-) -> Dict | None:
+def do_inference(task: Task, task_output_dir: str, print_callback: Callable[[dict], None] | None = None) -> Dict | None:
     create_dir_if_not_exists(task_output_dir)
     current_task_log_path = os.path.join(task_output_dir, "info.log")
 
@@ -277,7 +273,7 @@ def do_inference(
 
     start_time = datetime.now()
 
-    manager = ProcessManager(python_task, task_output_dir)
+    manager = ProcessManager(task, task_output_dir)
 
     log_and_cprint(f"Manager preparation: {time.time() - start_time.timestamp()}")
 
@@ -291,13 +287,13 @@ def do_inference(
 
     proc_status = None
     try:
-        proc_status = inference.run_one_task(python_task.commit_content, manager.output_dpath, manager, print_callback)
+        proc_status = inference.run_one_task(task.commit_content, manager.output_dpath, manager, print_callback)
 
         end_time = datetime.now()
 
-        dump_cost(python_task.repo_name, python_task.commit_hash, start_time, end_time, task_output_dir)
+        dump_cost(task.repo_name, task.commit_hash, start_time, end_time, task_output_dir)
     finally:
-        python_task.reset_project()
+        task.reset_project()
 
     return proc_status
 

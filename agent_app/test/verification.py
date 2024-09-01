@@ -445,7 +445,7 @@ def test7():
 
 
 def test8():
-    exps_root = "/root/projects/VDTest/output/agent/vul_2024-08-29T10:06:05"
+    exps_root = "/root/projects/VDTest/output/agent/safe_2024-08-30T21:10:12"
 
     total_num = 0
     commit_type_match_num = 0

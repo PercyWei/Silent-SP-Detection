@@ -83,7 +83,7 @@ def print_role(
         msg: str,
         border_style: str = "blue",
         desc: str = "",
-        print_callback: Optional[Callable[[Dict], None]] = None
+        print_callback: Callable[[dict], None] | None = None
 ) -> None:
     """
     Print message provided by Role (system / user / actor agent / proxy agent)
