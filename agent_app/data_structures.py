@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from openai.types.chat import ChatCompletionMessageToolCall
 from openai.types.chat.chat_completion_message_tool_call import Function as OpenaiFunction
 
+
 """MANAGER"""
 
 
@@ -26,6 +27,21 @@ class State(str, Enum):
     @staticmethod
     def attributes():
         return [k.value for k in State]
+
+
+@dataclass
+class ProcessActionStatus:
+    """Dataclass to hold status of some actions during the identification processes."""
+    start_patch_extraction: bool = False
+    post_process_rank: bool = False
+    complete: bool = False
+
+    def to_dict(self):
+        return {
+            "start_patch_extraction": self.start_patch_extraction,
+            "post_process_rank": self.post_process_rank,
+            "complete": self.complete
+        }
 
 
 """COMMIT"""

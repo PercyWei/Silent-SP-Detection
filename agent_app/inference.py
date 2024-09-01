@@ -20,8 +20,13 @@ from agent_app.api.manage import ProcessManager
 from agent_app.api.agent_proxy import ProxyTask
 from agent_app.model import common
 from agent_app.search.search_manage import SearchManager
-from agent_app.data_structures import State, CommitType, CodeSnippetLocation, FunctionCallIntent, MessageThread, \
-    SearchStatus
+from agent_app.data_structures import (
+    State, ProcessActionStatus,
+    CommitType,
+    CodeSnippetLocation,
+    FunctionCallIntent,
+    MessageThread
+)
 from agent_app.log import (
     print_banner,
     print_system, print_user, print_actor, print_proxy,
@@ -507,7 +512,7 @@ def run_in_start_state(
         # ------------------ 2.4 Collect patch locations ------------------ #
         if json_patches is None:
             # FIXME: Check whether the situation where the patch locations cannot be successfully extracted would occur.
-            pass
+            manager.proc_action_status.start_patch_extraction = True
         else:
             print_proxy(msg=json_patches, desc=print_desc, print_callback=print_callback)
 
@@ -1021,7 +1026,7 @@ def post_process(
         msg_thread: MessageThread,
         manager: ProcessManager,
         print_callback: Callable[[dict], None] | None = None
-) -> List[Hypothesis]:
+) -> List[FinalHypothesis]:
     print_desc = f"state {State.POST_PROCESS_STATE}"
 
     ################################################
@@ -1128,6 +1133,8 @@ def post_process(
         # ------------------ 2.4 Rank the final hypothesis ------------------ #
         if json_ranking is None:
             # FIXME: Check whether the ranking failure could occur.
+            manager.proc_action_status.post_process_rank = True
+
             # TODO: Heuristic: 1. more occurrences -> higher ranking
             #                  2. vulnerability fix > non-vulnerability fix
             commit_type_priority = {CommitType.VulnerabilityPatch: 1, CommitType.NonVulnerabilityPatch: 0}
@@ -1151,30 +1158,30 @@ def start_conversation_round_stratified(
         output_dpath: str,
         manager: ProcessManager,
         print_callback: Callable[[dict], None] | None = None
-) -> Dict:
+) -> Dict[str, ProcessActionStatus]:
     """
     This version uses json data to process API calls, instead of using the OpenAI function calling.
     Advantage is that multiple API calls can be made in a single round.
     """
-    # -------------------------------------------------------------------------------- #
-    # -------------------------------- Identification -------------------------------- #
-    # -------------------------------------------------------------------------------- #
 
-    ## Step I: Perform multiple independent and complete processes
+    ############################################
+    # STEP 1: Perform identification processes #
+    ############################################
+
     # process_name -> status
-    proc_status: Dict[str, bool] = {}
+    all_proc_status: Dict[str, ProcessActionStatus] = {}
 
     for proc_no in range(1, globals.complete_process_limit + 1):
         print_banner(f"COMPLETE PROCESS {proc_no}")
 
-        # TODO: Add Reflexion Module to remind Agent the following info:
+        # TODO: Consider whether to add Reflexion Module to remind Agent the following info:
         #  (1) Previous successful process: previous hypothesis and analysis.
         #  (2) Previous failed process: failed reason.
 
-        ## 1. Preparation
+        # ------------------------------------ 1.1 Preparation ------------------------------------ #
+        curr_proc_name = f"process_{proc_no}"
 
         # Root
-        curr_proc_name = f"process_{proc_no}"
         curr_proc_dpath = make_hie_dirs(output_dpath, curr_proc_name)
         # Dirs
         curr_proc_hyp_fpath = make_hie_dirs(curr_proc_dpath, f"hypothesis")
@@ -1188,22 +1195,25 @@ def start_conversation_round_stratified(
             tool_call_dpath=curr_proc_tool_call_dpath,
         )
 
-        proc_status[curr_proc_name] = False
+        # Process action status
+        manager.reset_proc_action_status()
+        all_proc_status[curr_proc_name] = manager.proc_action_status
 
+        # Message thread
         msg_thread = MessageThread()
 
-        ## 2. Workflow
+        # ------------------------------------ 1.2 Workflow ------------------------------------ #
+        ## State switching process:
+        # - Complete loop: hypothesis_check -> context_retrieval -> hypothesis_verify
+        # - Complete process: start -> loop -> ( reflexion -> loop ) -> ... -> ( reflexion -> loop ) -> end
+
         ########## Start State ##########
         proc_all_hyp = run_in_start_state(proc_no, curr_proc_outs, msg_thread, manager, print_callback)
 
         if proc_all_hyp is None:
             continue
 
-        ## State switching process:
-        # - Complete loop: hypothesis_check -> context_retrieval -> hypothesis_verify
-        # - Complete process: start -> loop -> ( reflexion -> loop ) -> ... -> ( reflexion -> loop ) -> end
         loop_no = 0
-
         while True:
             loop_no += 1
 
@@ -1231,39 +1241,44 @@ def start_conversation_round_stratified(
         ########## End State ##########
         run_in_end_state(proc_no, proc_all_hyp, curr_proc_outs, msg_thread, manager, print_callback)
 
-        ## 3. Post-process
-        # TODO: Need to consider if there are other cases that could cause failure
-        proc_status[curr_proc_name] = True
+        # ------------------------------------ 1.3 Update and save ------------------------------------ #
+        # Update and save process status
+        manager.proc_action_status.complete = True
+        all_proc_status[curr_proc_name] = manager.proc_action_status
 
         # Record the whole conversation in current process
         logger.info(f"\n========== Complete Process {proc_no} ==========")
         logger.info(f"Current message thread:\n{msg_thread}")
 
-    ## Step II: Vote for the final result
-    valid_proc_dpaths = [os.path.join(output_dpath, proc_name) for proc_name, status in proc_status.items() if status]
-    final_res: List[Hypothesis] = vote_on_result(valid_proc_dpaths)
+    #####################################
+    # STEP 2: Vote for the final result #
+    #####################################
 
-    ## Step III. Post process
-    final_res = post_process(final_res, proc_all_hyp, curr_proc_outs, msg_thread, manager, print_callback)
+    valid_proc_dpaths = [os.path.join(output_dpath, proc_name) for proc_name, status in all_proc_status.items() if status]
+    final_hyps: List[FinalHypothesis] = vote_on_result(valid_proc_dpaths)
 
-    # Save
+    #########################################
+    # STEP 3: Post process the final result #
+    #########################################
+
+    final_hyps = post_process(final_hyps, proc_all_hyp, curr_proc_outs, msg_thread, manager, print_callback)
+
     final_res_fpath = os.path.join(output_dpath, "result.json")
     with open(final_res_fpath, "w") as f:
-        json.dump(final_res, f, indent=4)
+        json.dump([hyp.to_dict() for hyp in final_hyps], f, indent=4)
 
-    # ---------------------------------------------------------------------------- #
-    # -------------------------------- Evaluation -------------------------------- #
-    # ---------------------------------------------------------------------------- #
+    ######################
+    # STEP 4: Evaluation #
+    ######################
 
     eval_result = task_evaluation(manager.task.commit_type, manager.task.cwe_id, valid_proc_dpaths, final_res_fpath)
-    eval_result["process_status"] = proc_status
 
     eval_res_path = Path(output_dpath, "evaluation.json")
     eval_res_path.write_text(json.dumps(eval_result, indent=4))
 
     logger.info("Ending workflow.")
 
-    return proc_status
+    return all_proc_status
 
 
 def run_one_task(
@@ -1271,7 +1286,7 @@ def run_one_task(
         output_dpath: str,
         manager: ProcessManager,
         print_callback: Callable[[dict], None] | None = None,
-) -> Dict:
+) -> Dict[str, ProcessActionStatus]:
     """
     Main entry point to run inference on one task.
 

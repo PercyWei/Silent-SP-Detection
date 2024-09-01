@@ -14,7 +14,7 @@ from agent_app.api.agent_proxy import ProxyTask, run_with_retries as run_proxy_w
 from agent_app.commit.commit_manage import CommitManager
 from agent_app.CWE.cwe_manage import CWEManager
 from agent_app.search.search_manage import SearchResult, SearchManager
-from agent_app.data_structures import SearchStatus, FunctionCallIntent, MessageThread
+from agent_app.data_structures import ProcessActionStatus, SearchStatus, FunctionCallIntent, MessageThread
 from agent_app.task import Task
 from agent_app.log import log_exception
 from agent_app import globals
@@ -40,10 +40,11 @@ class ProcessManager:
         # Prepare the repo environment
         self.task.setup_project()
 
-        ## For state start
-        self.commit_manager = CommitManager(self.task.project_path,
-                                            self.task.commit_hash,
-                                            self.task.commit_content)
+        # Record special cases under processing
+        self.proc_action_status: ProcessActionStatus = ProcessActionStatus()
+
+        # Manage commit info
+        self.commit_manager = CommitManager(self.task.project_path, self.task.commit_hash, self.task.commit_content)
 
         commit_files_info = {
             "del_files": self.commit_manager.del_files,
@@ -59,11 +60,10 @@ class ProcessManager:
             "file_classFunc_index": self.commit_manager.file_classFunc_index
         }
 
-        ## For providing CWE information
+        # Manage CWE info
         self.cwe_manager = CWEManager(globals.cwe_entry_file, globals.cwe_tree_file)
 
-        ## For state context_retrieval
-        # Build search manager
+        # Manage context retrieval
         self.search_manager = SearchManager(self.task.project_path, commit_files_info)
 
         # Keep track which tools is currently being used
@@ -79,13 +79,6 @@ class ProcessManager:
         self.cost: float = 0.0
         self.input_tokens: int = 0
         self.output_tokens: int = 0
-
-    def start_new_tool_call_layer(self):
-        self.tool_call_layers.append([])
-
-    def reset_too_call_recordings(self):
-        self.tool_call_sequence = []
-        self.tool_call_layers = []
 
     @classmethod
     def get_full_funcs_for_openai(cls, tool_list: List[str]) -> List[Dict]:
@@ -188,7 +181,19 @@ class ProcessManager:
 
         return call_res
 
-    """SAVE TOOL CALLs"""
+    """PROCESS ACTION STATUS"""
+
+    def reset_proc_action_status(self):
+        self.proc_action_status = ProcessActionStatus()
+
+    """TOOL CALLs"""
+
+    def start_new_tool_call_layer(self):
+        self.tool_call_layers.append([])
+
+    def reset_too_call_recordings(self):
+        self.tool_call_sequence = []
+        self.tool_call_layers = []
 
     def dump_tool_call_sequence_to_file(self, tool_call_output_dpath: str, prefix_fname: str = ""):
         """Dump the sequence of tool calls to a file."""

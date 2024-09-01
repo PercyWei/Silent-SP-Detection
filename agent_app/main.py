@@ -15,6 +15,7 @@ from concurrent.futures import ProcessPoolExecutor
 from loguru import logger
 
 from agent_app import globals, globals_mut, inference, log
+from agent_app.data_structures import ProcessActionStatus
 from agent_app.api.manage import ProcessManager
 from agent_app.model import common
 from agent_app.model.register import register_all_models
@@ -48,7 +49,7 @@ def get_args():
     )
     parser.add_argument(
         "--expr-type",
-        choices=['vul', 'safe'],
+        choices=['vul', 'novul'],
         required=True,
         help="Experiment name.",
     )
@@ -235,13 +236,11 @@ def run_raw_task(task: RawTask, print_callback: Callable[[dict], None] | None = 
 
     log_and_always_print(f"============= Running task {task_id} =============")
 
-    proc_status = None
-
-    # Run a task formally
+    all_proc_status = None
     try:
-        proc_status = do_inference(task.to_task(), task_output_dpath, print_callback)
+        all_proc_status = do_inference(task.to_task(), task_output_dpath, print_callback)
 
-        if proc_status:
+        if all_proc_status:
             run_status_message = f"Task {task_id} completed successfully."
         else:
             run_status_message = f"Task {task_id} failed without exception."
@@ -251,17 +250,24 @@ def run_raw_task(task: RawTask, print_callback: Callable[[dict], None] | None = 
     finally:
         other_info = {
             "completion_info": {
-                "process_status": proc_status
+                "processes_status": {
+                    proc_name: proc_status.to_dict()
+                    for proc_name, proc_status in all_proc_status.items()
+                } if all_proc_status else None
             }
         }
         task.dump_meta_data(task_output_dpath, other_info)
 
     log_and_always_print(run_status_message)
 
-    return proc_status is not None
+    return all_proc_status is not None
 
 
-def do_inference(task: Task, task_output_dir: str, print_callback: Callable[[dict], None] | None = None) -> Dict | None:
+def do_inference(
+        task: Task,
+        task_output_dir: str,
+        print_callback: Callable[[dict], None] | None = None
+) -> Dict[str, ProcessActionStatus] | None:
     create_dir_if_not_exists(task_output_dir)
     current_task_log_path = os.path.join(task_output_dir, "info.log")
 
@@ -285,9 +291,9 @@ def do_inference(task: Task, task_output_dir: str, print_callback: Callable[[dic
     # print(f"- Raw commit content: \n{python_task.commit_content}\n\n")
     # print(f"- Commit prompt: \n{state_manager.commit_manager.commit_files_info_seq()}\n\n")
 
-    proc_status = None
+    all_proc_status = None
     try:
-        proc_status = inference.run_one_task(task.commit_content, manager.output_dpath, manager, print_callback)
+        all_proc_status = inference.run_one_task(task.commit_content, manager.output_dpath, manager, print_callback)
 
         end_time = datetime.now()
 
@@ -295,7 +301,7 @@ def do_inference(task: Task, task_output_dir: str, print_callback: Callable[[dic
     finally:
         task.reset_project()
 
-    return proc_status
+    return all_proc_status
 
 
 def dump_cost(repo: str, commit_hash: str, start_time: datetime, end_time: datetime, task_output_dir: str):
@@ -322,17 +328,29 @@ def construct_tasks(tasks_map_file: str, local_repos_dpath: str) -> List[RawLoca
         local_repos_dpath (str): Path to the local directory for saving local repos cloned from GitHub.
     """
     all_tasks = []
-    checked_tasks = ["26-vulfix", "457-vulfix", "820-vulfix", "903-vulfix"]
+
+
+    # TODO: Only in test
+    checked_task_ids: List[str] = []
+    checked_task_dirs = [
+        "/root/projects/VDTest/output/agent/vul_2024-08-29T10:06:05_SAVE",
+    ]
+    for task_dir in checked_task_dirs:
+        task_full_names = os.listdir(task_dir)
+        for task_full_name in task_full_names:
+            task_id = task_full_name.split("_")[0]
+            checked_task_ids.append(task_id)
+
 
     with open(tasks_map_file) as f:
         tasks_map = json.load(f)
 
     for i, task_info in enumerate(tasks_map):
         if (globals.expr_type == "vul" and task_info["commit_type"] == 1) or \
-                (globals.expr_type == "safe" and task_info["commit_type"] == 0):
+                (globals.expr_type == "novul" and task_info["commit_type"] == 0):
             task_id = f"{i}-" + task_info["source"]
 
-            if task_id in checked_tasks:
+            if task_id in checked_task_ids:
                 continue
 
             repo_name = task_info["repo"]
