@@ -1,33 +1,48 @@
 import csv
 import json
 import os
+from collections import defaultdict
+
 from typing import *
 
-from loguru import logger
+
+"""CWE ENTRIES"""
 
 
-def csv2cweTree(csv_path, save_filepath, save=False):
-    cweTree = {}
-    cwe_items_list = []
+def read_cwe_csv(csv_path: str, save_dpath: str):
+    cwe_entries: List[Dict] = []
 
     with open(csv_path) as f:
         reader = csv.reader(f)
         title = next(reader)
 
         for i, row in enumerate(reader):
-
-            cwe_item = {}
+            cwe_entry = {}
             for v, attr in zip(row, title):
-                cwe_item[attr] = v
+                cwe_entry[attr] = v
+            cwe_entries.append(cwe_entry)
 
-            cwe_items_list.append(cwe_item)
+    cwe_entries_fpath = os.path.join(save_dpath, 'CWE_entries.json')
+    with open(cwe_entries_fpath, "w") as f:
+        f.write(json.dumps(cwe_entries, indent=4))
+
+
+"""CWE TREE"""
+# FIXME: This section is not yet complete
+
+
+def build_cwe_tree(cwe_entries_fpath: str, save_dpath: str):
+    with open(cwe_entries_fpath, "r") as f:
+        cwe_entries = json.load(f)
+
+    cwe_tree: Dict[str, Dict] = {}
 
     father_childs_list = []
     left_items = []
-    for cwe_item in cwe_items_list:
+    for cwe_entry in cwe_entries:
         father = None
-        current = str(cwe_item["CWE-ID"])
-        relations = cwe_item["Related Weaknesses"]
+        current = str(cwe_entry["CWE-ID"])
+        relations = cwe_entry["Related Weaknesses"]
 
         diff_view_relations = relations.split("::")
         for view_relations in diff_view_relations:
@@ -61,18 +76,10 @@ def csv2cweTree(csv_path, save_filepath, save=False):
                 break
 
     root = "1003"
-    cweTree[root] = father_childs_list
-
-    if not os.path.exists(save_filepath) or (os.path.exists(save_filepath) and save):
-        with open(save_filepath, "w") as f:
-            f.write(json.dumps(cwe_items_list, indent=4))
-
-    print(json.dumps(cweTree, indent=4))
+    cwe_tree[root] = father_childs_list
 
 
 def extract_view_rels_from_csv(csv_path, save_dpath):
-    logger.info(f"Extracting CWE relations from file: {csv_path}.")
-
     focus_view_ids = ['1000', '699']
 
     cwe_items_dict = {}
@@ -125,8 +132,6 @@ def extract_view_rels_from_csv(csv_path, save_dpath):
             cwe_items_dict[cwe_id] = cwe_item
             cwe_simple_item_dict[cwe_id] = cwe_simple_item
 
-    logger.info(f"Successfully extract {len(cwe_simple_item_dict)} detailed / simplified CWE items.")
-
     for view_id in focus_view_ids:
         update_full_rels(cwe_simple_item_dict, view_id)
         break
@@ -146,9 +151,6 @@ def extract_view_rels_from_csv(csv_path, save_dpath):
     with open(cwe_simple_items_fpath, "w") as f:
         f.write(json.dumps(cwe_simple_item_dict, indent=4))
 
-    logger.info(f"CWE items' detailed information save in f{cwe_items_fpath}.")
-    logger.info(f"CWE items' simplified Detailed information save in f{cwe_simple_items_fpath}.")
-
 
 def can_add(fathers: List, qualified_cwe_id_list: List) -> bool:
     flag = True
@@ -160,9 +162,12 @@ def can_add(fathers: List, qualified_cwe_id_list: List) -> bool:
     return flag
 
 
-def update_qualified_cwe_item(child, fathers: List,
-                              view_id: str,
-                              qualified_cwe_id_list: List, cwe_simple_item_dict: Dict):
+def update_qualified_cwe_item(
+        child, fathers: List,
+        view_id: str,
+        qualified_cwe_id_list: List,
+        cwe_simple_item_dict: Dict
+):
     """
         :param child: CWE-ID of CWE item to be added
         :param fathers: CWE-ID list of fathers of CWE item to be added
@@ -176,7 +181,6 @@ def update_qualified_cwe_item(child, fathers: List,
     for father in fathers:
         # Add info about the child
         if child not in cwe_simple_item_dict[father]["VIEW-" + view_id]["children"]:
-            logger.info("Add child CWE '" + child + "' to CWE '" + father + "'.")
             cwe_simple_item_dict[father]["VIEW-" + view_id]["children"].append(child)
 
 
@@ -190,7 +194,6 @@ def update_full_rels(cwe_simple_item_dict: Dict, view_id: str = "1000"):
          Note: VIEW-1000 and VIEW-699 only.
     """
     # By default, all item's father information is complete.
-    logger.info("Update all CWE items' father and children information in VIEW-" + view_id + ".")
 
     qualified_cwe_id_list = []
     left_cwe_id_list = []
@@ -198,7 +201,6 @@ def update_full_rels(cwe_simple_item_dict: Dict, view_id: str = "1000"):
     for current_id, cwe_simple_item in cwe_simple_item_dict.items():
 
         if len(cwe_simple_item["VIEW-" + view_id]["father"]) == 0:
-            logger.info("CWE '" + current_id + "' is child of CWE " + view_id + ".")
             qualified_cwe_id_list.append(current_id)
         else:
             can_add_flag = can_add(cwe_simple_item["VIEW-" + view_id]["father"], qualified_cwe_id_list)
@@ -224,12 +226,87 @@ def update_full_rels(cwe_simple_item_dict: Dict, view_id: str = "1000"):
             left_cwe_id_list.append(current_id)
 
 
+"""CWE PATH"""
+
+
+def find_cwe_paths(cwe_id: str, cwe_tree: Dict[str, Dict]) -> List[List[str]]:
+    if len(cwe_tree[cwe_id]["father"]) == 0:
+        return [[cwe_id]]
+    else:
+        paths: List[List[str]] = []
+        for father_id in cwe_tree[cwe_id]["father"]:
+            father_paths = find_cwe_paths(father_id, cwe_tree)
+            for father_path in father_paths:
+                path = father_path + [cwe_id]
+                paths.append(path)
+        return paths
+
+
+def refine_cwe_tree_with_paths(cwe_tree_fpath: str) -> None:
+    with open(cwe_tree_fpath, "r") as f:
+        cwe_tree = json.load(f)
+
+    for cwe_id, data in cwe_tree.items():
+        cwe_paths = find_cwe_paths(cwe_id, cwe_tree)
+        cwe_tree[cwe_id]["cwe_paths"] = cwe_paths
+    
+    with open(cwe_tree_fpath, "w") as f:
+        json.dump(cwe_tree, f, indent=4)
+
+
+def check_cwe_paths_and_print(cwe_tree_fpath: str) -> None:
+    with open(cwe_tree_fpath, "r") as f:
+        cwe_tree = json.load(f)
+
+    for cwe_id, data in cwe_tree.items():
+        # Find CWE with multiple paths with different length (< 3)
+        if len(data["cwe_paths"]) > 1:
+            depth_3_flag = False
+            depth_2_flag = False
+            for path in data["cwe_paths"]:
+                if len(path) == 3:
+                    depth_3_flag = True
+                if len(path) <= 2:
+                    depth_2_flag = True
+            if depth_3_flag and depth_2_flag:
+                print(cwe_id)
+
+
+def find_diff_depth_cwe(cwe_tree_fpath: str, save_dir: str, max_depth: int = 3) -> None:
+    with open(cwe_tree_fpath, "r") as f:
+        cwe_tree = json.load(f)
+
+    # depth -> [cwe_id]
+    diff_depth_cwe_ids: Dict[int, List[str]] = defaultdict(list)
+    depths = list(range(1, max_depth + 1))
+
+    for cwe_id, data in cwe_tree.items():
+        # TODO: For CWE with multiple paths, we only focus on one of those paths, i.e. the one with the shortest length
+        #       This problem exists under VIEW-1000 (not under view VIEW-1003)
+        min_path = min(data["cwe_paths"], key=len)
+        if len(min_path) in depths:
+            diff_depth_cwe_ids[len(min_path)].append(cwe_id)
+
+    for depth, cwe_ids in diff_depth_cwe_ids.items():
+        if len(cwe_ids) > 0:
+            save_fpath = os.path.join(save_dir, f"CWE_depth_{depth}.json")
+            with open(save_fpath, "w") as f:
+                json.dump(cwe_ids, f, indent=4)
+
+
 if __name__ == '__main__':
-    save_dpath = './data/csv'
+    save_dir = "/root/projects/VDTest/data/CWE/VIEW_1000"
+    # save_dir = "/root/projects/VDTest/data/CWE/VIEW_1003"
 
-    # cwe1003_csv_path = "./data/1003.csv"
-    # save_filepath = "./data/1003-CWEItems.json"
-    # csv2cweTree(cwe1003_csv_path, save_filepath)
+    ## Build CWE entries file
+    csv_file = "/root/projects/VDTest/data/CWE/1000.csv"
+    # csv_file = "/root/projects/VDTest/data/CWE/1003.csv"
+    # read_cwe_csv(csv_file, save_dir)
 
-    cwe1000_csv_path = "./data/csv/1000.csv"
-    extract_view_rels_from_csv(cwe1000_csv_path, save_dpath)
+    ## Refine CWE tree
+    cwe_tree_file = os.path.join(save_dir, "CWE_tree.json")
+    # refine_cwe_tree_with_paths(cwe_tree_file)
+    # check_cwe_paths_and_print(cwe_tree_file)
+
+    ## Extract CWE ids in different depths
+    find_diff_depth_cwe(cwe_tree_file, save_dir)
