@@ -7,6 +7,8 @@ import pandas as pd
 
 from typing import *
 from pathlib import Path
+from tqdm import tqdm
+from collections import defaultdict
 
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
@@ -18,11 +20,15 @@ from selenium.webdriver.support import expected_conditions as EC
 from openai import OpenAI
 from openai.types.chat.completion_create_params import ResponseFormat
 
+from preprocess.util import is_commit_exist_in_repo
 from utils import run_command
 
 
-def read_raw_vulfix():
-    all_commits = pd.read_csv('/root/projects/VDTest/dataset/VulFix/ase_dataset_sept_19_2021.csv')
+"""RAW DATASET"""
+
+
+def read_raw_vulfix(ori_csv: str, output_root: str) -> Tuple[str, str]:
+    all_commits = pd.read_csv(ori_csv)
 
     # Separate by language, since the Java commits are missing some info which we will add later on.
     py = all_commits[all_commits.PL == 'python']
@@ -46,41 +52,54 @@ def read_raw_vulfix():
     print(py_val.drop_duplicates(subset='commit_id').label.value_counts())
     print(py_test.drop_duplicates(subset='commit_id').label.value_counts())
 
-    py_vulfix_fpath = "/root/projects/VDTest/dataset/VulFix/py_vulfix.json"
+    py_vulfix_fpath = os.path.join(output_root, "py_vulfix.json")
     with open(py_vulfix_fpath, 'w') as f:
         json.dump(py.hyp_to_dict(orient='records'), f, indent=4)
 
-    java_vulfix_fpath = "/root/projects/VDTest/dataset/VulFix/java_vulfix.json"
+    java_vulfix_fpath = os.path.join(output_root, "java_vulfix.json")
     with open(java_vulfix_fpath, 'w') as f:
         json.dump(java.hyp_to_dict(orient='records'), f, indent=4)
 
+    return py_vulfix_fpath, java_vulfix_fpath
 
-def build_sim_vulfix():
-    py_vulfix_fpath = "/root/projects/VDTest/dataset/VulFix/py_vulfix.json"
-    with open(py_vulfix_fpath, 'r') as f:
-        py_items = json.load(f)
 
+"""DATASET SIMPLIFICATION"""
+
+
+def build_simplified_dataset(dataset_fpath: str, output_root: str) -> str:
+    with open(dataset_fpath, 'r') as f:
+        dataset = json.load(f)
+
+    pl = "Python" if "py" in dataset_fpath else "Java"
+
+    # Select important attributes
     record_commit_ids = []
-    sim_py_dataset: List[Dict] = []
-    for item in py_items:
-        if item['commit_id'] not in record_commit_ids:
-            record_commit_ids.append(item['commit_id'])
+    updt_dataset: List[Dict] = []
 
-            sim_item = {
-                "id": len(sim_py_dataset),
-                "cve_list": item["cve_list"],
-                "commit_type": item["label"],
-                "cwe_id": None,
-                "repo": item["repo"],
-                "commit_hash": item["commit_id"],
-                "file_counts": item["file_counts"],
-                "PL_list": ["Python"]
-            }
-            sim_py_dataset.append(sim_item)
+    with tqdm(total=len(dataset)) as pb:
+        for item in dataset:
+            if item['commit_id'] not in record_commit_ids:
+                record_commit_ids.append(item['commit_id'])
+                updt_item = {
+                    "cve_list": item["cve_list"],
+                    "commit_type": item["label"],
+                    "cwe_id": None,
+                    "path_list": [],
+                    "repo": item["repo"],
+                    "commit_hash": item["commit_id"],
+                    "PL_list": [pl]
+                }
+                updt_dataset.append(updt_item)
+            pb.update(1)
 
-    sim_py_vulfix_fpath = "/root/projects/VDTest/output/dataset/sim_py_vulfix.json"
-    with open(sim_py_vulfix_fpath, 'w') as f:
-        json.dump(sim_py_dataset, f, indent=4)
+    save_fpath = os.path.join(output_root, dataset_fpath.split('/')[-1])
+    with open(save_fpath, 'w') as f:
+        json.dump(updt_dataset, f, indent=4)
+
+    return save_fpath
+
+
+"""SEARCH CVE INFO"""
 
 
 cwe_extract_msg = """You are a helpful assistant to extract information from the text containing the following information and output it in json format.
@@ -131,103 +150,130 @@ def ask_gpt(client: OpenAI, commit_msg: str) -> str | None:
     return None
 
 
-def find_py_cve_id():
-    sim_py_vulfix_fpath = "/root/projects/VDTest/output/dataset/sim_py_vulfix.json"
-    with open(sim_py_vulfix_fpath, 'r') as f:
-        py_items = json.load(f)
+def refine_dataset_with_cve(dataset_fpath: str, log_fpath: str) -> None:
+    with open(dataset_fpath, 'r') as f:
+        dataset = json.load(f)
 
-    api_key = os.getenv("OPENAI_KEY")
-    api_base = os.getenv("OPENAI_API_BASE")
+    with open(log_fpath, 'r') as f:
+        log: Dict[str, Dict] = json.load(f)
+
+    api_key = os.getenv("OPENAI_KEY", None)
+    api_base = os.getenv("OPENAI_API_BASE", None)
+    assert api_key is not None and api_base is not None
     client = OpenAI(api_key=api_key, base_url=api_base)
 
-    find_cves = []
-    no_connect_cvs = []
-    i = 0
-    try:
-        for item in py_items:
+    with tqdm(total=len(dataset)) as pb:
+        for i, item in enumerate(dataset):
             if item["commit_type"] == 1:
-                i += 1
-                print("=" * 50 + f" {i} " + "=" * 50)
                 repo = item["repo"]
                 commit_hash = item["commit_hash"]
-                commit_url = f'https://api.github.com/repos/{repo}/commits/{commit_hash}'
-                try:
-                    commit_response = requests.get(commit_url, timeout=10)
-                except requests.exceptions.Timeout:
-                    no_connect_cvs.append({"repo": repo, "commit_hash": commit_hash})
-                    continue
 
-                if commit_response.status_code != 200:
-                    no_connect_cvs.append({"repo": repo, "commit_hash": commit_hash})
-                    continue
+                search_flag = True if commit_hash not in log else False
 
-                commit_msg = commit_response.json()["commit"]["message"]
+                if search_flag:
+                    # Ask the LLM
+                    commit_url = f'https://api.github.com/repos/{repo}/commits/{commit_hash}'
+                    try:
+                        commit_response = requests.get(commit_url, timeout=10)
+                    except requests.exceptions.Timeout:
+                        continue
 
-                print(commit_msg + "\n")
+                    if commit_response.status_code != 200:
+                        continue
 
-                cve_id = ask_gpt(client, commit_msg)
-                if cve_id is not None and re.fullmatch(r"CVE-\d+-\d+", cve_id):
-                    find_cves.append({
-                        "repo": repo,
-                        "commit_hash": commit_hash,
-                        "cve_id": cve_id,
-                        "msg": commit_msg
-                    })
+                    commit_msg = commit_response.json()["commit"]["message"]
+                    cve_id = ask_gpt(client, commit_msg)
 
-    except Exception as e:
-        print(e)
-    finally:
-        log = Path("/root/projects/VDTest/output/dataset/log.json")
-        log.write_text(json.dumps({"find": find_cves, "time_out": no_connect_cvs}, indent=4))
+                    # Update log
+                    if cve_id is not None and re.fullmatch(r"CVE-\d+-\d+", cve_id):
+                        data = {"repo": repo, "commit_hash": commit_hash, "cve_id": cve_id, "msg": commit_msg}
+                    else:
+                        data = {"repo": repo, "commit_hash": commit_hash, "cve_id": None, "msg": commit_msg}
+                    log[commit_hash] = data
 
-
-def find_py_cve_id_in_log():
-    log_fpath = "/root/projects/VDTest/output/dataset/log.json"
-    with open(log_fpath, 'r') as f:
-        log = json.load(f)
-
-    api_key = os.getenv("OPENAI_KEY")
-    api_base = os.getenv("OPENAI_API_BASE")
-    client = OpenAI(api_key=api_key, base_url=api_base)
-
-    find_cves = []
-    no_connect_cvs = []
-    for i, item in enumerate(log["time_out"]):
-        print("=" * 50 + f" {i} " + "=" * 50)
-        repo = item["repo"]
-        commit_hash = item["commit_hash"]
-        commit_url = f'https://api.github.com/repos/{repo}/commits/{commit_hash}'
-        try:
-            commit_response = requests.get(commit_url, timeout=10)
-        except requests.exceptions.Timeout:
-            no_connect_cvs.append({"repo": repo, "commit_hash": commit_hash})
-            continue
-        except requests.exceptions.SSLError:
-            no_connect_cvs.append({"repo": repo, "commit_hash": commit_hash})
-            continue
-
-        if commit_response.status_code != 200:
-            no_connect_cvs.append({"repo": repo, "commit_hash": commit_hash})
-            continue
-
-        commit_msg = commit_response.json()["commit"]["message"]
-
-        print(commit_msg + "\n")
-
-        cve_id = ask_gpt(client, commit_msg)
-        if cve_id is not None and re.fullmatch(r"CVE-\d+-\d+", cve_id):
-            find_cves.append({
-                "repo": repo,
-                "commit_hash": commit_hash,
-                "cve_id": cve_id,
-                "msg": commit_msg
-            })
-
-    log["find"].extend(find_cves)
-    log["time_out"] = no_connect_cvs
+            pb.update(1)
 
     with open(log_fpath, 'w') as f:
         json.dump(log, f, indent=4)
+
+
+def clean_dataset_by_cve():
+    simp_py_vulfix_fpath = "/root/projects/VDTest/dataset/Intermediate/VulFix/vulfix_py.json"
+    with open(simp_py_vulfix_fpath, 'r') as f:
+        dataset = json.load(f)
+
+    # cve id -> [data]
+    vul_cve2item: Dict[str, Dict] = {}
+    # [data]
+    novul_items: List[Dict] = []
+
+    for item in dataset:
+        commit_type = item["commit_type"]
+
+        if commit_type == 0:
+            novul_items.append(item)
+        else:
+            cve_id = item["cve_id"]
+            if cve_id is not None:
+                if cve_id not in vul_cve2item:
+                    vul_cve2item[cve_id] = {
+                        "cve_id": cve_id,
+                        "commit_type": 1,
+                        "cwe_id": item["cwe_id"],
+                        "path_list": [],
+                        "commits": [
+                            {
+                                "repo": item["repo"],
+                                "commit_hash": item["commit_hash"],
+                                "PL_list": item["PL_list"]
+                            }
+                        ]
+                    }
+                else:
+                    vul_cve2item[cve_id]["commits"].append(
+                        {
+                            "repo": item["repo"],
+                            "commit_hash": item["commit_hash"],
+                            "PL_list": item["PL_list"]
+                        }
+                    )
+
+    novul_save_fpath = "/root/projects/VDTest/dataset/Intermediate/VulFix/vulfix_py_novul_cleaned.json"
+    with open(novul_save_fpath, 'w') as f:
+        json.dump(novul_items, f, indent=4)
+
+    vul_save_fpath = "/root/projects/VDTest/dataset/Intermediate/VulFix/vulfix_py_vul_cleaned.json"
+    with open(vul_save_fpath, 'w') as f:
+        json.dump(list(vul_cve2item.values()), f, indent=4)
+
+
+def count_clean_dataset():
+    novul_save_fpath = "/root/projects/VDTest/dataset/Intermediate/VulFix/vulfix_py_novul_cleaned.json"
+    with open(novul_save_fpath, 'r') as f:
+        dataset = json.load(f)
+
+    print(f"Novul commit number: {len(dataset)}")
+
+    vul_save_fpath = "/root/projects/VDTest/dataset/Intermediate/VulFix/vulfix_py_vul_cleaned.json"
+    with open(vul_save_fpath, 'r') as f:
+        dataset = json.load(f)
+
+    cve_num = len(dataset)
+    commit_num = 0
+    commit_num2cve_num: Dict[int, int] = {}
+    for item in dataset:
+        curr_commit_num = len(item["commits"])
+        if curr_commit_num not in commit_num2cve_num:
+            commit_num2cve_num[curr_commit_num] = 1
+        else:
+            commit_num2cve_num[curr_commit_num] += 1
+        commit_num += curr_commit_num
+    print(f"Vul CVE number: {cve_num}")
+    print(f"Vul commit number: {commit_num}")
+    print(f"Vul commit&cve: {json.dumps(commit_num2cve_num, indent=4)}")
+
+
+"""SEARCH CWE INFO"""
 
 
 def search_and_extract_cwe(driver, cve_id):
@@ -339,103 +385,6 @@ def complete_sim_dataset():
         json.dump(py_items, f, indent=4)
 
 
-def count():
-    sim_py_vulfix_fpath = "/root/projects/VDTest/output/dataset/sim_py_vulfix.json"
-    with open(sim_py_vulfix_fpath, 'r') as f:
-        py_items = json.load(f)
-
-    record_cve_repo_commit = {}
-    for item in py_items:
-        if item["commit_type"] == 1 and isinstance(item["cve_list"], list):
-            assert len(item["cve_list"]) == 1
-            cve_id = item["cve_list"][0]
-            if cve_id not in record_cve_repo_commit:
-                record_cve_repo_commit[cve_id] = []
-
-            repo_commit = item["repo"] + "_" + item["commit_hash"]
-            assert repo_commit not in record_cve_repo_commit[cve_id]
-            record_cve_repo_commit[cve_id].append(repo_commit)
-
-    sc_cve_num = 0
-    cve_commit_num = {}
-    for cve_id, repo_commit in record_cve_repo_commit.items():
-        if len(repo_commit) == 1:
-            sc_cve_num += 1
-
-        cve_commit_num[cve_id] = len(repo_commit)
-
-    print(f"CVE number: {len(record_cve_repo_commit)}")
-    print(f"CVE with single commit number: {sc_cve_num}")
-
-
-def combine_vulfix_treevul():
-    sim_py_vulfix_fpath = "/root/projects/VDTest/output/dataset/sim_py_vulfix.json"
-    with open(sim_py_vulfix_fpath, 'r') as f:
-        sim_py_vulfix = json.load(f)
-
-    sim_treevul_fpath = "/root/projects/VDTest/output/dataset/sim_treevul.json"
-    with open(sim_treevul_fpath, 'r') as f:
-        sim_treevul = json.load(f)
-
-    # NOTE: For security patches, this dataset only collects the original dataset (VulFix, TreeVul) entries
-    #       with CVE-ID that have been found so far, and each CVE only contains single commit.
-    record_cve_repo_commit = {}
-    for item in sim_py_vulfix:
-        if item["commit_type"] == 1 and isinstance(item["cve_list"], list):
-            assert len(item["cve_list"]) == 1
-            cve_id = item["cve_list"][0]
-            if cve_id not in record_cve_repo_commit:
-                record_cve_repo_commit[cve_id] = []
-
-            repo_commit = item["repo"] + "_" + item["commit_hash"]
-            assert repo_commit not in record_cve_repo_commit[cve_id]
-            record_cve_repo_commit[cve_id].append(repo_commit)
-
-    cve_commit_num = {}
-    for cve_id, repo_commit in record_cve_repo_commit.items():
-        cve_commit_num[cve_id] = len(repo_commit)
-
-    commit_items = {}
-    # VulFix
-    for item in sim_py_vulfix:
-        append_flag = False
-        if item["commit_type"] == 0:
-            append_flag = True
-        else:
-            if isinstance(item["cve_list"], list):
-                cve_id = item["cve_list"][0]
-                if cve_commit_num[cve_id] == 1:
-                    append_flag = True
-
-        if append_flag and item["commit_hash"] not in commit_items:
-            item["source"] = "vulfix"
-            commit_items[item["commit_hash"]] = item
-
-    # TreeVul
-    for item in sim_treevul:
-        if item["PL_list"] == ["Python"] and item["commit_hash"] not in commit_items:
-            item["source"] = "treevul"
-            commit_items[item["commit_hash"]] = item
-
-    items = list(commit_items.values())
-
-    # Count
-    vul_num = 0
-    non_vul_num = 0
-    for item in items:
-        if item["commit_type"] == 1:
-            vul_num += 1
-        else:
-            non_vul_num += 1
-
-    print(f"Vul number: {vul_num}")
-    print(f"Non-Vul number: {non_vul_num}")
-
-    py_items_fpath = "/root/projects/VDTest/output/dataset/py_items.json"
-    with open(py_items_fpath, 'w') as f:
-        json.dump(items, f, indent=4)
-
-
 def clone():
     py_items_fpath = "/root/projects/VDTest/output/dataset/py_items.json"
     with open(py_items_fpath, 'r') as f:
@@ -467,4 +416,122 @@ def clone():
     with open(lof_fpath, 'w') as f:
         json.dump(failed_repos, f, indent=4)
 
-clone()
+
+"""VULFIX NOVUL"""
+
+
+pass
+
+
+"""VULFIX VUL V1"""
+
+
+def build_vulfix_vul_v1():
+    simp_py_vulfix_file = "/root/projects/VDTest/dataset/Intermediate/VulFix/vulfix_py.json"
+    with open(simp_py_vulfix_file, 'r') as f:
+        dataset = json.load(f)
+
+    items = []
+    for item in dataset:
+        if item["commit_type"] == 1 and item["cve_id"] is None:
+            items.append(item)
+
+    save_file = "/root/projects/VDTest/dataset/Intermediate/VulFix/py_cleaned_vul_v1.json"
+    with open(save_file, 'w') as f:
+        json.dump(items, f, indent=4)
+
+
+def process_vulfix_vul_v1():
+    repos_root = "/root/projects/clone_projects"
+    dataset_v1_file = "/root/projects/VDTest/dataset/Intermediate/VulFix/py_cleaned_vul_v1.json"
+    with open(dataset_v1_file, 'r') as f:
+        dataset = json.load(f)
+
+    ## FUNCTION 1
+    # noexist_repos = []
+    # for item in dataset:
+    #     repo = item["repo"]
+    #     repo_dpath = os.path.join(repos_root, repo.replace("/", "_"))
+    #     if not os.path.exists(repo_dpath) and repo not in noexist_repos:
+    #         noexist_repos.append(repo)
+    # print(json.dumps(noexist_repos, indent=4))
+
+
+    ## FUNCTION 2
+    # total_num = len(dataset)
+    # repro_commit_num = 0
+    # for item in dataset:
+    #     if item["reproducibility"]:
+    #         repro_commit_num += 1
+    # print(f"{repro_commit_num} / {total_num}")
+
+
+    ## FUNCTION 3
+    # for i, item in enumerate(dataset):
+    #     if item.get("reproducibility", None) is not None:
+    #         continue
+    #
+    #     repo = item["repo"]
+    #     repo_dpath = os.path.join(repos_root, repo.replace("/", "_"))
+    #     if os.path.exists(repo_dpath):
+    #         res = is_commit_exist_in_repo(repo_dpath, item["commit_hash"])
+    #         dataset[i]["reproducibility"] = res
+    #
+    # with open(dataset_v1_file, 'w') as f:
+    #     json.dump(dataset, f, indent=4)
+
+
+    ## FUNCTION 4
+    # updt_dataset = []
+    # for item in dataset:
+    #     if item["reproducibility"]:
+    #         updt_dataset.append(item)
+    #
+    # with open(dataset_v1_file, 'w') as f:
+    #     json.dump(updt_dataset, f, indent=4)
+
+
+"""VULFIX VUL V2"""
+
+
+pass
+
+
+if __name__ == '__main__':
+    output_dir = "/root/projects/VDTest/dataset/Intermediate"
+    ori_vulfix_csv = "/root/projects/VDTest/dataset/VulFix/ase_dataset_sept_19_2021.csv"
+
+    ## Step 1: Read original VulFix
+    # py_vulfix_file, java_vulfix_file = read_raw_vulfix(ori_vulfix_csv, "/root/projects/VDTest/dataset/VulFix")
+    py_vulfix_file = "/root/projects/VDTest/dataset/Original/VulFix/vulfix_py.json"
+    java_vulfix_file = "/root/projects/VDTest/dataset/Original/VulFix/vulfix_java.json"
+
+    ## Step 2: Simplify dataset
+    # simp_py_vulfix_file = build_simplified_dataset(py_vulfix_file, output_dir)
+    simp_py_vulfix_file = "/root/projects/VDTest/dataset/Intermediate/VulFix/vulfix_py.json"
+    # simp_java_vulfix_file = build_simplified_dataset(java_vulfix_file, output_dir)
+    simp_java_vulfix_file = "/root/projects/VDTest/dataset/Intermediate/VulFix/vulfix_java.json"
+
+    ## Step 3: Find CVE of dataset items (only for 'vulfix_py', cause 'vulfix_java' has CVE annotations)
+    # log_file = "/root/projects/VDTest/dataset/Intermediate/log_vulfix_py.json"
+    # refine_dataset_with_cve(simp_py_vulfix_file, log_file)
+
+    ## Step 4: Find CWE of dataset items
+    pass
+
+
+    ############# Tree types of task dataset #############
+    ## (1) vulfix_novul:
+    #       - novul fix commit
+    pass
+
+    ## (2) vulfix_vul_v1:
+    #       - vul fix commit;
+    #       - Without CWE labels.
+    # build_vulfix_vul_v1()
+    # process_vulfix_vul_v1()
+
+    ## (3) vulfix_vul_v1:
+    #       - vul fix commit;
+    #       - With CWE labels.
+    pass

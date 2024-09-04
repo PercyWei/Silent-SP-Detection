@@ -68,7 +68,7 @@ def _get_few_shot_seq(dataset_retrival: Dict, retrieval_type: int = 0, CoT_type:
 
 
 def _retrival_examples() -> List[str]:
-
+    pass
 
 def one_time_prompt(prompt_type: int, code_changes_info: Dict) -> str:
     """

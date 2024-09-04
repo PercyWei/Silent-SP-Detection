@@ -1,8 +1,13 @@
 import os
 import re
 import shutil
+import time
 import subprocess
+import requests
+
 from typing import *
+from datetime import datetime, timedelta
+from loguru import logger
 
 from utils import run_command
 from preprocess.log import cprint
@@ -10,7 +15,7 @@ from preprocess.log import cprint
 from typing import *
 
 
-def clone_repo(auth_repo: str, repo_dpath: str, timeout: int = 30, token: str = '') -> Optional[bool]:
+def clone_repo(auth_repo: str, repo_dpath: str, timeout: int = 30, token: str = '') -> bool | None:
     """
     Clone a GitHub repository to local.
 
@@ -60,38 +65,233 @@ def clone_repo(auth_repo: str, repo_dpath: str, timeout: int = 30, token: str = 
         return True
 
 
-def checkout_commit(repo_dpath: str, commit_id: str, revert: bool = True) -> bool:
+def checkout_commit(repo_dpath: str, commit_hash: str, revert: bool = True) -> bool:
     """
     Args:
         repo_dpath (str): Path to the local dir for saving this repo.
-        commit_id (str): Commit id/hash.
+        commit_hash (str): Commit id/hash.
         revert (bool): Whether to revert the state after checkout.
 
     Returns:
-        bool:
-            True: commit checkout succeed.
-            False: commit checkout failed.
+        bool: True if the commit exists, False otherwise.
     """
-    cprint(f"Checkout Commit - Repo: {repo_dpath.split('/')[-1]}, commit id: {commit_id}")
-
     # Checkout to the specified commit
-    checkout_command = ['git', 'checkout', commit_id]
+    checkout_command = ['git', 'checkout', commit_hash]
     _, error_msg = run_command(checkout_command, cwd=repo_dpath)
 
     if error_msg:
-        cprint("Checkout Result: False", style='red')
         return False
 
-    cprint("Checkout Result: True", style='green')
     # Revert to the previous state if necessary
     if revert:
-        cprint('Revert state ...')
         revert_command = ['git', 'checkout', '-']
         stdout, stderr = run_command(revert_command, cwd=repo_dpath)
-
         if stderr:
-            cprint('Failed!', style='red')
-        cprint('Done!', style='green')
-
+            cprint(f'Failed to revert the repo state! ({repo_dpath})', style='red')
     return True
 
+
+def get_api_rate_limit(token: str):
+    url = "https://api.github.com/rate_limit"
+    headers = {'Authorization': f'token {token}'}
+
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        if response.status_code == 200:
+            rate_limit_info = response.json()
+            remaining = rate_limit_info['rate']['remaining']
+            reset_timestamp = rate_limit_info['rate']['reset']
+            return remaining, reset_timestamp
+        else:
+            logger.info("Failed to retrieve rate limit information:", response.status_code)
+            return None, None
+    except requests.exceptions.Timeout as e:
+        logger.error("Failed to retrieve rate limit information: " + str(e))
+    except requests.exceptions.RequestException as e:
+        logger.error("Failed to retrieve rate limit information: " + str(e))
+
+    return None, None
+
+
+def wait_for_rate_limit_reset(reset_timestamp):
+    current_time = time.time()
+    reset_time = reset_timestamp
+    wait_time = reset_time - current_time
+    if wait_time > 0:
+        print(f"Rate limit exceeded. Waiting for {int(wait_time)} seconds until reset...")
+        time.sleep(wait_time + 10)
+
+
+"""COMMIT VALIDITY CHECKING"""
+
+
+def is_commit_exist(auth_repo: str, commit_hash: str, token: str = '') -> Tuple[bool | None, Dict | None]:
+    """Determine if a commit exists by fetching it from GitHub."""
+    headers = {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+
+    commit_url = f'https://api.github.com/repos/{auth_repo}/commits/{commit_hash}'
+    try:
+        commit_response = requests.get(commit_url, headers=headers, timeout=10)
+
+        if commit_response.status_code == 200:
+            # Commit exists
+            return True, commit_response.json()
+        elif commit_response.status_code == 404:
+            # Commit does not exist
+            return False, None
+        elif commit_response.status_code in {500, 502, 503, 504}:
+            # Temporary server issues, need to retry
+            return None, None
+        else:
+            # Unexpected status code, need to retry
+            return None, None
+    except requests.exceptions.RequestException as e:
+        # Checked failed, need to retry
+        return None, None
+
+
+def calculate_date_range(commit_date: str, second_sep: int = 60) -> Tuple[str, str]:
+    date_format = "%Y-%m-%dT%H:%M:%SZ"
+    commit_datetime = datetime.strptime(commit_date, date_format)
+
+    start_date = commit_datetime - timedelta(seconds=second_sep)
+    end_date = commit_datetime + timedelta(seconds=second_sep)
+
+    start_date_str = datetime.strftime(start_date, date_format)
+    end_date_str = datetime.strftime(end_date, date_format)
+
+    return start_date_str, end_date_str
+
+
+def is_commit_reproducible(auth_repo: str, commit_hash: str, start_date: str, end_date: str, token: str = '') -> bool | None:
+    url = f"https://api.github.com/repos/{auth_repo}/commits"
+    headers = {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+    params = {'since': start_date, 'until': end_date, 'per_page': 100}
+
+    try:
+        response = requests.get(url, headers=headers, params=params, timeout=10)
+        if response.status_code != 200:
+            return None
+
+        commits = response.json()
+    except requests.exceptions.RequestException as e:
+        return None
+
+    for commit in commits:
+        if commit['sha'] == commit_hash:
+            return True
+    return False
+
+
+def is_commit_exist_in_repo(repo_dpath: str, commit_hash: str) -> bool:
+    try:
+        result = subprocess.run(
+            ['git', '-C', repo_dpath, 'cat-file', '-t', commit_hash],
+            capture_output=True,
+            text=True,
+            check=True
+        )
+        return result.stdout.strip() == 'commit'
+    except subprocess.CalledProcessError:
+        return False
+
+
+"""PULL RELATED COMMIT"""
+
+
+def extract_pull_info_from_url(pull_url: str) -> Tuple[str, int] | None:
+    pattern = r'^https://github\.com/([^/]+/[^/]+)/pull/(\d+)$'
+    match = re.match(pattern, pull_url)
+
+    if not match:
+        return None
+
+    auth_repo = match.group(1)
+    pull_number = int(match.group(2))
+
+    return auth_repo, pull_number
+
+
+def get_commits_from_pull_request(auth_repo: str, pull_number: int, token: str = '') -> List[str] | None:
+    headers = {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github.v3+json",
+    }
+
+    commits_url = f"https://api.github.com/repos/{auth_repo}/pulls/{pull_number}/commits"
+
+    try:
+        response = requests.get(commits_url, headers=headers, timeout=10)
+
+        if response.status_code == 200:
+            commits_data = response.json()
+            commits = [commit['sha'] for commit in commits_data]
+            return commits
+        else:
+            return None
+
+    except requests.exceptions.RequestException as e:
+        return None
+
+
+"""ISSUE RELATED COMMIT"""
+
+
+def extract_issue_info_from_url(issue_url: str) -> Tuple[str, int] | None:
+    pattern = r"^https://github\.com/([^/]+/[^/]+)/issues/(\d+)$"
+    match = re.match(pattern, issue_url)
+
+    if not match:
+        return None
+
+    auth_repo = match.group(1)
+    issue_number = int(match.group(2))
+
+    return auth_repo, issue_number
+
+
+def get_related_commits_from_issue_events(auth_repo: str, issue_number: int, token: str = '') -> List[str] | None:
+    headers = {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github.v3+json",
+    }
+
+    events_url = f"https://api.github.com/repos/{auth_repo}/issues/{issue_number}/events"
+
+    try:
+        response = requests.get(events_url, headers=headers, timeout=10)
+
+        if response.status_code == 200:
+            events = response.json()
+            commits = []
+            for event in events:
+                if event['event'] == 'referenced' and 'commit_id' in event:
+                    commits.append(event['commit_id'])
+            return commits
+        else:
+            return None
+
+    except requests.RequestException as e:
+        return None
+
+
+"""COMMIT"""
+
+
+def extract_commit_info_from_url(commit_url: str) -> Tuple[str, str] | None:
+    pattern = r"^https://github\.com/([\w-]+/[\w-]+)/commit/([a-fA-F0-9]+)$"
+    match = re.match(pattern, commit_url)
+
+    if not match:
+        return None
+
+    auth_repo = match.group(1)
+    commit_hash = match.group(2)
+
+    return auth_repo, commit_hash

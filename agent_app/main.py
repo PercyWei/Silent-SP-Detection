@@ -329,18 +329,18 @@ def construct_tasks(tasks_map_file: str, local_repos_dpath: str) -> List[RawLoca
     """
     all_tasks = []
 
-
+    #########################################################################################
     # TODO: Only in test
     checked_task_ids: List[str] = []
     checked_task_dirs = [
-        "/root/projects/VDTest/output/agent/vul_2024-08-29T10:06:05_SAVE",
+        # "/root/projects/VDTest/output/agent/vul_2024-08-29T10:06:05_SAVE",
     ]
     for task_dir in checked_task_dirs:
         task_full_names = os.listdir(task_dir)
         for task_full_name in task_full_names:
             task_id = task_full_name.split("_")[0]
             checked_task_ids.append(task_id)
-
+    #########################################################################################
 
     with open(tasks_map_file) as f:
         tasks_map = json.load(f)
