@@ -3,7 +3,7 @@
 
 from dataclasses import dataclass
 
-from agent_app.util import cd, repo_reset_and_clean_checkout, repo_checkout
+from agent_app.util import cd, repo_checkout
 
 
 @dataclass(kw_only=True)

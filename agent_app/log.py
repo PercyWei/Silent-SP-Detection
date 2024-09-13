@@ -33,7 +33,7 @@ def print_banner(msg: str) -> None:
 
     banner = f" {msg} ".center(WIDTH, "=")
     console.print()
-    console.print(banner, style="bold")
+    console.print(banner, style="bold", markup=False)
     console.print()
 
 
@@ -97,7 +97,7 @@ def print_role(
         title = role
 
     panel = Panel(msg, title=title, title_align="left", border_style=border_style, width=WIDTH)
-    console.print(panel)
+    console.print(panel, markup=False)
 
     if print_callback:
         print_callback(
@@ -133,19 +133,19 @@ def print_commit_content(content: str, verbose: bool = False) -> None:
     panel = Panel(
         content, title=title, title_align="left", border_style="red", width=WIDTH
     )
-    console.print(panel)
+    console.print(panel, markup=False)
 
 
 def log_and_print(msg):
     logger.info(msg)
     if print_stdout:
-        console.print(msg)
+        console.print(msg, markup=False)
 
 
 def log_and_cprint(msg, **kwargs):
     logger.info(msg)
     if print_stdout:
-        console.print(msg, **kwargs)
+        console.print(msg, markup=False, **kwargs)
 
 
 def log_and_always_print(msg):
@@ -155,16 +155,16 @@ def log_and_always_print(msg):
     """
     logger.info(msg)
     # always include time for important messages
-    console.print(f"\n[[{get_timestamp()}]] {msg}")
+    console.print(f"\n[{get_timestamp()}] {msg}", markup=False)
 
 
 def print_with_time(msg):
     """
     Print a msg to console with timestamp.
     """
-    console.print(f"\n[[{get_timestamp()}]] {msg}")
+    console.print(f"\n[{get_timestamp()}] {msg}", markup=False)
 
 
 def always_cprint(msg, **kwargs):
-    console.print(msg, **kwargs)
+    console.print(msg, markup=False, **kwargs)
 

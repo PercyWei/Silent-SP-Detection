@@ -117,7 +117,7 @@ def get_head_commit_hash(local_repo_dpath: str | None = None) -> str | None:
     return res.stdout.strip()
 
 
-def get_commit_content(commit_hash: str, local_repo_dpath: str | None = None) -> Optional[str]:
+def get_commit_content(commit_hash: str, local_repo_dpath: str | None = None) -> str | None:
     show_cmd = ["git", "show", "-m", commit_hash]
     result = run_command(show_cmd, raise_error=False,
                          cwd=local_repo_dpath, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)

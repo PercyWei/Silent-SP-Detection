@@ -2,16 +2,8 @@ import os
 import subprocess
 
 from typing import *
-from collections import namedtuple
 
 from logs import base_log_and_cprint
-
-
-LineRange = namedtuple("LineRange", ["start", "end"])
-
-
-def same_line_range(line1: LineRange, line2: LineRange) -> bool:
-    return line1.start == line2.start and line1.end == line2.end
 
 
 def make_hie_dirs(root: str, *dirs: str) -> str:

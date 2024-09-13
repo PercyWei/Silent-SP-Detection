@@ -1,3 +1,4 @@
+import json
 import os
 
 from typing import *
@@ -8,7 +9,7 @@ from agent_app.commit.commit_util import (
     extract_commit_content_info, get_code_before_commit,
     build_struct_indexes_from_common_code, analyse_modified_file
 )
-from utils import LineRange
+from agent_app.data_structures import LineRange
 
 
 class CommitInitError(Exception):
@@ -100,7 +101,7 @@ class CommitManager:
         comb_info, diff_code_snips, comb_funcs, comb_classes, comb_classesFuncs = \
             analyse_modified_file(fpath, old_ori_content, new_ori_content, diff_file_info)
 
-        if len(diff_code_snips) != 0:
+        if comb_info is not None:
             self.valid_files_num += 1
 
             ## (1) File path
@@ -145,10 +146,10 @@ class CommitManager:
         abs_new_fpath = os.path.join(self.local_repo_dpath, new_fpath)
         with open(abs_new_fpath, "r") as f:
             new_ori_content = f.read()
-        assert len(new_ori_content) == len(diff_file_info["code_diff"]["diff_code_snippet"])
+        assert len(new_ori_content.splitlines()) == len(diff_file_info["code_diff"][0]["diff_code_snippet"])
 
         self.code_after[new_fpath] = new_ori_content
-        self.code_comb[new_fpath] = diff_file_info["code_diff"]["diff_code_snippet"]
+        self.code_comb[new_fpath] = diff_file_info["code_diff"][0]["diff_code_snippet"]
 
         ## (3) All structs in combined code (used to search in)
         funcs, classes, classes_funcs = build_struct_indexes_from_common_code(new_ori_content)
@@ -170,10 +171,10 @@ class CommitManager:
 
         ## (2) File content (original, combined)
         old_ori_content = get_code_before_commit(self.local_repo_dpath, self.commit_hash, old_fpath)
-        assert len(old_ori_content) == len(diff_file_info["code_diff"]["diff_code_snippet"])
+        assert len(old_ori_content.splitlines()) == len(diff_file_info["code_diff"][0]["diff_code_snippet"])
 
         self.code_before[old_fpath] = old_ori_content
-        self.code_comb[old_fpath] = diff_file_info["code_diff"]["diff_code_snippet"]
+        self.code_comb[old_fpath] = diff_file_info["code_diff"][0]["diff_code_snippet"]
 
         ## (3) All structs in combined code (used to search in)
         funcs, classes, classes_funcs = build_struct_indexes_from_common_code(old_ori_content)

@@ -1,5 +1,6 @@
 # This code is modified from https://github.com/nus-apr/auto-code-rover
 # Original file: agent_app/search/search_utils.py
+
 import os
 import sys
 import re
@@ -9,7 +10,8 @@ import glob
 from typing import *
 from dataclasses import dataclass
 
-from agent_app.data_structures import CodeSnippetLocation
+from agent_app.data_structures import LineRange, CodeRange, CodeSnippetLocation
+from agent_app.static_analysis.parse import cal_class_or_func_def_range
 
 
 @dataclass
@@ -79,9 +81,7 @@ def find_python_files(dir_path: str) -> List[str]:
 
 
 def parse_python_code(file_content: str) -> Tuple[List, List, List, Dict] | None:
-    """
-    Main method to parse AST and build search index.
-    """
+    """Main method to parse AST and build search index."""
     try:
         tree = ast.parse(file_content)
     except Exception:
@@ -117,23 +117,26 @@ def parse_python_code(file_content: str) -> Tuple[List, List, List, Dict] | None
 
         ###### (2) Function ######
         if isinstance(child, ast.FunctionDef) or isinstance(child, ast.AsyncFunctionDef):
-            funcs.append((child.name, child.lineno, child.end_lineno))
+            start_lineno, end_lineno = cal_class_or_func_def_range(child)
+            funcs.append((child.name, start_lineno, end_lineno))
 
         if isinstance(child, ast.ClassDef):
             ###### (3) Class ######
-            classes.append((child.name, child.lineno, child.end_lineno))
+            start_lineno, end_lineno = cal_class_or_func_def_range(child)
+            classes.append((child.name, start_lineno, end_lineno))
 
             ###### (4) Class function ######
-            class_funcs = [
-                (n.name, n.lineno, n.end_lineno)
-                for n in ast.walk(child)
-                if isinstance(n, ast.FunctionDef) or isinstance(n, ast.AsyncFunctionDef)]
+            class_funcs = []
+            for node in ast.walk(child):
+                if isinstance(node, ast.FunctionDef) or isinstance(node, ast.AsyncFunctionDef):
+                    start_lineno, end_lineno = cal_class_or_func_def_range(node)
+                    class_funcs.append((node.name, start_lineno, end_lineno))
             class_to_funcs[child.name] = class_funcs
 
     return import_libs, funcs, classes, class_to_funcs
 
 
-"""Imported Libs Related"""
+"""EXTRACT IMPORTED LIB"""
 
 
 def lib_info_to_seq(pkg_path: str, attr_name: str, alias_name: str) -> str:
@@ -148,8 +151,7 @@ def lib_info_to_seq(pkg_path: str, attr_name: str, alias_name: str) -> str:
 
 
 def _path_in_repo(abs_pkg_path: str, attr_name: str, local_repo_dpath: str) -> Tuple[str, str] | None:
-    """
-    Determine whether a path points to a package or module in the repo, and get its relative path to repo root.
+    """Determine whether a path points to a package or module in the repo, and get its relative path to repo root.
 
     NOTE 1: `abs_pkg_path` could be path to package / module.
     NOTE 2: `attr_name` could be the name of package / module / class / function ....
@@ -209,8 +211,7 @@ def is_custom_lib(
         abs_cur_fpath: str,
         local_repo_dpath: str
 ) -> Tuple[bool, Tuple[str, str] | None]:
-    """
-    Determine whether an import is a custom library.
+    """Determine whether an import is a custom library.
 
     NOTE 1: `local_cur_py_file` is ABSOLUTE path.
     NOTE 2: File paths in `repo_py_files` are all ABSOLUTE paths, i.e. root/projects/....
@@ -321,8 +322,7 @@ def is_custom_lib(
 
 
 def is_standard_lib(import_lib: Tuple[str, str, str]) -> Tuple[bool, Tuple[str, str] | None]:
-    """
-    Determine whether an import is a standard library.
+    """Determine whether an import is a standard library.
 
     Args:
         import_lib (Tuple[str, str, str]):
@@ -368,10 +368,9 @@ def judge_lib_source(
         abs_cur_fpath: str,
         local_repo_dpath: str
 ) -> Tuple[str, str]:
-    """
-     Judge the source of the library imported.
-     Three types of sources: standard, third-party, custom
+    """Judge the source of the library imported.
 
+    Three types of sources: standard, third-party, custom
     Args:
         import_lib (Tuple[str, str, str]):
             - str: pkg path (I. 'xx' in 'import xx'; II. 'xx.xx' in 'from xx.xx import xxx')
@@ -404,14 +403,123 @@ def judge_lib_source(
     return "third-party library", lib_name
 
 
-"""Extract Code Snippet"""
+"""COMBINE LINES"""
 
 
-def get_code_snippets_in_repo(abs_fpath: str, start: int, end: int) -> str:
+def is_overlap_in_comb_file(
+        old_range: LineRange, line_id_old2comb: Dict[int, int],
+        new_range: LineRange, line_id_new2comb: Dict[int, int]
+) -> bool:
+    old_comb_range = (line_id_old2comb[old_range.start], line_id_old2comb[old_range.end])
+    new_comb_range = (line_id_new2comb[new_range.start], line_id_new2comb[new_range.end])
+    return old_comb_range[0] >= new_comb_range[1] and old_comb_range[1] <= new_comb_range[0]
+
+
+def match_overlap_structs(
+        old_ranges: List[LineRange], line_id_old2comb: Dict[int, int],
+        new_ranges: List[LineRange], line_id_new2comb: Dict[int, int]
+) -> List[Tuple[LineRange | None, LineRange | None]]:
+    """Find the corresponding snippets for several code snippets before and after modification.
+
+    NOTE 1: All inputs are for the same file.
+    NOTE 2: Here 'line range' is used to refer to the code snippet.
+    NOTE 3: We only check whether there are unmodified lines in both code snippets, i.e. whether there is overlap.
+    TODO: If a code snippet A is copied, deleted, and pasted to a new location B, although their functions are
+          exactly the same, since they have no overlapping code lines in the combined code, they are considered
+          as two independent code snippets, i.e. A is a deleted snippet and B is an added code snippet.
     """
-    Get the code snippet in the range in the file, without line numbers.
+    # [(old struct range, new struct range)]
+    struct_pairs: List[Tuple[LineRange | None, LineRange | None]] = []
 
-    NOTE: Extract file content from the local repo.
+    # (1) Extract one item from 'old_ranges' at a time and search for the matching item in 'new_ranges'
+    for i in range(len(old_ranges)):
+        old_range = old_ranges[i]
+
+        match_idx = None
+        for j in range(len(new_ranges)):
+            new_range = new_ranges[j]
+            if is_overlap_in_comb_file(old_range, line_id_old2comb, new_range, line_id_new2comb):
+                match_idx = j
+                break
+
+        if match_idx is not None:
+            struct_pairs.append((old_range, new_ranges[match_idx]))
+            new_ranges.pop(match_idx)
+        else:
+            struct_pairs.append((old_range, None))
+
+    # (2) If there are any remaining items in ‘new_ranges’, it means that they are added structs
+    for new_range in new_ranges:
+        struct_pairs.append((None, new_range))
+
+    return struct_pairs
+
+
+"""EXTRACT CODE SNIPPET"""
+
+
+def get_code_snippet_in_file(file_content: str, start: int, end: int) -> str:
+    """Get the code snippet in the file according to the line ids, without line numbers.
+
+    Args:
+        file_content (str): File content.
+        start (int): Start line number. (1-based)
+        end (int): End line number. (1-based)
+    """
+    file_lines = file_content.splitlines(keepends=True)
+    snippet = ""
+    for i in range(start - 1, end):
+        snippet += file_lines[i]
+    return snippet
+
+
+def get_code_snippet_in_diff_file(
+        comb_file_content: str,
+        old_line_range: LineRange | None, line_id_old2comb: Dict[int, int],
+        new_line_range: LineRange | None, line_id_new2comb: Dict[int, int],
+) -> str:
+    """Get the code snippet in the range in the file, without line numbers.
+
+    NOTE: For diff files, since we have stored them with the modifications in the search_manager,
+          so we get their contents from there instead of the local repo.
+    Args:
+        comb_file_content (str): Content of combined file.
+        old_line_range (LineRange | None): Line range in old file.
+        line_id_old2comb (Dict[int, int] | None): Line id lookup dict, code before -> code comb.
+        new_line_range (LineRange | None): Line range in new file.
+        line_id_new2comb (Dict[int, int] | None): Line id lookup dict, code after -> code comb.
+    """
+    if old_line_range is None or new_line_range is None:
+        # Deleted / added code snippet
+        if old_line_range is not None:
+            comb_start = line_id_old2comb[old_line_range.start]
+            comb_end = line_id_old2comb[old_line_range.end]
+        elif new_line_range is not None:
+            comb_start = line_id_new2comb[new_line_range.start]
+            comb_end = line_id_new2comb[new_line_range.end]
+        else:
+            raise RuntimeError("Input 'old_line_range' and 'new_line_range' cannot be None at the same time")
+
+    else:
+        # Modified code snippet
+        assert line_id_old2comb is not None and line_id_new2comb is not None
+        assert is_overlap_in_comb_file(old_line_range, line_id_old2comb, new_line_range, line_id_new2comb)
+
+        comb_start = min(line_id_old2comb[old_line_range.start], line_id_new2comb[new_line_range.start])
+        comb_end = max(line_id_old2comb[old_line_range.end], line_id_new2comb[new_line_range.end])
+
+    comb_file_lines = comb_file_content.splitlines(keepends=True)
+    snippet = ""
+    for i in range(comb_start - 1, comb_end):
+        snippet += comb_file_lines[i]
+
+    return snippet
+
+
+def get_code_snippets_in_nodiff_file(abs_fpath: str, start: int, end: int) -> str:
+    """Get the code snippet in the range in the file, without line numbers.
+
+    NOTE: For nodiff files, we get their contents from the local repo.
     Args:
         abs_fpath (str): Absolute path to the file.
         start (int): Start line number. (1-based)
@@ -425,27 +533,8 @@ def get_code_snippets_in_repo(abs_fpath: str, start: int, end: int) -> str:
     return snippet
 
 
-def get_code_snippet_in_file(file_content: str, start: int, end: int) -> str:
-    """
-    Get the code snippet in the range in the file, without line numbers.
-
-    NOTE: Since the file is modified in the commit, and we have stored it with the modifications in the search_manager,
-          so we extract directly from it.
-    Args:
-        file_content (str): File content.
-        start (int): Start line number. (1-based)
-        end (int): End line number. (1-based)
-    """
-    file_lines = file_content.splitlines(keepends=True)
-    snippet = ""
-    for i in range(start - 1, end):
-        snippet += file_lines[i]
-    return snippet
-
-
 def extract_func_sig_lines_from_ast(func_ast: ast.FunctionDef) -> List[int]:
-    """
-    Extract the function signature from the AST node.
+    """Extract the function signature from the AST node.
 
     Includes the decorators, method name, and parameters.
     Args:
@@ -472,8 +561,7 @@ def extract_func_sig_lines_from_ast(func_ast: ast.FunctionDef) -> List[int]:
 
 
 def extract_class_sig_lines_from_ast(class_ast: ast.ClassDef) -> List[int]:
-    """
-    Extract the class signature from the AST node.
+    """Extract the class signature from the AST node.
 
     Args:
         class_ast (ast.ClassDef): AST of the class.
@@ -509,13 +597,27 @@ def extract_class_sig_lines_from_ast(class_ast: ast.ClassDef) -> List[int]:
     return sig_lines
 
 
-def extract_class_sig_lines_from_file(file_content: str, class_name: str) -> List[int]:
+def extract_class_sig_lines_from_file(file_content: str, class_name: str, class_range: LineRange) -> List[int]:
     tree = ast.parse(file_content)
     relevant_line_ids: List[int] = []
     for node in ast.walk(tree):
-        if isinstance(node, ast.ClassDef) and node.name == class_name:
+        if isinstance(node, ast.ClassDef):
+            ## Determine whether the node is the required class
+            # 1. Check name
+            if node.name != class_name:
+                continue
+            # 2. Check range
+            start, end = cal_class_or_func_def_range(node)
+            if start != class_range.start or end != class_range.end:
+                continue
+
+            ## Extract relevant lines
             relevant_line_ids = extract_class_sig_lines_from_ast(node)  # 1-based
             break
+
+    # Normally, the class signature related lines should not be empty.
+    assert relevant_line_ids
+
     return relevant_line_ids
 
 
@@ -536,86 +638,84 @@ def get_class_sig_lines_content(file_content: str, line_ids: List[int]) -> str:
     return result
 
 
-def get_class_signature_in_repo(abs_fpath: str, class_name: str) -> str:
-    """
-    Get the class signature.
+def get_class_signature_in_nodiff_file(abs_fpath: str, class_name: str, class_range: LineRange) -> str:
+    """Get the class signature.
 
-    NOTE: For unchanged file in commit. Extract class signature from the local repo.
+    NOTE: For nodiff files, we get their contents from the local repo.
     Args:
         abs_fpath (str): Absolute path to the file.
         class_name (str): Name of the class.
+        class_range (LineRange): Line range of the class.
     """
     with open(abs_fpath, "r") as f:
         file_content = f.read()
 
-    relevant_line_ids = extract_class_sig_lines_from_file(file_content, class_name)
+    relevant_line_ids = extract_class_sig_lines_from_file(file_content, class_name, class_range)
 
     result = get_class_sig_lines_content(file_content, relevant_line_ids)
 
     return result
 
 
-def get_class_signature_in_file(
-        file_content_comb: str, class_name: str,
-        file_content_before: str | None, before2comb_line_id_lookup: Dict[int, int] | None,
-        file_content_after: str | None, after2comb_line_id_lookup: Dict[int, int] | None
+def get_class_signature_in_diff_file(
+        comb_file_content: str, class_name: str,
+        old_file_content: str | None, old_class_range: LineRange | None, line_id_old2comb: Dict[int, int] | None,
+        new_file_content: str | None, new_class_range: LineRange | None, line_id_new2comb: Dict[int, int] | None
 ) -> str:
-    """
-    Get the class signature.
+    """Get the class signature.
 
     Step 1: Find the signature lines of the specific class from the code before and after commit.
-            Since the class names in a single file cannot be repeated, it is assumed here
-            that the found classes must be corresponding.
-    FIXME: There is still an inconsistency, i.e. it is possible that a class is removed
-           and a class of the same name is added with completely different functionality than before,
-           but the probability of this occurring is very low, so we ignore it for now.
     Step 2: Query the line id lookup dict to find corresponding signature lines in combined code,
             and merge them to get the final signature lines.
 
-    NOTE: For modified file in commit. Since the file is modified in the commit, and we have stored it with the
-          modifications in the search_manager, so we extract directly from it.
+    NOTE: For diff files, since we have stored them with the modifications in the search_manager,
+          so we get their contents from there instead of the local repo.
     Args:
-        file_content_comb (str): Content of combined file.
+        comb_file_content (str): Content of combined file.
         class_name (str): Name of the class.
-        file_content_before (str): Content of file before commit.
-        before2comb_line_id_lookup (Dict[int, int]): Line id lookup dict, code before -> code comb.
-        file_content_after (str): Content of file after commit.
-        after2comb_line_id_lookup (Dict[int, int]): Line id lookup dict, code after -> code comb.
+        old_file_content (str | None): Content of file before commit.
+        old_class_range (LineRange | None): Line range of the class in old file.
+        line_id_old2comb (Dict[int, int] | None): Line id lookup dict, code before -> code comb.
+        new_file_content (str | None): Content of file after commit.
+        new_class_range (LineRange | None): Line range of the class in new file.
+        line_id_new2comb (Dict[int, int] | None): Line id lookup dict, code after -> code comb.
     """
-    if file_content_before is None or file_content_after is None:
-        if file_content_before is not None:
-            assert before2comb_line_id_lookup is not None
-            ori_content = file_content_before
-            ori2comb_line_id_lookup = before2comb_line_id_lookup
+    if old_file_content is None or new_file_content is None:
+        # Deleted / added file
+        if old_file_content is not None:
+            assert line_id_old2comb is not None
+            ori_content = old_file_content
+            class_range = old_class_range
+            line_id_ori2comb = line_id_old2comb
         else:
-            assert after2comb_line_id_lookup is not None
-            ori_content = file_content_after
-            ori2comb_line_id_lookup = after2comb_line_id_lookup
+            assert line_id_new2comb is not None
+            ori_content = new_file_content
+            class_range = new_class_range
+            line_id_ori2comb = line_id_new2comb
 
-        relevant_line_ids = extract_class_sig_lines_from_file(ori_content, class_name)
+        relevant_line_ids = extract_class_sig_lines_from_file(ori_content, class_name, class_range)
 
-        if not relevant_line_ids:
-            return ""
+        comb_relevant_line_ids = [line_id_ori2comb[li] for li in relevant_line_ids]
 
-        comb_relevant_line_ids = [ori2comb_line_id_lookup[li] for li in relevant_line_ids]
-
-        result = get_class_sig_lines_content(file_content_comb, comb_relevant_line_ids)
+        result = get_class_sig_lines_content(comb_file_content, comb_relevant_line_ids)
 
     else:
-        assert before2comb_line_id_lookup is not None and after2comb_line_id_lookup is not None
+        # Modified file
+        assert line_id_old2comb is not None and line_id_new2comb is not None
+        assert is_overlap_in_comb_file(old_class_range, line_id_old2comb, new_class_range, line_id_new2comb)
 
-        old_relevant_line_ids = extract_class_sig_lines_from_file(file_content_before, class_name)
-        new_relevant_line_ids = extract_class_sig_lines_from_file(file_content_after, class_name)
+        old_relevant_line_ids = extract_class_sig_lines_from_file(old_file_content, class_name, old_class_range)
+        new_relevant_line_ids = extract_class_sig_lines_from_file(new_file_content, class_name, new_class_range)
 
         comb_relevant_line_ids = []
         for old_line_id in old_relevant_line_ids:
-            comb_relevant_line_ids.append(before2comb_line_id_lookup[old_line_id])
+            comb_relevant_line_ids.append(line_id_old2comb[old_line_id])
 
         for new_line_id in new_relevant_line_ids:
-            comb_relevant_line_ids.append(after2comb_line_id_lookup[new_line_id])
+            comb_relevant_line_ids.append(line_id_new2comb[new_line_id])
 
         comb_relevant_line_ids = sorted(list(set(comb_relevant_line_ids)))
 
-        result = get_class_sig_lines_content(file_content_comb, comb_relevant_line_ids)
+        result = get_class_sig_lines_content(comb_file_content, comb_relevant_line_ids)
 
     return result

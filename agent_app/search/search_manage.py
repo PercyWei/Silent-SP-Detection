@@ -3,6 +3,7 @@
 import os
 import re
 import pathlib
+import chardet
 
 from typing import *
 from collections import defaultdict
@@ -10,8 +11,7 @@ from collections.abc import MutableMapping
 
 from agent_app.search import search_util
 from agent_app.search.search_util import SearchResult
-from agent_app.data_structures import SearchStatus
-from utils import LineRange
+from agent_app.data_structures import LineRange, SearchStatus
 
 
 FuncIndexType = MutableMapping[str, List[Tuple[str, LineRange]]]
@@ -126,8 +126,14 @@ class SearchManager:
         self.diff_file_import_libs: FileImportLibType = defaultdict(list)
 
         for fpath in self.del_files + self.add_files + self.mod_files:
-            old_libs, *_ = search_util.parse_python_code(self.code_before[fpath]) if fpath in self.code_before else []
-            new_libs, *_ = search_util.parse_python_code(self.code_after[fpath]) if fpath in self.code_after else []
+            if fpath in self.code_before:
+                old_libs, *_ = search_util.parse_python_code(self.code_before[fpath])
+            else:
+                old_libs = []
+            if fpath in self.code_after:
+                new_libs, *_ = search_util.parse_python_code(self.code_after[fpath])
+            else:
+                new_libs = []
 
             self.diff_file_import_libs[fpath] = list(set(old_libs + new_libs))
 
@@ -153,7 +159,18 @@ class SearchManager:
                 continue
 
             ## Step 2: Parse the code
-            file_content = pathlib.Path(abs_py_fpath).read_text()
+            try:
+                file_content = pathlib.Path(abs_py_fpath).read_text()
+            except UnicodeDecodeError:
+                try:
+                    with open(abs_py_fpath, 'rb') as f:
+                        result = chardet.detect(f.read())
+                    encoding = result['encoding']
+                    file_content = pathlib.Path(abs_py_fpath).read_text(encoding=encoding)
+                except (UnicodeDecodeError, TypeError):
+                    self.parsed_failed_files.append(rel_py_fpath)
+                    continue
+
             struct_info = search_util.parse_python_code(file_content)
 
             if struct_info is None:

@@ -32,13 +32,15 @@ class RawLocalTask(RawTask):
     """
     Encapsulate everything required to run ACR on a local repo cloned from GitHub.
     """
-    def __init__(self,
-                 task_id: str,
-                 commit_type: int,
-                 cwe_id: str,
-                 repo_name: str,
-                 commit_hash: str,
-                 local_repo_dpath: str):
+    def __init__(
+            self,
+            task_id: str,
+            commit_type: int,
+            cwe_id: str,
+            repo_name: str,
+            commit_hash: str,
+            local_repo_dpath: str
+    ):
         self.valid = True
 
         self._task_id = task_id

@@ -6,54 +6,62 @@ import json
 from typing import *
 from pprint import pformat
 from enum import Enum
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from collections import namedtuple
 
 from openai.types.chat import ChatCompletionMessageToolCall
 from openai.types.chat.chat_completion_message_tool_call import Function as OpenaiFunction
 
 
-"""MANAGER"""
+LineRange = NamedTuple("LineRange", [("start", int), ("end", int)])
 
 
-class State(str, Enum):
-    START_STATE = "start"
-    REFLEXION_STATE = "reflexion"
-    HYPOTHESIS_CHECK_STATE = "hypothesis_check"
-    CONTEXT_RETRIEVAL_STATE = "context_retrieval"
-    HYPOTHESIS_VERIFY_STATE = "hypothesis_verify"
-    END_STATE = "end"
-    POST_PROCESS_STATE = "post_process"
+"""STATIC ANALYSIS"""
+
+
+class LocationType(str, Enum):
+    # Root
+    MODULE = "module"
+    # Top level items
+    UNIT = "unit"
+    FUNCTION = "function"
+    CLASS = "class"
+    MAIN = "main"
+    # Class children
+    CLASS_UNIT = "class_unit"
+    CLASS_FUNCTION = "class_function"
+    # Main children
+    MAIN_UNIT = "main_unit"
 
     @staticmethod
     def attributes():
-        return [k.value for k in State]
+        return [k.value for k in LocationType]
+
+
+line_loc_types = [LocationType.UNIT, LocationType.FUNCTION,
+                  LocationType.CLASS_UNIT, LocationType.CLASS_FUNCTION,
+                  LocationType.MAIN_UNIT]
+top_level_loc_types = [LocationType.UNIT, LocationType.FUNCTION, LocationType.CLASS, LocationType.MAIN]
+no_children_loc_types = [LocationType.UNIT, LocationType.FUNCTION,
+                         LocationType.CLASS_UNIT, LocationType.CLASS_FUNCTION,
+                         LocationType.MAIN_UNIT]
+children_loc_types = [LocationType.CLASS, LocationType.MAIN]
+class_child_loc_types = [LocationType.CLASS_UNIT, LocationType.CLASS_FUNCTION]
+main_child_loc_types = [LocationType.MAIN_UNIT]
 
 
 @dataclass
-class ProcessActionStatus:
-    """Dataclass to hold status of some actions during the identification processes."""
-    start_patch_extraction: bool = False
-    post_process_rank: bool = False
-    complete: bool = False
+class Location:
+    """For recording different structs in Python code."""
+    id: int
+    father: int | None
+    type: LocationType
+    ast: str
+    name: str
+    range: LineRange
 
-    def to_dict(self):
-        return {
-            "start_patch_extraction": self.start_patch_extraction,
-            "post_process_rank": self.post_process_rank,
-            "complete": self.complete
-        }
-
-
-"""COMMIT"""
-
-
-class CommitType(str, Enum):
-    VulnerabilityPatch = "vulnerability_patch"
-    NonVulnerabilityPatch = "non_vulnerability_patch"
-
-    @staticmethod
-    def attributes():
-        return [e.value for e in CommitType]
+    def get_full_range(self) -> List[int]:
+        return list(range(self.range.start, self.range.end + 1))
 
 
 """CODE"""
@@ -97,6 +105,80 @@ class CodeSnippetLocation:
             "func_name": self.func_name,
             "code": self.code
         }
+
+
+
+"""PROCESS MANAGE"""
+
+
+class State(str, Enum):
+    START_STATE = "start"
+    REFLEXION_STATE = "reflexion"
+    HYPOTHESIS_CHECK_STATE = "hypothesis_check"
+    CONTEXT_RETRIEVAL_STATE = "context_retrieval"
+    HYPOTHESIS_VERIFY_STATE = "hypothesis_verify"
+    END_STATE = "end"
+    POST_PROCESS_STATE = "post_process"
+
+    @staticmethod
+    def attributes():
+        return [k.value for k in State]
+
+
+@dataclass
+class ProcessActionStatus:
+    """Dataclass to hold status of some actions during the identification processes."""
+    start_patch_extraction: bool = False
+    post_process_rank: bool = False
+    complete: bool = False
+
+    def to_dict(self):
+        return {
+            "start_patch_extraction": self.start_patch_extraction,
+            "post_process_rank": self.post_process_rank,
+            "complete": self.complete
+        }
+
+
+"""COMMIT MANAGE"""
+
+
+class CommitType(str, Enum):
+    VulnerabilityPatch = "vulnerability_patch"
+    NonVulnerabilityPatch = "non_vulnerability_patch"
+
+    @staticmethod
+    def attributes():
+        return [e.value for e in CommitType]
+
+
+@dataclass
+class CombineInfo:
+    """Dataclass to hold info of combined file."""
+    # -------------------- Code -------------------- #
+    old_code: str | None
+    new_code: str | None
+    comb_code: str = ""
+    # -------------------- Location -------------------- #
+    old_locations: Dict[int, Location] = field(default_factory=dict)  # loc id -> Location
+    new_locations: Dict[int, Location] = field(default_factory=dict)  # loc id -> Location
+    # -------------------- Look-up dict -------------------- #
+    # (1) line id to location id
+    old_li2loc: Dict[int, int] = field(default_factory=dict)          # line id -> loc id
+    new_li2loc: Dict[int, int] = field(default_factory=dict)          # line id -> loc id
+    # (2) line id to line id
+    line_id_old2new: Dict[int, int] = field(default_factory=dict)   # line id: old_code -> new_code
+    line_id_old2comb: Dict[int, int] = field(default_factory=dict)  # line id: old_code -> comb_code
+    line_id_new2comb: Dict[int, int] = field(default_factory=dict)  # line id: new_code -> comb_code
+    # -------------------- Structures -------------------- #
+    # (1) Old struct index
+    old_func_index: List[Tuple[str, LineRange]] = field(default_factory=list)
+    old_class_index: List[Tuple[str, LineRange]] = field(default_factory=list)
+    old_classFunc_index: List[Tuple[str, List[Tuple[str, LineRange]]]] = field(default_factory=list)
+    # (2) New struct index
+    new_func_index: List[Tuple[str, LineRange]] = field(default_factory=list)
+    new_class_index: List[Tuple[str, LineRange]] = field(default_factory=list)
+    new_classFunc_index: List[Tuple[str, List[Tuple[str, LineRange]]]] = field(default_factory=list)
 
 
 """SEARCH MANAGE"""

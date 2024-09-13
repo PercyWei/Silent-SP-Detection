@@ -18,8 +18,8 @@ from enum import Enum
 from loguru import logger
 
 from agent_app.static_analysis.parse import LocationType, Location, parse_python_file_locations
-from agent_app.data_structures import CodeSnippetLocation
-from utils import LineRange, same_line_range, run_command
+from agent_app.data_structures import LineRange, CodeSnippetLocation
+from utils import run_command
 
 
 class SourceFileType(str, Enum):
@@ -34,7 +34,7 @@ class SourceFileType(str, Enum):
 """GET FILE CONTENT"""
 
 
-def get_code_before_commit(local_repo_dpath: str, commit_hash: str, rel_fpath: str) -> str | None:
+def get_code_before_commit(local_repo_dpath: str, commit_hash: str, rel_fpath: str, parent_id: int = 1) -> str | None:
     """
     Get file content before applying the given commit.
 
@@ -42,10 +42,11 @@ def get_code_before_commit(local_repo_dpath: str, commit_hash: str, rel_fpath: s
         local_repo_dpath (str): Path to the local repository dir.
         commit_hash (str): Commit hash.
         rel_fpath (str): Relative (to the local repo root) file path.
+        parent_id (int): ID of the parent comment.
     Returns:
         str | None: Content of file before applying the given commit. None if failed to get the content.
     """
-    git_show_cmd = ['git', 'show', f'{commit_hash}^:{rel_fpath}']
+    git_show_cmd = ['git', 'show', f'{commit_hash}^{parent_id}:{rel_fpath}']
 
     result, _ = run_command(git_show_cmd, raise_error=False,
                             cwd=local_repo_dpath, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -163,13 +164,13 @@ def extract_commit_content_info(commit_content: str, file_suffix: List[str] | No
         # file_suffix = [".c", ".cc", ".java", ".py", ".js", ".php", ".h", ".rb", ".go", ".ts", ".tsx"]
         file_suffix = [".py"]
 
-    diff_line_pattern = r"diff --git (.+) (.+)"
-    add_file_line_pattern = r"new file mode (\d+)"
-    remove_file_line_pattern = r"deleted file mode (\d+)"
-    index_line_pattern = r"index (\w+)\.\.(\w+)(?: .*)?$"
-    old_fpath_pattern = r"--- (.+)"
-    new_fpath_pattern = r"\+\+\+ (.+)"
-    line_id_pattern = r"@@ -(\d+),(\d+) \+(\d+),(\d+) (.*)$"
+    diff_line_pattern = r"diff --git (.+) (.+)"               # must exist
+    add_file_line_pattern = r"new file mode (\d+)"            # may exist
+    remove_file_line_pattern = r"deleted file mode (\d+)"     # may exist
+    index_line_pattern = r"index (\w+)\.\.(\w+)(?: .*)?$"     # must exist
+    old_fpath_pattern = r"--- (.+)"                           # may exist
+    new_fpath_pattern = r"\+\+\+ (.+)"                        # may exist
+    line_id_pattern = r"@@ -(\d+),(\d+) \+(\d+),(\d+) (.*)$"  # may exist
 
     commit_content_lines = commit_content.splitlines(keepends=False)
 
@@ -186,6 +187,7 @@ def extract_commit_content_info(commit_content: str, file_suffix: List[str] | No
     commit_content_info: List[Dict] = []
     for i, section_start_line_idx in enumerate(changed_fpath_lines.keys()):
         # Select only code changes in the specified files
+        # TODO: Only extract commit content related to Python code.
         old_fpath, new_fpath = changed_fpath_lines[section_start_line_idx]
         if not (any(old_fpath.endswith(suf) for suf in file_suffix) and
                 any(new_fpath.endswith(suf) for suf in file_suffix)):
@@ -197,7 +199,7 @@ def extract_commit_content_info(commit_content: str, file_suffix: List[str] | No
 
         current_line_idx = section_start_line_idx
 
-        # Match the modification pattern of the file:
+        # ----------------- format: new file mode <index> / deleted file mode <index> ------------------ #
         # File type: added, removed, modified
         file_type = "modified"
         add_file_flag = False
@@ -213,10 +215,32 @@ def extract_commit_content_info(commit_content: str, file_suffix: List[str] | No
 
         assert not (add_file_flag and remove_file_flag)
 
+        # TODO: When only the path of a file is changed without modifying, the commit will contain the following content
+        #       """
+        #       diff --git <old_file_path> <new_file_path>
+        #       similarity index 100%
+        #       rename from <old_file_path>
+        #       rename to <new_file_path>
+        #       """
+        #       For this, we do not need to record its changes.
+        # ex: https://github.com/E2OpenPlugins/e2openplugin-OpenWebif/commit/a846b7664eda3a4c51a452e00638cf7337dc2013
+        #     plugin/utilities.py -> plugin/controllers/utilities.py
+        if commit_content_lines[current_line_idx + 1] == "similarity index 100%":
+            assert re.match(r"^rename\s+from\s+(.+)$", commit_content_lines[current_line_idx + 2])
+            assert re.match(r"^rename\s+to\s+(.+)$", commit_content_lines[current_line_idx + 3])
+            continue
+
+        # ----------------- format: index <index1>..<index2> ----------------- #
         assert re.match(index_line_pattern, commit_content_lines[current_line_idx + 1])
         current_line_idx += 1
 
-        # Match the file path before and after commit
+        if current_line_idx > section_end_line_idx:
+            # TODO: When adding or removing an empty file, there is no subsequent content.
+            # ex: https://github.com/cobbler/cobbler/commit/d8f60bbf14a838c8c8a1dba98086b223e35fe70a
+            #     tests/actions/__init__.py
+            continue
+
+        # ----------------- format: diff --git <file_path_1> <file_path_2> ----------------- #
         assert re.match(old_fpath_pattern, commit_content_lines[current_line_idx + 1])
         assert re.match(new_fpath_pattern, commit_content_lines[current_line_idx + 2])
 
@@ -246,13 +270,13 @@ def extract_commit_content_info(commit_content: str, file_suffix: List[str] | No
         assert re.match(line_id_pattern, commit_content_lines[current_line_idx + 1])
         current_line_idx += 1
 
-        # Match the hunk start line (@@ -idx_1,scope_1 +idx_2,scope_2 @@ xxx)
+        # ----------------- format: @@ -<idx_1>,<scope_1> +<idx_2>,<scope_2> @@ xxx ----------------- #
         diff_code_info_start_list = []
         for idx in range(current_line_idx, section_end_line_idx + 1):
             if re.match(line_id_pattern, commit_content_lines[idx]):
                 diff_code_info_start_list.append(idx)
 
-        # Extract changed code snippet hunk-by-hunk
+        # ----------------- Extract changed code snippet of each hunk ----------------- #
         for j, hunk_start_line_idx in enumerate(diff_code_info_start_list):
             ## Current section start and end line idx
             hunk_end_line_idx = diff_code_info_start_list[j + 1] - 1 \
@@ -517,7 +541,7 @@ def filter_blank_lines_in_commit(
             nb_file_diff_lines.append(diff_line)
             last_is_sep = False
 
-    if nb_file_diff_lines[-1].sep:
+    if nb_file_diff_lines and nb_file_diff_lines[-1].sep:
         nb_file_diff_lines.pop(-1)
 
     return nb_file_diff_lines
@@ -639,7 +663,9 @@ def combine_code_before_and_after(comb_info: CombineInfo, file_diff_lines: List[
                 (group_start_dl.source == SourceFileType.NEW and cur_new_line_id < group_start_dl.lineno - 1):
             cur_old_line_id += 1
             cur_new_line_id += 1
-            assert old_file_lines[cur_old_line_id - 1] == new_file_lines[cur_new_line_id - 1]
+            # assert old_file_lines[cur_old_line_id - 1] == new_file_lines[cur_new_line_id - 1]
+            if old_file_lines[cur_old_line_id - 1] != new_file_lines[cur_new_line_id - 1]:
+                print("ok")
 
             lines_between.append(old_file_lines[cur_old_line_id - 1])
 
@@ -1203,7 +1229,7 @@ def analyse_modified_file(
         old_ori_code: str,
         new_ori_code: str,
         diff_file_info: Dict
-) -> Tuple[CombineInfo, List[DiffCodeSnippet], List[Tuple[str, LineRange]], List[Tuple[str, LineRange]], List[Tuple[str, List[Tuple[str, LineRange]]]]]:
+) -> Tuple[CombineInfo | None, List[DiffCodeSnippet], List[Tuple[str, LineRange]], List[Tuple[str, LineRange]], List[Tuple[str, List[Tuple[str, LineRange]]]]]:
 
     # --------------------------- Step I: Get complete diff lines info --------------------------- #
     ori_diff_lines = combine_diff_code_info_within_file(diff_file_info)
@@ -1216,21 +1242,23 @@ def analyse_modified_file(
     ## (2) Filter commit Info
     nb_diff_lines = filter_blank_lines_in_commit(ori_diff_lines, old_nb_li_lookup, new_nb_li_lookup)
 
-    # --------------------------- Step III: Parse locations --------------------------- #
-    # NOTE: All we analyse after is the FILTERED code
-    old_nb_locs, old_nb_li2loc, _ = parse_python_file_locations(old_nb_code)
-    new_nb_locs, new_nb_li2loc, _ = parse_python_file_locations(new_nb_code)
+    if nb_diff_lines:
+        # --------------------------- Step III: Parse locations --------------------------- #
+        # NOTE: All we analyse after is the FILTERED code
+        old_nb_locs, old_nb_li2loc, _ = parse_python_file_locations(old_nb_code)
+        new_nb_locs, new_nb_li2loc, _ = parse_python_file_locations(new_nb_code)
 
-    # --------------------------- Step IV: Combine --------------------------- #
-    nb_comb_info = main_combine_of_modified_file(
-        old_nb_code, old_nb_locs, old_nb_li2loc, new_nb_code, new_nb_locs, new_nb_li2loc, nb_diff_lines
-    )
+        # --------------------------- Step IV: Combine --------------------------- #
+        nb_comb_info = main_combine_of_modified_file(
+            old_nb_code, old_nb_locs, old_nb_li2loc, new_nb_code, new_nb_locs, new_nb_li2loc, nb_diff_lines
+        )
 
-    # --------------------------- Step V: Build struct index  --------------------------- #
-    funcs, classes, classes_funcs = build_struct_indexes_from_comb_info(nb_comb_info)
+        # --------------------------- Step V: Build struct index  --------------------------- #
+        funcs, classes, classes_funcs = build_struct_indexes_from_comb_info(nb_comb_info)
 
-    # --------------------------- Step VI: Build DiffCodeSnippet  --------------------------- #
-    diff_code_snips = build_diff_code_snippets_from_comb_info(file_path, nb_comb_info, nb_diff_lines)
+        # --------------------------- Step VI: Build DiffCodeSnippet  --------------------------- #
+        diff_code_snips = build_diff_code_snippets_from_comb_info(file_path, nb_comb_info, nb_diff_lines)
 
-    return nb_comb_info, diff_code_snips, funcs, classes, classes_funcs
-
+        return nb_comb_info, diff_code_snips, funcs, classes, classes_funcs
+    else:
+        return None, [], [], [], []

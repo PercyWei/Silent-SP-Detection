@@ -16,7 +16,7 @@ from loguru import logger
 
 from agent_app import globals, globals_mut, inference, log
 from agent_app.data_structures import ProcessActionStatus
-from agent_app.api.manage import ProcessManager
+from agent_app.api.manage_v2 import ProcessManager
 from agent_app.model import common
 from agent_app.model.register import register_all_models
 from agent_app.raw_tasks import RawTask, RawLocalTask
@@ -333,7 +333,8 @@ def construct_tasks(tasks_map_file: str, local_repos_dpath: str) -> List[RawLoca
     # TODO: Only in test
     checked_task_ids: List[str] = []
     checked_task_dirs = [
-        # "/root/projects/VDTest/output/agent/vul_2024-08-29T10:06:05_SAVE",
+        "/root/projects/VDTest/output/agent/ast_failure_recordings",
+        "/root/projects/VDTest/output/agent/vul_2024-09-08T16:51:25_SAVE"
     ]
     for task_dir in checked_task_dirs:
         task_full_names = os.listdir(task_dir)

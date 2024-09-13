@@ -7,62 +7,14 @@ from enum import Enum
 
 from loguru import logger
 
-from utils import LineRange
+from agent_app.data_structures import LineRange, LocationType, Location
 
 
-class LocationType(str, Enum):
-    # Root
-    MODULE = "module"
-    # Top level items
-    UNIT = "unit"
-    FUNCTION = "function"
-    CLASS = "class"
-    MAIN = "main"
-    # Class children
-    CLASS_UNIT = "class_unit"
-    CLASS_FUNCTION = "class_function"
-    # Main children
-    MAIN_UNIT = "main_unit"
-
-    @staticmethod
-    def attributes():
-        return [k.value for k in LocationType]
-
-
-line_loc_types = [LocationType.UNIT, LocationType.FUNCTION,
-                  LocationType.CLASS_UNIT, LocationType.CLASS_FUNCTION,
-                  LocationType.MAIN_UNIT]
-top_level_loc_types = [LocationType.UNIT, LocationType.FUNCTION, LocationType.CLASS, LocationType.MAIN]
-no_children_loc_types = [LocationType.UNIT, LocationType.FUNCTION,
-                         LocationType.CLASS_UNIT, LocationType.CLASS_FUNCTION,
-                         LocationType.MAIN_UNIT]
-children_loc_types = [LocationType.CLASS, LocationType.MAIN]
-class_child_loc_types = [LocationType.CLASS_UNIT, LocationType.CLASS_FUNCTION]
-main_child_loc_types = [LocationType.MAIN_UNIT]
-
-
-@dataclass
-class Location:
-    """For recording different structs in Python code."""
-    id: int
-    father: int | None
-    type: LocationType
-    ast: str
-    name: str
-    range: LineRange
-
-    def get_full_range(self) -> List[int]:
-        return list(range(self.range.start, self.range.end + 1))
-
-
-"""ADD LOCATION"""
-
-
-def _cal_class_or_func_def_range(node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef) -> Tuple[int, int]:
+def cal_class_or_func_def_range(node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef) -> Tuple[int, int]:
     start_lineno = node.lineno    # 1-based
     end_lineno = node.end_lineno  # 1-based
 
-    # NOTE: For ClassDef / FunctionDef node, `lineno`, `end_lineno` and `decorator_list` are treated separately
+    # NOTE: For ClassDef / FunctionDef node, `lineno`, `end_lineno` and `decorator_list` are treated separately.
     for decorator in node.decorator_list:
         if hasattr(decorator, 'lineno'):
             start_lineno = min(start_lineno, decorator.lineno)
@@ -70,6 +22,9 @@ def _cal_class_or_func_def_range(node: ast.ClassDef | ast.FunctionDef | ast.Asyn
             end_lineno = max(end_lineno, decorator.end_lineno)
 
     return start_lineno, end_lineno
+
+
+"""ADD LOCATION"""
 
 
 def _add_class_child_location(
@@ -94,7 +49,7 @@ def _add_class_child_location(
     ###########################################################
 
     if isinstance(node, ast.FunctionDef) or isinstance(node, ast.AsyncFunctionDef):
-        start_lineno, end_lineno = _cal_class_or_func_def_range(node)
+        start_lineno, end_lineno = cal_class_or_func_def_range(node)
 
         class_funcs.append(cur_loc_id)
         class_child_loc = Location(id=cur_loc_id, father=father_loc_id, type=LocationType.CLASS_FUNCTION,
@@ -141,7 +96,7 @@ def _add_class_location(
     """
     ast_type = type(node).__name__
     class_name = node.name
-    start_lineno, end_lineno = _cal_class_or_func_def_range(node)
+    start_lineno, end_lineno = cal_class_or_func_def_range(node)
 
     ###################################
     # Step 1. Save the location CLASS #
@@ -161,13 +116,20 @@ def _add_class_location(
 
     ## (1) Add class name (special case)
     first_child = node.body[0]
-    if start_lineno < first_child.lineno:
-        symbol_child_loc = Location(id=cur_loc_id, father=class_loc.id, type=LocationType.CLASS_UNIT,
-                                    ast="class_name", name="", range=LineRange(start_lineno, first_child.lineno - 1))
+    if isinstance(first_child, ast.FunctionDef) or isinstance(first_child, ast.AsyncFunctionDef):
+        first_node_start_lineno, _ = cal_class_or_func_def_range(first_child)
+    else:
+        first_node_start_lineno = first_child.lineno
+
+    if start_lineno < first_node_start_lineno:
+        symbol_child_loc = Location(
+            id=cur_loc_id, father=class_loc.id, type=LocationType.CLASS_UNIT,
+            ast="class_name", name="", range=LineRange(start_lineno, first_node_start_lineno - 1)
+        )
         locations[cur_loc_id] = symbol_child_loc
         cur_loc_id += 1
 
-        for line_id in range(start_lineno, first_child.lineno):
+        for line_id in range(start_lineno, first_node_start_lineno):
             assert line_id not in line_loc_lookup
             line_loc_lookup[line_id] = symbol_child_loc.id
 
@@ -207,7 +169,7 @@ def _add_function_location(
     """
     ast_type = type(node).__name__
     func_name = node.name
-    start_lineno, end_lineno = _cal_class_or_func_def_range(node)
+    start_lineno, end_lineno = cal_class_or_func_def_range(node)
 
     ######################################
     # Step 1: Save the location FUNCTION #
@@ -290,7 +252,7 @@ def _add_main_child_location(
     name = node.name if hasattr(node, 'name') else ""
 
     if isinstance(node, ast.FunctionDef) or isinstance(node, ast.AsyncFunctionDef):
-        start_lineno, end_lineno = _cal_class_or_func_def_range(node)
+        start_lineno, end_lineno = cal_class_or_func_def_range(node)
     else:
         start_lineno = node.lineno    # 1-based
         end_lineno = node.end_lineno  # 1-based
@@ -316,6 +278,7 @@ def _add_main_child_location(
 
 
 def _add_main_location(
+        mains: List[int],
         locations: Dict[int, Location],
         line_id2loc_id: Dict[int, int],
         node: ast.If,
@@ -340,6 +303,7 @@ def _add_main_location(
     # Step 1: Save the location MAIN #
     ##################################
 
+    mains.append(cur_loc_id)
     main_loc = Location(id=cur_loc_id, father=father_loc_id, type=LocationType.MAIN,
                         ast=ast_type, name=name, range=LineRange(start_lineno, end_lineno))
     locations[cur_loc_id] = main_loc
@@ -367,8 +331,7 @@ def _add_main_location(
 
 
 def parse_python_file_locations(file_content: str) -> Tuple[Dict[int, Location], Dict[int, int], Dict]:
-    """
-    Parse Python file content and extract the following types of Locations:
+    """Parse Python file content and extract the following types of Locations / Structs:
     - Top level items:
         - Global
         - Function
@@ -393,15 +356,18 @@ def parse_python_file_locations(file_content: str) -> Tuple[Dict[int, Location],
     locations: Dict[int, Location] = {}  # location_id -> Location
     li2loc_lookup: Dict[int, int] = {}   # line_id -> location_id
 
-    main: int | None = None
+    mains: List[int] = []
     funcs: List[int] = []
     classes: List[int] = []
     classes_funcs: Dict[int, List[int]] = {}
 
-    #  ---------------------- Step 1: AST parse ---------------------- #
+    # ---------------------- Step 1: AST parse ---------------------- #
     try:
         tree = ast.parse(file_content)
     except Exception:
+        # TODO: For test, delete later.
+        with open("/root/ast_parse_failure.py", 'w') as f:
+            f.write(file_content)
         logger.debug("AST parsing file failed")
         raise RuntimeError("AST parsing file failed")
 
@@ -416,27 +382,25 @@ def parse_python_file_locations(file_content: str) -> Tuple[Dict[int, Location],
     tree_children = list(ast.iter_child_nodes(tree))
 
     for i, child in enumerate(tree_children):
-        if isinstance(child, ast.ClassDef):
+        if isinstance(child, ast.FunctionDef) or isinstance(child, ast.AsyncFunctionDef):
+            _, cur_loc_id = _add_function_location(funcs, locations, li2loc_lookup, child, cur_loc_id, root_loc.id)
+
+        elif isinstance(child, ast.ClassDef):
             _, cur_loc_id = _add_class_location(
                 classes, classes_funcs, locations, li2loc_lookup, child, cur_loc_id, root_loc.id)
 
-        elif isinstance(child, ast.FunctionDef) or isinstance(child, ast.AsyncFunctionDef):
-            _, cur_loc_id = _add_function_location(funcs, locations, li2loc_lookup, child, cur_loc_id, root_loc.id)
-
         elif isinstance(child, ast.If) and _is_main_line(file_lines[child.lineno - 1]):
-            main_loc, cur_loc_id = _add_main_location(locations, li2loc_lookup, child, cur_loc_id, root_loc.id)
-            assert main is None
-            main = main_loc.id
+            _, cur_loc_id = _add_main_location(mains, locations, li2loc_lookup, child, cur_loc_id, root_loc.id)
 
         else:
             _, cur_loc_id = _add_unit_location(locations, li2loc_lookup, child, cur_loc_id, root_loc.id)
 
-    #  ---------------------- Step 4: Summary ---------------------- #
-    structs_info = {
-        "main": main,
+    # ---------------------- Step 4: Summarize ---------------------- #
+    struct_locations = {
+        "main": mains,
         "funcs": funcs,
         "classes": classes,
         "classes_funcs": classes_funcs
     }
 
-    return locations, li2loc_lookup, structs_info
+    return locations, li2loc_lookup, struct_locations
