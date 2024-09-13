@@ -16,6 +16,9 @@ from openai.types.chat.chat_completion_message_tool_call import Function as Open
 LineRange = NamedTuple("LineRange", [("start", int), ("end", int)])
 
 
+CodeRange = NamedTuple('CommonCodeRange', [('file_path', str), ('range', LineRange)])
+
+
 """STATIC ANALYSIS"""
 
 

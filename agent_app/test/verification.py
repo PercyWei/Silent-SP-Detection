@@ -20,7 +20,7 @@ from agent_app.main import construct_tasks
 from agent_app.search.search_util import find_python_files
 
 from agent_app.util import get_commit_content
-from utils import LineRange
+from agent_app.data_structures import LineRange
 
 
 """TEST 1"""
@@ -449,14 +449,8 @@ if __name__ == '__main__':
     # tasks_map_fpath = "/root/projects/VDTest/output/TreeVul/TreeVul_valid_scsfCVE.json"
     # main_test_changed_lines_locations(local_repos_dir, tasks_map_fpath)
 
-    file = "/root/projects/VDTest/dataset/Final/py_novul_tasks.json"
-    with open(file, 'r') as f:
-        c = json.load(f)
-
-    updt_c = []
-    for item in c:
-        del item["path_list"]
-        updt_c.append(item)
-
-    with open(file, 'w') as f:
-        json.dump(updt_c, f, indent=4)
+    exps = "/root/projects/VDTest/output/agent/vul_2024-09-08T16:51:25_SAVE"
+    dirs = os.listdir(exps)
+    for dir in dirs:
+        if not os.path.exists(path = os.path.join(exps, dir, "result.json")):
+            print(dir.split("_")[0])
