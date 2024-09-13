@@ -91,6 +91,9 @@ def checkout_commit(repo_dpath: str, commit_hash: str, revert: bool = True) -> b
     return True
 
 
+"""GITHUB API CONNECT"""
+
+
 def get_api_rate_limit(token: str):
     url = "https://api.github.com/rate_limit"
     headers = {'Authorization': f'token {token}'}
@@ -141,6 +144,8 @@ def is_commit_exist(auth_repo: str, commit_hash: str, token: str = '') -> Tuple[
             return True, commit_response.json()
         elif commit_response.status_code == 404:
             # Commit does not exist
+            return False, None
+        elif commit_response.status_code == 422 and "No commit found for SHA" in commit_response.json()["message"]:
             return False, None
         elif commit_response.status_code in {500, 502, 503, 504}:
             # Temporary server issues, need to retry
@@ -218,6 +223,26 @@ def extract_pull_info_from_url(pull_url: str) -> Tuple[str, int] | None:
     return auth_repo, pull_number
 
 
+def is_pull_exist(auth_repo: str, pull_number: int, token: str = "") -> bool | None:
+    api_url = f"https://api.github.com/repos/{auth_repo}/pull/{pull_number}"
+
+    headers = {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+
+    try:
+        response = requests.get(api_url, headers=headers, timeout=10)
+        if response.status_code == 200:
+            return True
+        elif response.status_code == 404:
+            return False
+        else:
+            return None
+    except requests.exceptions.RequestException as e:
+        return None
+
+
 def get_commits_from_pull_request(auth_repo: str, pull_number: int, token: str = '') -> List[str] | None:
     headers = {
         "Authorization": f"token {token}",
@@ -254,6 +279,26 @@ def extract_issue_info_from_url(issue_url: str) -> Tuple[str, int] | None:
     issue_number = int(match.group(2))
 
     return auth_repo, issue_number
+
+
+def is_issue_exist(auth_repo: str, issue_number: int, token: str = "") -> bool | None:
+    api_url = f"https://api.github.com/repos/{auth_repo}/issues/{issue_number}"
+
+    headers = {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+
+    try:
+        response = requests.get(api_url, headers=headers, timeout=10)
+        if response.status_code == 200:
+            return True
+        elif response.status_code == 404:
+            return False
+        else:
+            return None
+    except requests.exceptions.RequestException as e:
+        return None
 
 
 def get_related_commits_from_issue_events(auth_repo: str, issue_number: int, token: str = '') -> List[str] | None:
@@ -295,3 +340,58 @@ def extract_commit_info_from_url(commit_url: str) -> Tuple[str, str] | None:
     commit_hash = match.group(2)
 
     return auth_repo, commit_hash
+
+
+"""COMMIT LANGUAGE"""
+
+
+def get_file_lang(file_name: str) -> List[str]:
+    if file_name.endswith(".py"):
+        return ["Python"]
+    elif file_name.endswith(".c") or file_name.endswith(".h"):
+        return ["C"]
+    elif file_name.endswith(".cpp") or file_name.endswith(".cc"):
+        return ["C++"]
+    elif file_name.endswith(".java"):
+        return ["Java"]
+    elif file_name.endswith(".php") or file_name.endswith(".phpt"):
+        return ["PHP"]
+    elif file_name.endswith(".js") or file_name.endswith(".jsx"):
+        return ["JavaScript"]
+    elif file_name.endswith(".cs"):
+        return ["C#"]
+    elif file_name.endswith(".ts"):
+        return ["TypeScript"]
+    elif file_name.endswith(".rb"):
+        return ["Ruby"]
+    elif file_name.endswith(".go"):
+        return ["Go"]
+    elif file_name.endswith(".html"):
+        return ["HTML"]
+    elif file_name.endswith(".pm") or file_name.endswith(".t"):
+        return ["Perl"]
+    elif file_name.endswith(".rs"):
+        return ["Rust"]
+    elif file_name.endswith(".cshtml"):
+        return ["C#", "HTML"]
+    elif file_name.endswith(".vue"):
+        return ["JavaScript", "HTML"]
+    else:
+        return []
+
+
+def get_commit_lang(auth_repo: str, commit_hash: str, token: str = "") -> List[str] | None:
+    res = is_commit_exist(auth_repo, commit_hash, token)
+    if not res:
+        return None
+
+    _, commit_json = res
+
+    pl_list: List[str] = []
+    for file in commit_json["files"]:
+        file_name = file["filename"]
+        langs = get_file_lang(file_name)
+        pl_list.extend(langs)
+
+    pl_list = list(set(pl_list))
+    return pl_list

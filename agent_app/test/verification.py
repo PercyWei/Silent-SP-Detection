@@ -449,4 +449,14 @@ if __name__ == '__main__':
     # tasks_map_fpath = "/root/projects/VDTest/output/TreeVul/TreeVul_valid_scsfCVE.json"
     # main_test_changed_lines_locations(local_repos_dir, tasks_map_fpath)
 
-    pass
+    file = "/root/projects/VDTest/dataset/Final/py_novul_tasks.json"
+    with open(file, 'r') as f:
+        c = json.load(f)
+
+    updt_c = []
+    for item in c:
+        del item["path_list"]
+        updt_c.append(item)
+
+    with open(file, 'w') as f:
+        json.dump(updt_c, f, indent=4)
