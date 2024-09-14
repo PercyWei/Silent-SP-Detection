@@ -2,8 +2,6 @@ import ast
 import re
 
 from typing import *
-from dataclasses import dataclass
-from enum import Enum
 
 from loguru import logger
 
@@ -92,7 +90,7 @@ def _add_class_location(
     For children of it:
     - `locations`: Add CLASS_UNIT and CLASS_FUNCTION location.
     - `line_id2loc_id`: For lines in class child, update look-up dict.
-    - `classes_funcs`: Record CLASSFUNCTION location id.
+    - `classes_funcs`: Record CLASS_FUNCTION location id.
     """
     ast_type = type(node).__name__
     class_name = node.name
