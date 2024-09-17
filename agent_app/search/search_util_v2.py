@@ -10,8 +10,8 @@ import glob
 from typing import *
 from dataclasses import dataclass
 
-from agent_app.data_structures import LineRange, CodeRange, CodeSnippetLocation
-from agent_app.static_analysis.parse import cal_class_or_func_def_range
+from agent_app.data_structures import LineRange, CodeSnippetLocation
+from agent_app.commit.parse import cal_class_or_func_def_range
 
 
 @dataclass

@@ -1,24 +1,16 @@
 from __future__ import annotations
 
-import os
 import re
-import ast
 import tokenize
-import json
-import copy
 import subprocess
-import bisect
 
 from typing import *
 from io import StringIO
-from dataclasses import dataclass, field
-from collections import defaultdict
+from dataclasses import dataclass
 from enum import Enum
 
-from loguru import logger
-
-from agent_app.static_analysis.parse import parse_python_file_locations
-from agent_app.data_structures import LineRange, LocationType, Location, CombineInfo
+from agent_app.commit.parse import parse_python_file_locations
+from agent_app.data_structures import LineRange, Location, CombineInfo
 from utils import run_command
 
 

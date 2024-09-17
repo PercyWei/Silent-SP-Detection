@@ -1,13 +1,9 @@
 from __future__ import annotations
 
-import os
 import re
-import ast
 import tokenize
-import json
 import copy
 import subprocess
-import bisect
 
 from typing import *
 from io import StringIO
@@ -15,9 +11,7 @@ from dataclasses import dataclass, field
 from collections import defaultdict
 from enum import Enum
 
-from loguru import logger
-
-from agent_app.static_analysis.parse import LocationType, Location, parse_python_file_locations
+from agent_app.commit.parse import LocationType, Location, parse_python_file_locations
 from agent_app.data_structures import LineRange, CodeSnippetLocation
 from utils import run_command
 

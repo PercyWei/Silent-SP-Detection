@@ -1,13 +1,14 @@
+import os
+import time
+
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import NoSuchElementException, TimeoutException
-import os
-import time
 
-from old_utils import selenium_driver_setup, selenium_driver_close
+from utils import selenium_driver_setup, selenium_driver_close
 
 
 if __name__ == '__main__':

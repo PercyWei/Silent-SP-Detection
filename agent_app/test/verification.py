@@ -5,15 +5,13 @@ import ast
 import json
 import glob
 import time
-import tokenize
 
 from typing import *
-from io import StringIO
 from loguru import logger
 
 
 from agent_app.commit.commit_util import extract_commit_content_info, get_code_after_commit, get_code_before_commit
-from agent_app.static_analysis.parse import parse_python_file_locations as parse
+from agent_app.commit.parse import parse_python_file_locations as parse
 
 from agent_app.raw_tasks import RawLocalTask
 from agent_app.main import construct_tasks
@@ -445,12 +443,16 @@ def test7():
 
 
 if __name__ == '__main__':
+    pass
+
     # local_repos_dir = "/root/projects/clone_projects"
     # tasks_map_fpath = "/root/projects/VDTest/output/TreeVul/TreeVul_valid_scsfCVE.json"
     # main_test_changed_lines_locations(local_repos_dir, tasks_map_fpath)
 
-    exps = "/root/projects/VDTest/output/agent/vul_2024-09-08T16:51:25_SAVE"
-    dirs = os.listdir(exps)
-    for dir in dirs:
-        if not os.path.exists(path = os.path.join(exps, dir, "result.json")):
-            print(dir.split("_")[0])
+    # exps = "/root/projects/VDTest/output/agent/vul_2024-09-08T16:51:25_SAVE"
+    # dirs = os.listdir(exps)
+    # for dir in dirs:
+    #     if not os.path.exists(path = os.path.join(exps, dir, "result.json")):
+    #         print(dir.split("_")[0])
+
+
