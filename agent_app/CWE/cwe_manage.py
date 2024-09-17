@@ -197,14 +197,13 @@ class CWEManager:
 
 
     def get_fathers_of_weakness(self, cwe_id: str, depth: int = 3) -> List[str] | None:
-        assert isinstance(depth, int) and depth > 0
+        assert depth > 0
 
-        if cwe_id not in self.all_weakness_entries:
+        if cwe_id not in self.cwe_ids:
             return None
 
-        cwe_entry = self.get_cwe_entry(cwe_id)
         fathers: List[str] = []
-        for cwe_path in cwe_entry["cwe_paths"]:
+        for cwe_path in self.cwe_tree[cwe_id]["cwe_paths"]:
             if depth < len(cwe_path):
                 father = cwe_path[depth - 1]
                 fathers.append(father)
