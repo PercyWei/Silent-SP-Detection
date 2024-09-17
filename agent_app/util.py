@@ -4,6 +4,7 @@
 import os
 import ast
 import contextlib
+import re
 import shutil
 import datetime
 import glob
@@ -117,6 +118,47 @@ def get_head_commit_hash(local_repo_dpath: str | None = None) -> str | None:
     return res.stdout.strip()
 
 
+def get_commit_info(commit_hash: str, local_repo_dpath: str | None = None) -> str | None:
+    """
+    Output of 'git cat-file -p <commit_hash>' is as follows:
+    ---------------------------------------------
+    tree <tree_hash>
+    parent <parent_commit_hash>
+    ...
+    parent <parent_commit_hash>
+    author <author_name> <email> <timestamp>
+    committer <author_name> <email> <timestamp>
+    <other_info>
+    ---------------------------------------------
+    """
+    show_cmd = ["git", "cat-file", "-p", commit_hash]
+    result = run_command(show_cmd, raise_error=False,
+                         cwd=local_repo_dpath, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if result is None:
+        return None
+    return result.stdout
+
+
+def get_parent_commit_hashes(commit_hash: str, local_repo_dpath: str | None = None) -> List[str] | None:
+    commit_info = get_commit_info(commit_hash, local_repo_dpath)
+    if commit_info is None:
+        return None
+
+    lines = commit_info.splitlines(keepends=False)
+    assert re.fullmatch(r"tree\s+([a-f0-9]+)", lines[0])
+
+    parent_hashes: List[str] = []
+    for line in lines[1:]:
+        match = re.fullmatch(r"parent\s+([a-f0-9]+)", line)
+        if match:
+            parent_hash = match.group(1)
+            parent_hashes.append(parent_hash)
+        else:
+            break
+
+    return parent_hashes
+
+
 def get_commit_content(commit_hash: str, local_repo_dpath: str | None = None) -> str | None:
     show_cmd = ["git", "show", "-m", commit_hash]
     result = run_command(show_cmd, raise_error=False,
@@ -142,7 +184,7 @@ def repo_reset_and_clean_checkout(commit_hash: str) -> None:
     checkout_cmd = ["git", "checkout", commit_hash]
     run_command(reset_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     run_command(clean_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    # Need to checkout before submodule init, otherwise submodule may init to another version
+    # Need checkout before submodule init, otherwise submodule may init to another version
     run_command(checkout_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     # This is a fail-safe combo to reset any changes to the submodule: first unbind all submodules

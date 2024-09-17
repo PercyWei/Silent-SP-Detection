@@ -10,7 +10,7 @@ from abc import ABC, abstractmethod
 from typing import *
 
 from agent_app.task import Task
-from agent_app.util import cd, get_head_commit_hash, get_commit_content, clone_repo
+from agent_app.util import get_head_commit_hash, get_parent_commit_hashes, get_commit_content, clone_repo
 
 
 class RawTask(ABC):
@@ -52,27 +52,35 @@ class RawLocalTask(RawTask):
         self.commit_hash = commit_hash
         self.local_repo_dpath = local_repo_dpath
 
-        # I. Prepare local repo
+        # (1) Prepare local repo
         res = self.prepare_local_repo()
         if not res:
             self.valid = False
             return
 
-        # II. Get HEAD commit hash for repo reset
+        # (2) Get HEAD commit hash for repo reset
         self.head_commit_hash = get_head_commit_hash(local_repo_dpath)
         if self.head_commit_hash is None:
             self.valid = False
             return
 
-        # III. Extract raw commit content
+        # (3) Check commit hash
+        accept = self.if_accept_commit()
+        if not accept:
+            self.valid = False
+            return
+
+        # (4) Extract raw commit content
         self.commit_content = self.read_raw_commit_content_from_git_log()
         if self.commit_content is None:
             self.valid = False
             return
 
+
     @property
     def task_id(self) -> str:
         return self._task_id
+
 
     def prepare_local_repo(self) -> bool:
         if not os.path.exists(self.local_repo_dpath):
@@ -80,9 +88,21 @@ class RawLocalTask(RawTask):
             return res
         return True
 
+
+    def if_accept_commit(self) -> bool:
+        # TODO: For now, we do not process merge commits because there may be merge conflicts.
+        parent_hashes = get_parent_commit_hashes(self.commit_hash, self.local_repo_dpath)
+        assert parent_hashes
+        if len(parent_hashes) > 1:
+            return False
+        else:
+            return True
+
+
     def read_raw_commit_content_from_git_log(self) -> str:
         commit_content = get_commit_content(self.commit_hash, self.local_repo_dpath)
         return commit_content
+
 
     def dump_meta_data(self, output_dpath: str, other_info: Dict) -> None:
         meta = {
@@ -104,6 +124,7 @@ class RawLocalTask(RawTask):
         meta_file = os.path.join(output_dpath, "meta.json")
         with open(meta_file, "w") as f:
             json.dump(meta, f, indent=4)
+
 
     def to_task(self) -> Task:
         return Task(
