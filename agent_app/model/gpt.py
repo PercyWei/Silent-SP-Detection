@@ -117,7 +117,7 @@ class OpenaiModel(Model):
                     args_dict = json.loads(func_args_str, strict=False)
                 except json.decoder.JSONDecodeError:
                     args_dict = {}
-            func_call_intent = FunctionCallIntent(func_name, args_dict, called_func)
+            func_call_intent = FunctionCallIntent(func_name, [], "", args_dict, called_func)
             result.append(func_call_intent)
 
         return result

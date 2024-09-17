@@ -168,7 +168,7 @@ class ProcessManager:
             # Call a function
             func_obj = getattr(self, intent.func_name)
             self.curr_tool = intent.func_name
-            call_res = func_obj(**intent.arg_values)
+            call_res = func_obj(**intent.call_arg_values)
         except Exception as e:
             # TypeError can happen when the function is called with wrong parameters
             log_exception(e)

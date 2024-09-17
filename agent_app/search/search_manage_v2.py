@@ -202,16 +202,16 @@ class SearchManager:
 
             # (2) Build (top-level) function index and file function index
             for f, start, end in funcs:
-                self.nodiff_func_index[f].append((rel_py_fpath, LineRange(start, end)))
+                self.nodiff_func_index[f].append(CodeRange(rel_py_fpath, LineRange(start, end)))
 
             # (3) Build class index and file class index
             for c, start, end in classes:
-                self.nodiff_class_index[c].append((rel_py_fpath, LineRange(start, end)))
+                self.nodiff_class_index[c].append(CodeRange(rel_py_fpath, LineRange(start, end)))
 
             # (4) Build classFunction index and file classFunction index
             for c, class_funcs in class_to_funcs.items():
                 for f, start, end in class_funcs:
-                    self.nodiff_classFunc_index[c][f].append((rel_py_fpath, LineRange(start, end)))
+                    self.nodiff_classFunc_index[c][f].append(CodeRange(rel_py_fpath, LineRange(start, end)))
 
 
     """GET CODE SNIPPET FUNCTIONS"""

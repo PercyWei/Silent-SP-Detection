@@ -923,7 +923,7 @@ def run_in_context_retrieval_state(
             func_arg_names = func_arg_spec.args[1:]  # first parameter is self
 
             func_arg_kwargs = dict(zip(func_arg_names, func_arg_values))
-            intent = FunctionCallIntent(api_call, func_name, func_arg_kwargs, None)
+            intent = FunctionCallIntent(func_name, func_arg_names, api_call, func_arg_kwargs, None)
             tool_output, search_status, all_search_res = manager.dispatch_intent(intent)
 
             # TODO: For searches that do not meet the requirements, i.e. search_status = DISPATCH_ERROR /

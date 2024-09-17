@@ -209,29 +209,35 @@ class FunctionCallIntent:
 
     def __init__(
             self,
-            call_stmt: str,
             func_name: str,
-            arguments: Mapping[str, str],
+            func_args: List[str],
+            call_stmt: str,
+            call_arg_values: Mapping[str, str],
             openai_func: Optional[OpenaiFunction]
     ):
-        self.call_stmt = call_stmt
         self.func_name = func_name
-        self.arg_values: Dict = {}
-        self.arg_values.update(arguments)
+        self.func_args = func_args
+        self.call_stmt = call_stmt
+        self.call_arg_values: Dict = {}
+        self.call_arg_values.update(call_arg_values)
         # Record the original openai function object,
         # which is used when we want to tell the model that it has previously called this function/tool
-        self.openai_func = openai_func or OpenaiFunction(arguments=json.dumps(arguments), name=func_name)
+        self.openai_func = openai_func or OpenaiFunction(arguments=json.dumps(call_arg_values), name=func_name)
+
 
     def __str__(self):
-        return f"Call function `{self.func_name}` with arguments {self.arg_values}."
+        return f"Call function `{self.func_name}` with arguments {self.call_arg_values}."
+
 
     def to_dict(self):
-        return {"func_name": self.func_name, "arguments": self.arg_values}
+        return {"func_name": self.func_name, "call_arg_values": self.call_arg_values}
+
 
     def to_dict_with_result(self, search_status: SearchStatus):
         return {
             "func_name": self.func_name,
-            "arguments": self.arg_values,
+            "func_args": self.func_args,
+            "call_arg_values": self.call_arg_values,
             "search_status": search_status,
         }
 

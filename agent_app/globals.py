@@ -56,4 +56,4 @@ test_exec_timeout: int = 300
 """OTHER CONFIG"""
 
 # Task
-task_limit: int = 30
+task_limit: int = 5
