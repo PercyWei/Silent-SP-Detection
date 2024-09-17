@@ -47,7 +47,13 @@ class ProcessManager:
         self.commit_manager = CommitManager(self.task.project_path, self.task.commit_hash, self.task.commit_content)
 
         # Manage CWE info
-        self.cwe_manager = CWEManager(globals.cwe_entry_file, globals.cwe_tree_file)
+        self.cwe_manager = CWEManager(
+            globals.full_view_id,
+            globals.cwe_entry_file,
+            globals.cwe_tree_file,
+            globals.all_weakness_entry_file,
+            globals.view_cwe_tree_files
+        )
 
         # Manage context retrieval
         self.search_manager = self.init_search_manager()

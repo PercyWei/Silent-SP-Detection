@@ -118,7 +118,16 @@ print_user = partial(print_role, role="User", border_style="magenta")
 print_actor = partial(print_role, role="Actor Agent", border_style="blue")
 
 
-print_proxy = partial(print_role, role="Proxy Agent", border_style="yellow")
+def print_proxy(
+        role: str = "Proxy Agent",
+        msg: str | None = None,
+        border_style: str = "yellow",
+        desc: str = "",
+        print_callback: Callable[[dict], None] | None = None
+):
+    if msg is None:
+        msg = "FAILED TO EXTRACT!"
+    print_role(role, msg, border_style, desc, print_callback)
 
 
 def print_commit_content(content: str, verbose: bool = False) -> None:

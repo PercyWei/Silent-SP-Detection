@@ -2,6 +2,10 @@ import os
 import subprocess
 
 from typing import *
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+
 
 from logs import base_log_and_cprint
 
@@ -53,3 +57,28 @@ def run_command(
             raise e
         return None, str(e)
 
+
+"""CRAWLER"""
+
+
+def selenium_driver_setup(driver_type='chrome', driver_path='/usr/local/bin/chromedriver') -> webdriver.Remote | None:
+    driver = None
+
+    if driver_type == 'chrome':
+        chrome_options = Options()
+        chrome_options.add_argument("--headless")
+        chrome_options.add_argument("--disable-gpu")
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-dev-shm-usage")
+
+        service = Service(executable_path=driver_path)
+
+        driver = webdriver.Chrome(service=service, options=chrome_options)
+    else:
+        print("Driver type not supported")
+
+    return driver
+
+
+def selenium_driver_close(driver):
+    driver.quit()

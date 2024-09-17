@@ -36,7 +36,7 @@ class RawLocalTask(RawTask):
             self,
             task_id: str,
             commit_type: int,
-            cwe_id: str,
+            cwe_list: List[str],
             repo_name: str,
             commit_hash: str,
             local_repo_dpath: str
@@ -46,7 +46,7 @@ class RawLocalTask(RawTask):
         self._task_id = task_id
         # target
         self.commit_type = commit_type
-        self.cwe_id = cwe_id
+        self.cwe_list = cwe_list
         # source
         self.repo_name = repo_name
         self.commit_hash = commit_hash
@@ -88,7 +88,7 @@ class RawLocalTask(RawTask):
         meta = {
             "task_info": {
                 "commit_type": self.commit_type,
-                "cwe_id": self.cwe_id,
+                "cwe_list": self.cwe_list,
                 "instance_id": self.task_id,
                 "repo": self.repo_name,
                 "commit_hash": self.commit_hash,
@@ -111,7 +111,7 @@ class RawLocalTask(RawTask):
             commit_hash=self.commit_hash,
             commit_content=self.commit_content,
             commit_type=self.commit_type,
-            cwe_id=self.cwe_id,
+            cwe_list=self.cwe_list,
             local_repo_dpath=self.local_repo_dpath,
             head_commit_hash=self.head_commit_hash
         )

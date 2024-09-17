@@ -1,6 +1,7 @@
 # This code is modified from https://github.com/nus-apr/auto-code-rover
 # Original file: agent_app/task.py
 
+from typing import *
 from dataclasses import dataclass
 
 from agent_app.util import cd, repo_checkout
@@ -16,7 +17,7 @@ class Task:
     commit_hash: str
     commit_content: str
     commit_type: int
-    cwe_id: str
+    cwe_list: List[str]
     # Setup info
     local_repo_dpath: str
     head_commit_hash: str

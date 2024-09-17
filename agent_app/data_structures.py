@@ -132,12 +132,16 @@ class State(str, Enum):
 class ProcessActionStatus:
     """Dataclass to hold status of some actions during the identification processes."""
     start_patch_extraction: bool = False
+    check_unsupported_hyp: bool = False
+    check_too_detailed_hyp: bool = False
     post_process_rank: bool = False
     complete: bool = False
 
     def to_dict(self):
         return {
             "start_patch_extraction": self.start_patch_extraction,
+            "check_unsupported_hyp": self.check_unsupported_hyp,
+            "check_too_detailed_hyp": self.check_too_detailed_hyp,
             "post_process_rank": self.post_process_rank,
             "complete": self.complete
         }

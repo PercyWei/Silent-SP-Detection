@@ -2,6 +2,7 @@
 # Original file: agent_app/main.py
 
 import os
+import sys
 import json
 import time
 
@@ -56,16 +57,34 @@ def get_args():
 
     ## CWE settings
     parser.add_argument(
+        "--view-id",
+        choices=['1000', '1003'],
+        required=True,
+        help="Brief CWE VIEW id.",
+    )
+    parser.add_argument(
         "--cwe-entry-file",
         type=str,
         required=True,
-        help="Path to json file that stores information about the CWE entries.",
+        help="Path to json file that stores information about the CWE entries in current VIEW.",
     )
     parser.add_argument(
         "--cwe-tree-file",
         type=str,
         required=True,
-        help="Path to json file that stores information about the CWE tree.",
+        help="Path to json file that stores information about the CWE tree in current VIEW.",
+    )
+    parser.add_argument(
+        "--all-weakness-entry-file",
+        type=str,
+        required=True,
+        help="Path to json file that stores information about all Weakness CWE entries.",
+    )
+    parser.add_argument(
+        "--view-cwe-tree-files",
+        type=str,
+        nargs="+",
+        help="Appear in pairs: brief VIEW-ID, CWE tree file"
     )
 
     ## Model settings
@@ -361,7 +380,7 @@ def construct_tasks(tasks_map_file: str, local_repos_dpath: str) -> List[RawLoca
 
             task = RawLocalTask(task_id=task_id,
                                 commit_type=task_info["commit_type"],
-                                cwe_id=task_info["cwe_id"],
+                                cwe_list=task_info["cwe_list"],
                                 repo_name=repo_name,
                                 commit_hash=task_info["commit_hash"],
                                 local_repo_dpath=local_repo_dpath)
@@ -405,8 +424,20 @@ def main(args):
     create_dir_if_not_exists(globals.expr_dpath)
 
     # CWE
+    globals.full_view_id = "VIEW-" + args.view_id
+    globals.all_weakness_entry_file = args.all_weakness_entry_file
     globals.cwe_entry_file = args.cwe_entry_file
     globals.cwe_tree_file = args.cwe_tree_file
+    if args.view_cwe_tree_files:
+        if len(args.view_cwe_tree_files) % 2 != 0:
+            always_cprint("Error: The number of strings for --view-cwe-tree-files must be even.", style="red")
+            sys.exit(1)
+        else:
+            view_cwe_tree_files = [(args.view_cwe_tree_files[i], args.view_cwe_tree_files[i + 1])
+                                   for i in range(0, len(args.view_cwe_tree_files), 2)]
+    else:
+        view_cwe_tree_files = []
+    globals.view_cwe_tree_files = view_cwe_tree_files
 
     # number of processes
     num_processes: int = int(args.num_processes)

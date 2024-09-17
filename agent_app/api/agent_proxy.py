@@ -1,9 +1,7 @@
 # This code is modified from https://github.com/nus-apr/auto-code-rover
 # Original file: agent_app/api/agent_proxy.py
 
-"""
-A proxy agent. Process raw response into json format.
-"""
+"""A proxy agent. Process raw response into json format."""
 
 import re
 import json
@@ -22,6 +20,7 @@ from agent_app.util import parse_function_invocation
 
 class ProxyTask(str, Enum):
     HYP_PROPOSAL = "HYP_PROPOSAL"
+    HYP_CHECK = "HYP_CHECK"
     PATCH_EXTRACTION = "PATCH_EXTRACTION"
     CONTEXT_RETRIEVAL = "CONTEXT_RETRIEVAL"
     SCORE = "SCORE"
@@ -30,6 +29,8 @@ class ProxyTask(str, Enum):
     def task_target(self) -> str:
         if self == ProxyTask.HYP_PROPOSAL:
             return "hypothesis"
+        elif self == ProxyTask.HYP_CHECK:
+            return "CWE type"
         elif self == ProxyTask.PATCH_EXTRACTION:
             return "patch_code"
         elif self == ProxyTask.CONTEXT_RETRIEVAL:
@@ -64,6 +65,19 @@ interface HypothesisList {
 };
 
 Now based on the given context, write a hypothesis_list section that conforms to the HypothesisList schema.
+"""
+
+
+HYP_CHECK_PROMPT = """You are a helpful assistant to convert text containing the following information into json format.
+1. What is the modified CWE type?
+
+Extract the CWE type from question 1.
+
+interface CWEType {
+    cwe_type: `CWE-${number}`;
+};
+
+Now based on the given context, write a cwe_type section that conforms to the CWEType schema.
 """
 
 
@@ -349,7 +363,7 @@ def is_valid_response(data: List | Dict, task: ProxyTask) -> Tuple[bool, str, st
                 return False, simp_reason, verb_reason
 
             if commit_type == "vulnerability_patch" and not re.fullmatch(r"CWE-\d+", vul_type):
-                simp_reason = verb_reason = "The 'vulnerability_type' of a hypothesis is not a CWE-ID while the 'commit_type' is 'vulnerability_patch'"
+                simp_reason = verb_reason = "The 'vulnerability_type' of a hypothesis is not a valid CWE-ID string while the 'commit_type' is 'vulnerability_patch'"
                 verb_reason += f" and the hypothesis is: {hypothesis}"
                 return False, simp_reason, verb_reason
 
@@ -357,6 +371,21 @@ def is_valid_response(data: List | Dict, task: ProxyTask) -> Tuple[bool, str, st
                 simp_reason = verb_reason = "The 'confidence_score' of a hypothesis is not an integer"
                 verb_reason += f" and the hypothesis is: {hypothesis}"
                 return False, simp_reason, verb_reason
+
+    elif task == ProxyTask.HYP_CHECK:
+        """
+       {
+           "cwe_id": str
+       }
+       """
+        if "cwe_id" not in data:
+            simp_reason = verb_reason = "Missing 'cwe_id' key"
+            return False, simp_reason, verb_reason
+
+        cwe_id = data["cwe_id"]
+        if not re.fullmatch(r"CWE-\d+", cwe_id):
+            simp_reason = verb_reason = "The 'cwe_id' is not a valid CWE-ID string"
+            return False, simp_reason, verb_reason
 
     elif task == ProxyTask.PATCH_EXTRACTION:
         """
