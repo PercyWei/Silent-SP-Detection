@@ -17,7 +17,8 @@ from agent_app.raw_tasks import RawLocalTask
 from agent_app.main import construct_tasks
 from agent_app.search.search_util import find_python_files
 
-from agent_app.util import get_commit_content
+from agent_app.log import always_cprint
+from agent_app.util import get_commit_content, clone_repo
 from agent_app.data_structures import LineRange
 
 
@@ -454,5 +455,3 @@ if __name__ == '__main__':
     # for dir in dirs:
     #     if not os.path.exists(path = os.path.join(exps, dir, "result.json")):
     #         print(dir.split("_")[0])
-
-

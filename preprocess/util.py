@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import shutil
 import time
 import subprocess
@@ -16,15 +17,13 @@ from typing import *
 
 
 def clone_repo(auth_repo: str, repo_dpath: str, timeout: int = 30, token: str = '') -> bool | None:
-    """
-    Clone a GitHub repository to local.
+    """Clone a GitHub repository to local.
 
     Args:
         auth_repo (str): Form like 'auther_name/repo_name'.
         repo_dpath (str): Path to the local dir for saving this repo.
         timeout (int): Timeout in seconds.
         token (str): GitHub OAuth token.
-
     Returns:
         bool | None:
             True: Successfully Clone.
@@ -395,3 +394,21 @@ def get_commit_lang(auth_repo: str, commit_hash: str, token: str = "") -> List[s
 
     pl_list = list(set(pl_list))
     return pl_list
+
+
+"""CWE"""
+
+
+def get_cwe_depth(
+        cwe_id: str,
+        cwe_tree_fpath: str = "/root/projects/VDTest/data/CWE/VIEW_1000/CWE_tree.json"
+) -> int | None:
+    """NOTE: For now, only VIEW-1000 is required"""
+    with open(cwe_tree_fpath, "r") as f:
+        cwe_tree = json.load(f)
+
+    if cwe_id not in cwe_tree:
+        return None
+
+    min_path = min(cwe_tree[cwe_id]["cwe_paths"], key=len)
+    return len(min_path)
