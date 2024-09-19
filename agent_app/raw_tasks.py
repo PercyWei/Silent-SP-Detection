@@ -92,8 +92,7 @@ class RawLocalTask(RawTask):
     def if_accept_commit(self) -> bool:
         # TODO: For now, we do not process merge commits because there may be merge conflicts.
         parent_hashes = get_parent_commit_hashes(self.commit_hash, self.local_repo_dpath)
-        assert parent_hashes
-        if len(parent_hashes) > 1:
+        if not parent_hashes or len(parent_hashes) > 1:
             return False
         else:
             return True
