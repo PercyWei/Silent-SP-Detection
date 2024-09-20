@@ -82,3 +82,12 @@ def selenium_driver_setup(driver_type='chrome', driver_path='/usr/local/bin/chro
 
 def selenium_driver_close(driver):
     driver.quit()
+
+
+"""UTILS"""
+
+
+def insert_key_value(d: Dict, key: Any, value: Any, index: int = 0) -> Dict:
+    d_list = list(d.items())
+    d_list.insert(index, (key, value))
+    return dict(d_list)

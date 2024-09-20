@@ -294,6 +294,24 @@ def find_diff_depth_cwe(cwe_tree_fpath: str, save_dir: str, max_depth: int = 3) 
                 json.dump(cwe_ids, f, indent=4)
 
 
+"""OTHER"""
+
+
+def get_cwe_depth(
+        cwe_id: str,
+        cwe_tree_fpath: str = "/root/projects/VDTest/data/CWE/VIEW_1000/CWE_tree.json"
+) -> int | None:
+    """NOTE: For now, only VIEW-1000 is required"""
+    with open(cwe_tree_fpath, "r") as f:
+        cwe_tree = json.load(f)
+
+    if cwe_id not in cwe_tree:
+        return None
+
+    min_path = min(cwe_tree[cwe_id]["cwe_paths"], key=len)
+    return len(min_path)
+
+
 if __name__ == '__main__':
     save_dir = "/root/projects/VDTest/data/CWE/VIEW_1000"
     # save_dir = "/root/projects/VDTest/data/CWE/VIEW_1003"
