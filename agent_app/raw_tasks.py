@@ -35,8 +35,10 @@ class RawLocalTask(RawTask):
     def __init__(
             self,
             task_id: str,
+            cve_id: str | None,
             commit_type: int,
             cwe_list: List[str],
+            cwe_depth: int | None,
             repo_name: str,
             commit_hash: str,
             local_repo_dpath: str
@@ -47,7 +49,9 @@ class RawLocalTask(RawTask):
         # target
         self.commit_type = commit_type
         self.cwe_list = cwe_list
+        self.cwe_depth = cwe_depth
         # source
+        self.cve_id = cve_id
         self.repo_name = repo_name
         self.commit_hash = commit_hash
         self.local_repo_dpath = local_repo_dpath
@@ -108,7 +112,9 @@ class RawLocalTask(RawTask):
             "task_info": {
                 "commit_type": self.commit_type,
                 "cwe_list": self.cwe_list,
+                "cwe_depth": self.cwe_depth,
                 "instance_id": self.task_id,
+                "cve_id": self.cve_id,
                 "repo": self.repo_name,
                 "commit_hash": self.commit_hash,
                 "commit_content": self.commit_content

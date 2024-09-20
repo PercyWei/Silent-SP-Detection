@@ -378,12 +378,16 @@ def construct_tasks(tasks_map_file: str, local_repos_dpath: str) -> List[RawLoca
 
             local_repo_dpath = os.path.join(local_repos_dpath, repo_name.replace('/', '_'))
 
-            task = RawLocalTask(task_id=task_id,
-                                commit_type=task_info["commit_type"],
-                                cwe_list=task_info["cwe_list"],
-                                repo_name=repo_name,
-                                commit_hash=task_info["commit_hash"],
-                                local_repo_dpath=local_repo_dpath)
+            task = RawLocalTask(
+                task_id=task_id,
+                cve_id=task_info["cve_id"],
+                commit_type=task_info["commit_type"],
+                cwe_list=task_info["cwe_list"],
+                cwe_depth=task_info["cwe_depth"],
+                repo_name=repo_name,
+                commit_hash=task_info["commit_hash"],
+                local_repo_dpath=local_repo_dpath
+            )
 
             # Select tasks initialised successfully
             if task.valid:
