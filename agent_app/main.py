@@ -302,14 +302,6 @@ def do_inference(
 
     log_and_cprint(f"Manager preparation: {time.time() - start_time.timestamp()}")
 
-    # print("=" * 100)
-    # print(f"- Repo: {python_task.repo_name}")
-    # print(f"- Head commit: {python_task.head_commit_hash}")
-    # print(f"- Commit: {python_task.commit_hash}")
-    # print(f"- Valid commit files number: {state_manager.commit_manager.valid_files_num}")
-    # print(f"- Raw commit content: \n{python_task.commit_content}\n\n")
-    # print(f"- Commit prompt: \n{state_manager.commit_manager.commit_files_info_seq()}\n\n")
-
     all_proc_status = None
     try:
         all_proc_status = inference.run_one_task(task.commit_content, manager.output_dpath, manager, print_callback)
@@ -339,14 +331,14 @@ def dump_cost(repo: str, commit_hash: str, start_time: datetime, end_time: datet
 
 
 def construct_tasks(tasks_map_file: str, local_repos_dpath: str) -> List[RawLocalTask]:
-    """
-    Constructs a list of RawLocalTask instances.
+    """Constructs a list of RawLocalTask instances.
 
     Args:
         tasks_map_file (str): Path to the tasks map file.
         local_repos_dpath (str): Path to the local directory for saving local repos cloned from GitHub.
     """
-    all_tasks = []
+    valid_tasks = []
+    invalid_tasks = []
 
     #########################################################################################
     # TODO: Only in test
@@ -365,9 +357,10 @@ def construct_tasks(tasks_map_file: str, local_repos_dpath: str) -> List[RawLoca
     with open(tasks_map_file) as f:
         tasks_map = json.load(f)
 
+    log_and_always_print("Adding tasks ...")
     for i, task_info in enumerate(tasks_map):
-        if (globals.expr_type == "vul" and task_info["commit_type"] == 1) or \
-                (globals.expr_type == "novul" and task_info["commit_type"] == 0):
+        commit_type = task_info["commit_type"]
+        if (globals.expr_type == "vul" and commit_type == 1) or (globals.expr_type == "novul" and commit_type == 0):
             task_id = f"{i}-" + task_info["source"]
 
             if task_id in checked_task_ids:
@@ -381,7 +374,7 @@ def construct_tasks(tasks_map_file: str, local_repos_dpath: str) -> List[RawLoca
             task = RawLocalTask(
                 task_id=task_id,
                 cve_id=task_info["cve_id"],
-                commit_type=task_info["commit_type"],
+                commit_type=commit_type,
                 cwe_list=task_info["cwe_list"],
                 cwe_depth=task_info["cwe_depth"],
                 repo_name=repo_name,
@@ -391,14 +384,20 @@ def construct_tasks(tasks_map_file: str, local_repos_dpath: str) -> List[RawLoca
 
             # Select tasks initialised successfully
             if task.valid:
-                all_tasks.append(task)
+                valid_tasks.append(task)
+                log_and_cprint(f"{task_id}: Done!", style="green")
             else:
-                log_and_cprint(f"Task added failed: {task_id}", style="red")
+                invalid_tasks.append(task)
+                log_and_cprint(f"{task_id}: Failed!", style="red")
 
-            if len(all_tasks) >= globals.task_limit:
+            if len(valid_tasks) >= globals.task_limit:
                 break
 
-    return all_tasks
+    invalid_task_fpath = os.path.join(globals.expr_dpath, "invalid_tasks.json")
+    with open(invalid_task_fpath, "w") as f:
+        json.dump(invalid_tasks, f, indent=4)
+
+    return valid_tasks
 
 
 def group_local_tasks_by_repo(tasks: List[RawLocalTask]) -> Dict[str, List[RawLocalTask]]:
