@@ -531,7 +531,7 @@ if __name__ == '__main__':
     # build_vulfix_vul_v1()
     # process_vulfix_vul_v1()
 
-    ## (3) vulfix_vul_v1:
+    ## (3) vulfix_vul_v2:
     #       - vul fix commit;
     #       - With CWE labels.
     pass
