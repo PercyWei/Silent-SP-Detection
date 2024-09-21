@@ -982,13 +982,15 @@ def run_in_context_retrieval_state(
             #       format api calls and then return the results together
 
             # (1) Collect str response
-            collated_tool_response += f"Result of {api_call}:\n\n"
-            collated_tool_response += tool_output + "\n\n"
+            collated_tool_response += (f"Result of {api_call}:"
+                                       f"\n\n{tool_output}\n\n")
 
             # (2) Collect code snippet extracted
             for res in all_search_res:
                 code_snip = CodeContext(res.file_path, res.class_name, res.func_name, res.code)
                 proc_all_hypothesis.code_context.append(code_snip)
+
+        collated_tool_response.rstrip()
 
         _add_usr_msg_and_print(collated_tool_response, msg_thread, round_print_desc, print_callback)
 
