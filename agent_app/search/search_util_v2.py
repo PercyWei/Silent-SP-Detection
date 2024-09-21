@@ -31,6 +31,7 @@ class SearchResult(CodeSnippetLocation):
         for file_path, count in res.items():
             file_part = f"<file>{file_path}</file>"
             res_str += f"- {file_part} ({count} matches)\n"
+        res_str.rstrip()
         return res_str
 
     @staticmethod
@@ -54,6 +55,7 @@ class SearchResult(CodeSnippetLocation):
                 else:
                     func_part = f" <func>{func}</func>"
                 res_str += f"- {file_part}{func_part} ({count} matches)\n"
+        res_str.rstrip()
         return res_str
 
 

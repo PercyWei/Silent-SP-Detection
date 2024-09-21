@@ -375,11 +375,11 @@ class SearchManager:
                 #       an individual import statement based on the current import. Are any improvements needed?
                 import_seq = search_util_v2.lib_info_to_seq(pkg_path, attr_name, alias_name)
 
-                desc = f"It is imported through '{import_seq}'. The library is {lib_source}, and "
+                desc = f"It is imported through '{import_seq}'. The library is a {lib_source}, and "
                 if lib_source == "custom library":
-                    desc += f"the import path is '{attr}'.\n"
+                    desc += f"the import path is '{attr}'."
                 else:
-                    desc += f"the library name is '{attr}'.\n"
+                    desc += f"the library name is '{attr}'."
 
                 res = SearchResult(file_path, None, None, import_seq)
                 return desc, res
@@ -650,16 +650,16 @@ class SearchManager:
         all_search_res = self._search_class(class_name)
 
         # ----------------- (4) Prepare the response ----------------- #
-        tool_output = f"Found {len(all_search_res)} classes with name '{class_name}' in the repo:\n\n"
+        tool_output = f"Found {len(all_search_res)} classes with name '{class_name}' in the repo:\n"
         if len(all_search_res) > RESULT_SHOW_LIMIT:
             # Too much classes, simplified representation
-            tool_output += "They appeared in the following files:\n"
+            tool_output += "\nThey appeared in the following files:\n"
             tool_output += SearchResult.collapse_to_file_level(all_search_res)
         else:
             # Several classes, verbose representation
             for idx, res in enumerate(all_search_res):
                 res_str = res.to_tagged_str()
-                tool_output += f"- Search result {idx + 1}:\n```\n{res_str}\n```\n"
+                tool_output += f"\n- Search result {idx + 1}:\n```\n{res_str}\n```"
         return tool_output, SearchStatus.FIND_CODE, all_search_res
 
 
@@ -704,8 +704,8 @@ class SearchManager:
             if res:
                 import_desc, search_res = res
 
-                tool_output = f"Found class '{class_name}' is imported in file '{file_path}'.\n\n"
-                tool_output = tool_output + import_desc
+                tool_output = (f"Found class '{class_name}' is imported in file '{file_path}'."
+                               f"\n{import_desc}")
 
                 return tool_output, SearchStatus.FIND_IMPORT, [search_res]
             else:
@@ -713,10 +713,10 @@ class SearchManager:
                 return tool_output, SearchStatus.FIND_NONE, []
 
         # ----------------- (4) Prepare the response ----------------- #
-        tool_output = f"Found {len(all_search_res)} classes with name '{class_name}' in file '{file_path}':\n\n"
+        tool_output = f"Found {len(all_search_res)} classes with name '{class_name}' in file '{file_path}':\n"
         for idx, res in enumerate(all_search_res):
             res_str = res.to_tagged_str()
-            tool_output += f"- Search result {idx + 1}:\n```\n{res_str}\n```\n"
+            tool_output += f"\n- Search result {idx + 1}:\n```\n{res_str}\n```"
         return tool_output, SearchStatus.FIND_CODE, all_search_res
 
 
@@ -759,8 +759,8 @@ class SearchManager:
             if res:
                 import_desc, search_res = res
 
-                tool_output = f"Found method '{method_name}' is imported in file '{file_path}'.\n\n"
-                tool_output = tool_output + import_desc
+                tool_output = (f"Found method '{method_name}' is imported in file '{file_path}'."
+                               f"\n{import_desc}")
 
                 return tool_output, SearchStatus.FIND_IMPORT, [search_res]
             else:
@@ -768,13 +768,13 @@ class SearchManager:
                 return tool_output, SearchStatus.FIND_NONE, []
 
         # ----------------- (4) Prepare the response ----------------- #
-        tool_output = f"Found {len(all_search_res)} methods with name '{method_name}' in file '{file_path}':\n\n"
+        tool_output = f"Found {len(all_search_res)} methods with name '{method_name}' in file '{file_path}':\n"
 
         # NOTE: When searching for a method in one file, it's rare that there are many candidates,
         #       so we do not trim the result
         for idx, res in enumerate(all_search_res):
             res_str = res.to_tagged_str()
-            tool_output += f"- Search result {idx + 1}:\n```\n{res_str}\n```\n"
+            tool_output += f"\n- Search result {idx + 1}:\n```\n{res_str}\n```"
         return tool_output, SearchStatus.FIND_CODE, all_search_res
 
 
@@ -812,20 +812,23 @@ class SearchManager:
             return tool_output, SearchStatus.FIND_NONE, []
 
         # ----------------- (4) Prepare the response ----------------- #
-        tool_output = f"Found {len(all_search_res)} methods with name '{method_name}' in class '{class_name}':\n\n"
+        tool_output = f"Found {len(all_search_res)} methods with name '{method_name}' in class '{class_name}':\n"
 
         # NOTE: There can be multiple classes defined in multiple files, which contain the same method,
         #       so we still trim the result, just in case
         if len(all_search_res) > RESULT_SHOW_LIMIT:
-            tool_output += f"Too many results, showing full code for {RESULT_SHOW_LIMIT} of them, and the rest just file names:\n"
-        first_five = all_search_res[:RESULT_SHOW_LIMIT]
-        for idx, res in enumerate(first_five):
+            tool_output += f"\nToo many results, showing full code for {RESULT_SHOW_LIMIT} of them, and the rest just file names:"
+
+        # (1) For the top-k, show detailed info
+        top_k_res = all_search_res[:RESULT_SHOW_LIMIT]
+        for idx, res in enumerate(top_k_res):
             res_str = res.to_tagged_str()
-            tool_output += f"- Search result {idx + 1}:\n```\n{res_str}\n```\n"
-        # For the rest, collect the file names into a set
+            tool_output += f"\n- Search result {idx + 1}:\n```\n{res_str}\n```"
+        # (2) For the rest, collect the file names into a set
         if rest := all_search_res[RESULT_SHOW_LIMIT:]:
-            tool_output += "Other results are in these files:\n"
+            tool_output += "\nOther results are in these files:\n"
             tool_output += SearchResult.collapse_to_file_level(rest)
+
         return tool_output, SearchStatus.FIND_CODE, all_search_res
 
 
@@ -885,10 +888,10 @@ class SearchManager:
             return tool_output, SearchStatus.FIND_NONE, []
 
         # ----------------- (4) Prepare the response ----------------- #
-        tool_output = f"Found {len(all_search_res)} methods with name '{method_name}' in class '{class_name}' in file '{file_path}':\n\n"
+        tool_output = f"Found {len(all_search_res)} methods with name '{method_name}' in class '{class_name}' in file '{file_path}':\n"
         for idx, res in enumerate(all_search_res):
             res_str = res.to_tagged_str()
-            tool_output += f"- Search result {idx + 1}:\n```\n{res_str}\n```\n"
+            tool_output += f"\n- Search result {idx + 1}:\n```\n{res_str}\n```"
         return tool_output, SearchStatus.FIND_CODE, all_search_res
 
 
