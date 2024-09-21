@@ -49,7 +49,7 @@ class ProcessManager:
 
         # Manage CWE info
         self.cwe_manager = CWEManager(
-            globals.full_view_id,
+            globals.view_id,
             globals.cwe_entry_file,
             globals.cwe_tree_file,
             globals.all_weakness_entry_file,
@@ -170,6 +170,7 @@ class ProcessManager:
         except TypeError as e:
             # TypeError can happen when the function is called with wrong parameters
             log_exception(e)
+            self.proc_action_status.update_typeerror_api_call_status()
             error = str(e)
             call_res = (error, SearchStatus.DISPATCH_ERROR, [])
         except Exception as e:

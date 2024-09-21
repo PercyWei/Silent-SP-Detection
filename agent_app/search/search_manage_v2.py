@@ -124,6 +124,7 @@ class SearchManager:
                 self.old_code[fpath] = comb_info.old_code
             if comb_info.new_code is not None:
                 self.new_code[fpath] = comb_info.new_code
+            self.comb_code[fpath] = comb_info.comb_code
 
             ## (3) Line id lookup
             # NOTE: Deleted and added files have no line id lookup
@@ -133,6 +134,7 @@ class SearchManager:
                 self.line_id_new2comb[fpath] = comb_info.line_id_new2comb
 
             ## (4) Struct indexes
+            # 4.1 Functions / Classes / Class functions in old file
             for func_name, func_range in comb_info.old_func_index:
                 self.old_func_index[func_name].append(CodeRange(fpath, func_range))
             for class_name, class_range in comb_info.old_class_index:
@@ -141,6 +143,7 @@ class SearchManager:
                 for classFunc_name, classFunc_range in classFuncs:
                     self.old_classFunc_index[class_name][classFunc_name].append(CodeRange(fpath, classFunc_range))
 
+            # 4.2 Functions / Classes / Class functions in new file
             for func_name, func_range in comb_info.new_func_index:
                 self.new_func_index[func_name].append(CodeRange(fpath, func_range))
             for class_name, class_range in comb_info.new_class_index:
@@ -150,10 +153,12 @@ class SearchManager:
                     self.new_classFunc_index[class_name][classFunc_name].append(CodeRange(fpath, classFunc_range))
 
             ## (5) Imported libraries
+            # 5.1 Imported libraries in old file
             if comb_info.old_code is not None:
                 old_libs, *_ = search_util_v2.parse_python_code(comb_info.old_code)
             else:
                 old_libs = []
+            # 5.2 Imported libraries in new file
             if comb_info.new_code is not None:
                 new_libs, *_ = search_util_v2.parse_python_code(comb_info.new_code)
             else:
@@ -296,7 +301,7 @@ class SearchManager:
             self, fpath: str, old_line_range: LineRange | None, new_line_range: LineRange | None
     ) -> str:
         """Get code snippet from the specified diff file."""
-        assert fpath in self.del_files + self.add_files + self.mod_files
+        assert fpath in self.diff_files
         comb_code = self.comb_code[fpath]
         snippet = search_util_v2.get_code_snippet_in_diff_file(
             comb_code, old_line_range, self.line_id_old2comb[fpath], new_line_range, self.line_id_new2comb[fpath]
@@ -328,7 +333,7 @@ class SearchManager:
 
         # (2) Match old and new line ranges
         file_line_range_pairs: Dict[str, List[Tuple[LineRange | None, LineRange | None]]] = {}
-        for fpath, (old_line_ranges, new_line_ranges) in file_line_range_pairs.items():
+        for fpath, (old_line_ranges, new_line_ranges) in file_line_range_groups.items():
             line_range_pairs = search_util_v2.match_overlap_structs(
                 old_line_ranges, self.line_id_old2comb[fpath], new_line_ranges, self.line_id_new2comb[fpath]
             )

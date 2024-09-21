@@ -178,25 +178,14 @@ def run_task_groups(
 
 
 def run_tasks_serial(tasks: List[RawTask]) -> None:
-    """
-    Single-process Mode: Run all tasks sequentially.
-
-    Args:
-        tasks: List of RawTasks to process.
-    """
+    """Single-process Mode: Run all tasks sequentially."""
     for task in tasks:
         run_task_in_subprocess(task)
         log.print_with_time(globals_mut.inc_task_return_msg())
 
 
 def run_task_groups_parallel(task_groups: Mapping[str, Sequence[RawTask]], num_processes: int):
-    """
-    Multi-process Mode: Run all tasks with multiple processes.
-
-    Args:
-        task_groups:
-        num_processes:
-    """
+    """Multi-process Mode: Run all tasks with multiple processes."""
     num_task_groups = len(task_groups)
     globals_mut.init_total_num_task_groups(num_task_groups)
     num_processes = min(num_processes, num_task_groups)
@@ -345,7 +334,8 @@ def construct_tasks(tasks_map_file: str, local_repos_dpath: str) -> List[RawLoca
     checked_task_ids: List[str] = []
     checked_task_dirs = [
         "/root/projects/VDTest/output/agent/ast_failure_recordings",
-        "/root/projects/VDTest/output/agent/vul_2024-09-08T16:51:25_SAVE"
+        "/root/projects/VDTest/output/agent/vul_2024-09-08T16:51:25_SAVE",
+        "/root/projects/VDTest/output/agent/vul_2024-09-18T02:33:39_SAVE"
     ]
     for task_dir in checked_task_dirs:
         task_full_names = os.listdir(task_dir)
@@ -387,7 +377,7 @@ def construct_tasks(tasks_map_file: str, local_repos_dpath: str) -> List[RawLoca
                 valid_tasks.append(task)
                 log_and_cprint(f"{task_id}: Done!", style="green")
             else:
-                invalid_tasks.append(task)
+                invalid_tasks.append({"task_id": task.task_id, "cve_id": task.cve_id})
                 log_and_cprint(f"{task_id}: Failed!", style="red")
 
             if len(valid_tasks) >= globals.task_limit:
@@ -427,7 +417,7 @@ def main(args):
     create_dir_if_not_exists(globals.expr_dpath)
 
     # CWE
-    globals.full_view_id = "VIEW-" + args.view_id
+    globals.view_id = args.view_id
     globals.all_weakness_entry_file = args.all_weakness_entry_file
     globals.cwe_entry_file = args.cwe_entry_file
     globals.cwe_tree_file = args.cwe_tree_file

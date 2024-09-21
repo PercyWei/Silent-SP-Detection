@@ -2,11 +2,12 @@
 # Original file: agent_app/inference.py
 
 import os
+import re
 import json
+from os.path import split
+
 import math
 import inspect
-import re
-import copy
 
 from typing import *
 from pathlib import Path
@@ -14,10 +15,9 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 
 from loguru import logger
-from websocket import continuous_frame
 
 from agent_app import globals
-from agent_app.api.manage import ProcessManager
+from agent_app.api.manage_v2 import ProcessManager
 from agent_app.api.agent_proxy import ProxyTask
 from agent_app.model import common
 from agent_app.search.search_manage import SearchManager
@@ -32,44 +32,39 @@ from agent_app.log import (
     print_banner,
     print_system, print_user, print_actor, print_proxy,
     print_commit_content,
-    log_and_print, log_and_cprint, console
+    log_and_print, log_and_cprint
 )
 from agent_app.util import parse_function_invocation
 from utils import make_hie_dirs
 
 
-SYSTEM_PROMPT = """You are a software developer developing based on a large open source project.
-You are facing a commit to this open source project.
-
-The commit contains some code changes marked between <commit> and </commit>.
-The names of the code files involved are marked between <file> and </file>.
-If the code lines are in a class or function, the class name or function name is marked between <class> and </class> or <func> and </func>, respectively.
-NOTE: A commit may contain multiple changed files, and a changed file may contain multiple changed code lines.
-
-Your task is to determine whether the commit fixes the vulnerability, and if so, give the most likely type of vulnerability, which is denoted by CWE-ID.
-To achieve this, you need to make some reasonable hypothesis, and then use the search API calls to gather relevant context and verify the correctness of them. 
-"""
+def get_system_prompt() -> str:
+    return ("You are a software developer developing based on a large open source project."
+            "\nYou are facing a commit to this open source project."
+            "\nThe commit contains some code changes marked between <commit> and </commit>."
+            "\nThe names of the code files involved are marked between <file> and </file>."
+            "\nIf the code lines are in a class or function, the class name or function name is marked between <class> and </class> or <func> and </func>, respectively."
+            "\nNOTE: A commit may contain multiple changed files, and a changed file may contain multiple changed code lines."
+            "\n\nYour task is to determine whether the commit fixes the vulnerability, and if so, give the most likely type of vulnerability, which is denoted by CWE-ID."
+            "\nTo achieve this, you need to make some reasonable hypothesis, and then use the search API calls to gather relevant context and verify the correctness of them.")
 
 
-HYP_DEF = f"""
-A hypothesis contains three attributes: commit type, vulnerability type and confidence score.
-- commit type: It indicates whether the commit fixes a vulnerability. Choose answer from "vulnerability_patch" and "non_vulnerability_patch".
-- vulnerability type: It indicates the type of vulnerability that was fixed by this commit. Use CWE-ID as the answer, and leave it empty if you choose 'non_vulnerability_patch' for commit type.
-- confidence score: It indicates the level of reliability of the hypothesis. Choose an integer between 1 and 10 as the answer.
-
-NOTE: Use the CWE-ID in the {globals.full_view_id} classification view as the vulnerability type in the hypothesis.
-"""
+def get_hyp_def() -> str:
+    return ("A hypothesis contains three attributes: commit type, vulnerability type and confidence score."
+            "\n- commit type: It indicates whether the commit fixes a vulnerability. Choose answer from 'vulnerability_patch' and 'non_vulnerability_patch'."
+            "\n- vulnerability type: It indicates the type of vulnerability that was fixed by this commit. Use CWE-ID as the answer, and leave it empty if you choose 'non_vulnerability_patch' for commit type."
+            "\n- confidence score: It indicates the level of reliability of the hypothesis. Choose an integer between 1 and 10 as the answer."
+            f"\n\nNOTE: The predicted CWE-ID should be limited to the range of weaknesses included in View-{globals.view_id}.")
 
 
-API_CALLS_DESCRIPTION = """You can use the following search APIs to get more context.
-- search_class(class_name: str): Search for a class in the codebase
-- search_class_in_file(class_name: str, file_name: str): Search for a class in a given file
-- search_method_in_file(method_name: str, file_name: str): Search for a method in a given file
-- search_method_in_class(method_name: str, class_name: str): Search for a method in a given class
-- search_method_in_class_in_file(method_name: str, class_name: str, file_name: str): Search for a method in a given class which is in a given file
-
-NOTE: You can use MULTIPLE search APIs in one round.
-"""
+def get_api_calls_des() -> str:
+    return ("You can use the following search APIs to get more context."
+            "\n- search_class(class_name: str): Search for a class in the repo"
+            "\n- search_class_in_file(class_name: str, file_name: str): Search for a class in the given file"
+            "\n- search_method_in_file(method_name: str, file_name: str): Search for a method in the given file, including regular functions and class methods"
+            "\n- search_method_in_class(method_name: str, class_name: str): Search for a method in the given class, i,e. class methods only"
+            "\n- search_method_in_class_in_file(method_name: str, class_name: str, file_name: str): Search for a method in the given class of the given file, i,e. class methods only"
+            "\n\nNOTE: You can use MULTIPLE search APIs in one round.")
 
 
 """EVALUATION"""
@@ -452,15 +447,17 @@ def run_in_start_state(
 
     # ------------------ 1.1 Prepare the prompt ------------------ #
     # (1) System prompt
-    _add_system_msg_and_print(SYSTEM_PROMPT, msg_thread, print_desc, print_callback)
+    system_prompt = get_system_prompt()
+    _add_system_msg_and_print(system_prompt, msg_thread, print_desc, print_callback)
 
     # (2) Hypothesis proposal prompt
     commit_desc = manager.commit_manager.describe_commit_files()
+    hyp_def = get_hyp_def()
     hyp_prop_prompt = ("The content of the commit is as follows:"
                        f"\n{commit_desc}"
                        "\n\nIn this step, based on the raw commit content, you need to make hypothesis about the functionality of the commit."
-                       f"{HYP_DEF}"
-                       f"\n\nNOTE: You can make multiple new hypothesis one time.")
+                       f"{hyp_def}"
+                       f"\nNOTE: You can make multiple new hypothesis one time.")
 
     _add_usr_msg_and_print(hyp_prop_prompt, msg_thread, print_desc, print_callback)
 
@@ -544,9 +541,10 @@ def run_in_start_state(
 
         # ------------------ 2.4 Collect patch locations ------------------ #
         if json_patches is None:
-            # FIXME: Check whether the situation where the patch locations cannot be successfully extracted would occur.
-            manager.proc_action_status.start_patch_extraction = True
+            manager.proc_action_status.update_patch_extraction_status(success_flag=False)
         else:
+            manager.proc_action_status.update_patch_extraction_status(success_flag=True)
+
             raw_patches = json.loads(json_patches)["patch_locations"]
 
             # TODO: Consider whether to activate search since the LLM response about locations may not be clear.
@@ -586,7 +584,8 @@ def run_in_reflexion_state(
 
         # ------------------ 1.1 Prepare the prompt ------------------ #
         ## (1) System prompt
-        _add_system_msg_and_print(SYSTEM_PROMPT, msg_thread, print_desc, print_callback)
+        system_prompt = get_system_prompt()
+        _add_system_msg_and_print(system_prompt, msg_thread, print_desc, print_callback)
 
         ## (2) Reflexion prompt
         # 2.1 Commit content
@@ -632,13 +631,12 @@ def run_in_hypothesis_check_state(
     ###############################
 
     if len(proc_all_hypothesis.unverified) == 0:
-        assert len(proc_all_hypothesis.verified) > 0
-
         # ------------------ 1.1 Prepare the prompt ------------------ #
+        hyp_def = get_hyp_def()
         hyp_prop_prompt = (f"Based on the previous hypothesis and analyses, answer the below question:"
                            f"\n- Are there any better hypothesis: make hypothesis that differ from those already made. (leave it empty if there is no more appropriate hypothesis)"
-                           f"{HYP_DEF}"
-                           f"\n\nNOTE: You can make multiple new hypothesis one time.")
+                           f"{hyp_def}"
+                           f"\nNOTE: You can make multiple new hypothesis one time.")
 
         _add_usr_msg_and_print(hyp_prop_prompt, msg_thread, print_desc, print_callback)
 
@@ -684,6 +682,9 @@ def run_in_hypothesis_check_state(
     # Step 2-1: Process hypothesis containing unsupported CWE-ID #
     ##############################################################
 
+    bad_case_summary = None
+    good_case_summary = None
+
     while True:
         # ------------------ 1.1 Select an unverified hypothesis ------------------ #
         if len(proc_all_hypothesis.unverified) == 0:
@@ -695,124 +696,173 @@ def run_in_hypothesis_check_state(
 
         # ------------------ 1.2 Check the hypothesis ------------------ #
         cur_hyp_desc = get_hyp_description(proc_all_hypothesis.cur_hyp)
-        valid_check_prompt = f"Then, we select a unverified hypothesis '{cur_hyp_desc}', and check its validity."
-
         cur_full_cwe_id = proc_all_hypothesis.cur_hyp.vulnerability_type
-
-        # Non-vulnerability patch
-        if cur_full_cwe_id == "":
-            mod_cwe_id = None
-            valid_check_prompt += "\nSince the hypothesis does not involve vulnerability type, it needs no modification."
-            _add_usr_msg_and_print(valid_check_prompt, msg_thread, print_desc, print_callback)
-            break
-
-        # Vulnerability patch
-        assert re.fullmatch(r"CWE-\d+", cur_full_cwe_id)
         cur_cwe_id = cur_full_cwe_id.split("-")[-1]
 
-        if cur_cwe_id in manager.cwe_manager.cwe_ids:
-            # Good case 1: no modification required -> vulnerability patch with supported CWE-ID.
-            mod_cwe_id = cur_cwe_id
-            valid_check_prompt += f"Since the predicted vulnerability type {cur_full_cwe_id} is within our consideration, it needs no modification."
-            _add_usr_msg_and_print(valid_check_prompt, msg_thread, print_desc, print_callback)
-            break
-
-        # ------------------ 1.3 Prepare the prompt ------------------ #
-        valid_check_prompt += f"Since the predicted vulnerability type {cur_full_cwe_id} is not within our consideration, so you need to modify it."
-
-        if cur_cwe_id in manager.cwe_manager.all_weakness_entries:
-            # (1) Weakness definition
-            weakness_desc = f"The definition of {cur_full_cwe_id} is: " + manager.cwe_manager.get_weakness_description(cur_cwe_id)
-            assert weakness_desc is not None
-            # (2) Weakness attributes
-            weakness_attr_desc = manager.cwe_manager.get_weakness_attr_description(cur_cwe_id)
-            assert weakness_attr_desc is not None
-
-            valid_check_prompt += f"\n{weakness_desc}\n{weakness_attr_desc}"
-        elif cur_cwe_id in manager.cwe_manager.all_category_entries:
-            # (1) Category definition
-            category_desc = manager.cwe_manager.get_category_description(cur_cwe_id)
-            assert category_desc is not None
-
-            valid_check_prompt += f"\n{category_desc}"
-        else:
-            # NOTE: For CWE that has no record, we only use a general prompt.
-            pass
-
-        valid_check_prompt += f"\nNow please choose a CWE-ID in {globals.full_view_id} to replace the original vulnerability type."
-        _add_usr_msg_and_print(valid_check_prompt, msg_thread, print_desc, print_callback)
-
-        # ------------------ 1.4 Ask the LLM ------------------ #
-        response = _ask_actor_agent_and_print(msg_thread, print_desc, print_callback)
-
-        # TODO: The extraction work is simple, so we do not ask with retires. (Require Verification)
-        json_full_cwe_id, _, proxy_msg_threads = _ask_proxy_agent_and_print(
-            ProxyTask.HYP_CHECK, response, manager, print_desc, print_callback
-        )
-
-        proxy_conv_fpath = os.path.join(curr_proc_outs.proxy_dpath, f"loop_{loop_no}_hypothesis_check.json")
-        _save_proxy_msg(proxy_msg_threads, proxy_conv_fpath)
-
-        # ------------------ 1.5 Check the modification result ------------------ #
-        if json_full_cwe_id is None:
-            # Failed in modifying
-            mod_cwe_id = cur_cwe_id
-            summary_prompt = f"Since the modification failed, we retain the original vulnerability type CWE-{mod_cwe_id},"
-
-            manager.proc_action_status.check_unsupported_hyp = True
-        else:
-            # Succeed in modifying
-            mod_full_cwe_id = json.loads(json_full_cwe_id)["cwe_id"]
-            mod_cwe_id = mod_full_cwe_id.split("-")[-1]
-            if mod_cwe_id == cur_cwe_id:
-                summary_prompt = f"Since the modification failed, we retain the original vulnerability type CWE-{mod_cwe_id},"
+        # (1) Non-vulnerability patch
+        if cur_full_cwe_id == "":
+            # Good case 1: no modification required <- non-vulnerability patch
+            assert good_case_summary is None
+            if bad_case_summary is None:
+                good_case_summary = (f"In this step, we select an unverified hypothesis: {cur_hyp_desc}."
+                                     f"\nSince this hypothesis does not involve CWE-ID, so it needs no modification.")
             else:
-                summary_prompt = f"After the modification, we replace the original vulnerability type with CWE-{mod_cwe_id},"
+                good_case_summary = (f"{bad_case_summary}"
+                                     f"\nNow we select an unverified hypothesis: {cur_hyp_desc}."
+                                     f"\nSince this hypothesis does not involve CWE-ID, so it needs no modification.")
 
-        # TODO: We follow the strict condition: keep the hypothesis only if the modified CWE-ID is within the consideration.
-        # FIXME: Check if it still works properly under VIEW-1003.
-        if mod_cwe_id not in manager.cwe_manager.cwe_ids:
-            # Bad case 1: modification failed -> 1) invalid response; 2) modified CWE-ID is unsupported.
-            summary_prompt += " however, since this CWE-ID is not within our consideration, we will delete this hypothesis."
-            _add_usr_msg_and_print(summary_prompt, msg_thread, print_desc, print_callback)
+        # (2) Vulnerability patch with supported CWE-ID
+        elif cur_cwe_id in manager.cwe_manager.cwe_ids:
+            # Good case 2: no modification required <- vulnerability patch with supported CWE-ID
+            assert good_case_summary is None
+            if bad_case_summary is None:
+                good_case_summary = (f"In this step, we select an unverified hypothesis: {cur_hyp_desc}."
+                                     f"\nThe predicted vulnerability type {cur_full_cwe_id} is within our consideration.")
+            else:
+                good_case_summary = (f"{bad_case_summary}"
+                                     f"\nNow we select an unverified hypothesis: {cur_hyp_desc}."
+                                     f"\nThe predicted vulnerability type {cur_full_cwe_id} is within our consideration.")
+
+        # (3) Vulnerability patch with unsupported CWE-ID
+        else:
+            if bad_case_summary is None:
+                bad_case_summary = (f"In this step, we select an unverified hypothesis: {cur_hyp_desc}."
+                                    f"\nSince the predicted vulnerability type {cur_full_cwe_id} is not within our consideration, so you need to modify it.")
+            else:
+                bad_case_summary = (f"{bad_case_summary}"
+                                    f"Now we select an unverified hypothesis: {cur_hyp_desc}."
+                                    f"\nSince the predicted vulnerability type {cur_full_cwe_id} is not within our consideration, so you need to modify it.")
+
+            # ------------------ 1.2.1 Prepare the prompt ------------------ #
+            assert bad_case_summary is not None
+            valid_check_prompt = bad_case_summary
+
+            if cur_cwe_id in manager.cwe_manager.all_weakness_entries:
+                # (1) Weakness definition
+                weakness_desc = f"The definition of {cur_full_cwe_id} is: " + manager.cwe_manager.get_weakness_description(cur_cwe_id)
+                assert weakness_desc is not None
+                # (2) Weakness attributes
+                weakness_attr_desc = manager.cwe_manager.get_weakness_attr_description(cur_cwe_id)
+                assert weakness_attr_desc is not None
+
+                valid_check_prompt += f"\n{weakness_desc}\n{weakness_attr_desc}"
+            elif cur_cwe_id in manager.cwe_manager.all_category_entries:
+                # (1) Category definition
+                category_desc = f"The type of {cur_full_cwe_id} is Category. " + manager.cwe_manager.get_category_description(cur_cwe_id)
+                assert category_desc is not None
+
+                valid_check_prompt += f"\n{category_desc}"
+            else:
+                # NOTE: For CWE that has no record, we only use a general prompt.
+                pass
+
+            valid_check_prompt += f"\nNow please choose a CWE-ID in View-{globals.view_id} to replace the original vulnerability type."
+            _add_usr_msg_and_print(valid_check_prompt, msg_thread, print_desc, print_callback)
+
+            # ------------------ 1.2.2 Ask the LLM ------------------ #
+            response = _ask_actor_agent_and_print(msg_thread, print_desc, print_callback)
+
+            # TODO: The extraction work is simple, so we do not ask with retires. (Require Verification)
+            json_full_cwe_id, _, proxy_msg_threads = _ask_proxy_agent_and_print(
+                ProxyTask.HYP_CHECK, response, manager, print_desc, print_callback
+            )
+
+            proxy_conv_fpath = os.path.join(curr_proc_outs.proxy_dpath, f"loop_{loop_no}_hypothesis_check.json")
+            _save_proxy_msg(proxy_msg_threads, proxy_conv_fpath)
+
+            # ------------------ 1.2.3 Check the modification result ------------------ #
+            if json_full_cwe_id is None:
+                # TODO: Bad result. This should not happen. (Require Verification)
+                # Bad case 1: modification failed <- invalid response
+                manager.proc_action_status.add_unsupported_hyp_modification_case(
+                    none_result=True, same_result=False, uns_result=False, good_result=False
+                )
+
+                bad_case_summary = "It seems that you did not provide a new valid CWE-ID, so we must delete this hypothesis and select a new one."
+
+            else:
+                mod_full_cwe_id = json.loads(json_full_cwe_id)["cwe_id"]
+                mod_cwe_id = mod_full_cwe_id.split("-")[-1]
+                if mod_cwe_id == cur_cwe_id:
+                    # TODO: Bad result. This should not happen. (Require Verification)
+                    # Bad case 2: modification failed <- modified CWE-ID is the same as before
+                    manager.proc_action_status.add_unsupported_hyp_modification_case(
+                        none_result=False, same_result=True, uns_result=False, good_result=False
+                    )
+
+                    bad_case_summary = "It seems that you did not modify the given CWE-ID, so we must delete this hypothesis and select a new one."
+
+                else:
+                    prefix = f"You replace the original vulnerability type with {mod_full_cwe_id}"
+
+                    # FIXME: Check if it still works properly under VIEW-1003.
+                    # We follow the strict condition: keep the hypothesis only if the modified CWE-ID is within the consideration.
+                    if mod_cwe_id not in manager.cwe_manager.cwe_ids:
+                        # Bad case 3: modification failed <- modified CWE-ID is still unsupported
+                        manager.proc_action_status.add_unsupported_hyp_modification_case(
+                            none_result=False, same_result=False, uns_result=True, good_result=False
+                        )
+
+                        bad_case_summary = f"{prefix}, however, this CWE-ID is still not within our consideration, so we must delete this hypothesis and select a new one."
+
+                    else:
+                        # Good case 3: modification successful <- modified CWE-ID is supported.
+                        manager.proc_action_status.add_unsupported_hyp_modification_case(
+                            none_result=False, same_result=False, uns_result=False, good_result=True
+                        )
+
+                        proc_all_hypothesis.cur_hyp.vulnerability_type = f"CWE-{mod_cwe_id}"
+
+                        good_case_summary = f"{prefix}, and, this CWE-ID is within our consideration, so we will retain this modification."
+
+        if good_case_summary is None:
             proc_all_hypothesis.cur_hyp = None
-
-            manager.proc_action_status.check_unsupported_hyp = True
-
             continue
         else:
-            # Good case 2: modification successful
-            summary_prompt += " and, since this CWE-ID is within our consideration, we will retain this hypothesis."
-            _add_usr_msg_and_print(summary_prompt, msg_thread, print_desc, print_callback)
-            proc_all_hypothesis.cur_hyp.vulnerability_type = f"CWE-{mod_cwe_id}"
             break
 
     ###############################################################
     # Step 2-2: Process hypothesis containing too detailed CWE-ID #
     ###############################################################
-    assert proc_all_hypothesis.cur_hyp is not None
+    assert proc_all_hypothesis.cur_hyp is not None and good_case_summary is not None
 
-    if mod_cwe_id and manager.cwe_manager.is_too_detailed_weakness(mod_cwe_id):
-        manager.proc_action_status.check_too_detailed_hyp = True
+    cur_full_cwe_id = proc_all_hypothesis.cur_hyp.vulnerability_type
+    cur_cwe_id = cur_full_cwe_id.split("-")[-1]
+
+    if cur_full_cwe_id == "":
+        check_summary = good_case_summary
+
+    elif not manager.cwe_manager.is_too_detailed_weakness(cur_cwe_id):
+        check_summary = (f"{good_case_summary}"
+                         "\nBesides, this CWE-ID is moderately detailed, so it needs no more modification.")
+
+    else:
+        manager.proc_action_status.update_too_detailed_hyp_modification_case()
 
         # ------------------ 2.1 Get father CWEs at the specified depth ------------------ #
-        fathers = manager.cwe_manager.get_fathers_of_weakness(mod_cwe_id)
+        fathers = manager.cwe_manager.get_depth_k_fathers_of_weakness(cur_cwe_id)
         assert len(fathers) >= 1
 
-        depth_check_prompt = f"Besides, CWE-{mod_cwe_id} is too detailed. We update the original hypothesis by creating corresponding new hypotheses based on its parent CWEs."
-        _add_usr_msg_and_print(depth_check_prompt, msg_thread, print_desc, print_callback)
+        fathers_desc = ", ".join([f"CWE-{f}" for f in fathers])
+        check_summary = (f"{good_case_summary}"
+                         f"\nBesides, CWE-{cur_cwe_id} is too detailed. We update the original hypothesis by creating corresponding new hypotheses based on its parent CWEs, including {fathers_desc}.")
 
-        # ------------------ 2.2 Update the unverified hypothesis ------------------ #
-        for father in fathers:
+        # ------------------ 2.2 Update ------------------ #
+        for i, father in enumerate(fathers):
             hyp = get_basic_hyp(
                 commit_type=CommitType.VulnerabilityPatch,
                 vul_type=f"CWE-{father}",
                 conf_score=proc_all_hypothesis.cur_hyp.confidence_score
             )
-            proc_all_hypothesis.add_new_unverified(hyp)
 
-        # ------------------ 2.3 Select an unverified hypothesis ------------------ #
-        proc_all_hypothesis.update_cur_hyp()
+            if i == 0:
+                # Select the first new unverified hypothesis to verify
+                proc_all_hypothesis.cur_hyp = hyp
+            else:
+                # Collect the rest new unverified hypothesis
+                proc_all_hypothesis.add_new_unverified(hyp)
+
+    _add_usr_msg_and_print(check_summary, msg_thread, print_desc, print_callback)
 
     ##################################
     # STEP 3: Prepare summary prompt #
@@ -870,19 +920,20 @@ def run_in_context_retrieval_state(
         manager.start_new_tool_call_layer()
 
         # ------------------ 1.1 Prepare the prompt ------------------ #
+        api_calls_des = get_api_calls_des()
         if round_no == 1:
             # Init round
             retrieval_prompt = (
                 "Before conducting a formal analysis of the current hypothesis, you must get enough contextual code information."
                 "\nSo in this step, based on the hypothesis and the existing code snippets, please select the necessary search APIs for more background information related to this commit."
-                f"\n{API_CALLS_DESCRIPTION}"
+                f"\n{api_calls_des}"
             )
         elif not retry_flag:
             # Normal round
             retrieval_prompt = (
                 "Based on the extracted code snippets related to the commit, answer the question below:"
                 "\n - Do we need more context: construct search API calls to get more context of the project. (leave it empty if you don't need more context)"
-                f"\n{API_CALLS_DESCRIPTION}"
+                f"\n{api_calls_des}"
             )
         else:
             # Retry round
@@ -1229,7 +1280,8 @@ def post_process(
     if len(pending_hyps) > 1:
         # ------------------ 2.2 Prepare the prompt ------------------ #
         ## (1) System prompt
-        _add_system_msg_and_print(SYSTEM_PROMPT, msg_thread, print_desc, print_callback)
+        system_prompt = get_system_prompt()
+        _add_system_msg_and_print(system_prompt, msg_thread, print_desc, print_callback)
 
         ## (2) Summary prompt
         # 2.1 Commit content
@@ -1301,11 +1353,9 @@ def post_process(
 
         # ------------------ 2.4 Rank the final hypothesis ------------------ #
         if json_ranking is None:
-            # FIXME: Check whether the ranking failure could occur.
-            manager.proc_action_status.post_process_rank = True
+            manager.proc_action_status.update_post_process_rank_status(success_flag=False)
 
-            # TODO: Heuristic: 1. more occurrences -> higher ranking
-            #                  2. vulnerability fix > non-vulnerability fix
+            # TODO: Heuristic: 1) more occurrences -> higher ranking; 2) vulnerability fix > non-vulnerability fix
             commit_type_priority = {CommitType.VulnerabilityPatch: 1, CommitType.NonVulnerabilityPatch: 0}
             ranking_hyps = sorted(
                 pending_hyps,
@@ -1313,6 +1363,8 @@ def post_process(
                 reverse=True
             )
         else:
+            manager.proc_action_status.update_post_process_rank_status(success_flag=True)
+
             raw_ranking = json.loads(json_ranking)["ranking"]
             ranking_hyps = [pending_hyps[i - 1] for i in raw_ranking]
         final_hyps = ranking_hyps + final_hyps[len(pending_hyps):]
@@ -1408,16 +1460,12 @@ def start_conversation_round_stratified(
                 break
 
         ########## End State ##########
-        complete = run_in_end_state(proc_no, proc_all_hyp, curr_proc_outs, msg_thread, manager, print_callback)
+        finish = run_in_end_state(proc_no, proc_all_hyp, curr_proc_outs, msg_thread, manager, print_callback)
 
         # ------------------------------------ 1.3 Update and save ------------------------------------ #
         # Update and save process status
-        manager.proc_action_status.complete = complete
+        manager.proc_action_status.update_finish_status(success_flag=finish)
         all_proc_status[curr_proc_name] = manager.proc_action_status
-
-        # Record the whole conversation in current process
-        logger.info(f"\n========== Complete Process {proc_no} ==========")
-        logger.info(f"Current message thread:\n{msg_thread}")
 
     #####################################
     # STEP 2: Vote for the final result #

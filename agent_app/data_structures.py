@@ -131,20 +131,64 @@ class State(str, Enum):
 @dataclass
 class ProcessActionStatus:
     """Dataclass to hold status of some actions during the identification processes."""
-    start_patch_extraction: bool = False
-    check_unsupported_hyp: bool = False
-    check_too_detailed_hyp: bool = False
-    post_process_rank: bool = False
-    complete: bool = False
+    _patch_extraction: List[int] = field(default_factory=lambda: [0, 0])
+    _unsupported_hyp_modification: List[int] = field(default_factory=lambda: [0, 0, 0, 0])
+    _too_detailed_hyp_modification: int = 0
+    _typeerror_api_calls: int = 0
+    _post_process_rank: List[int] = field(default_factory=lambda: [0, 0])
+    _finish: bool = False
+
 
     def to_dict(self):
         return {
-            "start_patch_extraction": self.start_patch_extraction,
-            "check_unsupported_hyp": self.check_unsupported_hyp,
-            "check_too_detailed_hyp": self.check_too_detailed_hyp,
-            "post_process_rank": self.post_process_rank,
-            "complete": self.complete
+            "patch_extraction": self._patch_extraction,
+            "unsupported_hyp_modification": self._unsupported_hyp_modification,
+            "too_detailed_hyp_modification": self._too_detailed_hyp_modification,
+            "typeerror_api_calls": self._typeerror_api_calls,
+            "post_process_rank": self._post_process_rank,
+            "finish": self._finish
         }
+
+
+    def update_patch_extraction_status(self, success_flag: bool):
+        if success_flag:
+            self._patch_extraction[0] += 1
+        else:
+            self._patch_extraction[1] += 1
+
+
+    def add_unsupported_hyp_modification_case(self, none_result: bool, same_result: bool, uns_result: bool, good_result: bool):
+        assert none_result + same_result + uns_result + good_result == 1
+        if none_result:
+            self._unsupported_hyp_modification[0] += 1
+        elif same_result:
+            self._unsupported_hyp_modification[1] += 1
+        elif uns_result:
+            self._unsupported_hyp_modification[2] += 1
+        else:
+            self._unsupported_hyp_modification[3] += 1
+
+
+    def update_too_detailed_hyp_modification_case(self):
+        self._too_detailed_hyp_modification += 1
+
+
+    def update_typeerror_api_call_status(self):
+        self._typeerror_api_calls += 1
+
+
+    def update_post_process_rank_status(self, success_flag: bool):
+        if success_flag:
+            self._post_process_rank[0] += 1
+        else:
+            self._post_process_rank[1] += 1
+
+
+    def update_finish_status(self, success_flag: bool):
+        if success_flag:
+            self._finish = True
+        else:
+            self._finish = False
 
 
 """COMMIT MANAGE"""
@@ -334,8 +378,7 @@ class MessageThread:
 
     @classmethod
     def load_from_file(cls, file_path: str):
-        """
-        Load the message thread from a file.
+        """Load the message thread from a file.
         Args:
             file_path (str): The path to the file.
         Returns:
