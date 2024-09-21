@@ -21,8 +21,8 @@ expr_type: str = ""
 
 """CWE CONFIG"""
 
-# CWE VIEW (VIEW-1003 / VIEW-1000)
-full_view_id: str = ""
+# CWE View (For now, only '1003' and '1000' are supported)
+view_id: str = ""
 
 # File storing information about all Weakness CWE entries (VIEW-1000)
 all_weakness_entry_file: str = ""
@@ -56,4 +56,4 @@ test_exec_timeout: int = 300
 """OTHER CONFIG"""
 
 # Task
-task_limit: int = 5
+task_limit: int = 10

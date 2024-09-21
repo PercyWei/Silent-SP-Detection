@@ -1,12 +1,10 @@
 import os
 import json
 import re
+import pandas as pd
 
 from typing import *
 from enum import Enum
-
-from agent_app.CWE.cwe_util import get_cwe_depth
-from agent_app.log import WIDTH
 
 
 def tasks_evaluation_with_cwe_1003(
@@ -165,6 +163,9 @@ def tasks_evaluation_with_cwe_1003(
     print(f"depth-2 vul type top-3 match: {vul_type_top_3_depth_2_match_num} / {task_with_depth_2_cwe_num}")
 
 
+"""EVALUATION FOR METRICS UNDER VIEW-1000"""
+
+
 def get_top_k_cwe_ids_from_hyps(hyps: List[Dict], k: int = 1) -> List[str]:
     """
     Extract the predicted CWE-IDs in the top-k (ordered by confidence score) hypothesis.
@@ -278,8 +279,9 @@ def evaluate_vul_tasks_with_view_1000(exps_root: str):
         cwe_tree = json.load(f)
 
     exps = os.listdir(exps_root)
-    exps.remove("expr_args.json")
     for exp in exps:
+        if not exp[0].isdigit():
+            continue
 
         if exp == "68-nvdvul_2024-09-18T10:37:59":
             continue
@@ -518,19 +520,19 @@ def evaluate_vul_tasks_with_view_1000(exps_root: str):
     print(f"commit type match v2: {commit_type_match_num_2}")
     print(f"commit type match v3: {commit_type_match_num_3}")
 
-    print("\n" + "=" * 100 + '\n')
-
-    print(f"vul type top-1 match: {vul_type_top_1_golden_match_num}")
-    print(f"vul type top-1 match v1: {vul_type_top_1_golden_match_num_1}")
-    print(f"vul type top-1 match v2: {vul_type_top_1_golden_match_num_2}")
-    print(f"vul type top-1 match v3: {vul_type_top_1_golden_match_num_3}")
-
-    print("\n" + "-" * 100 + '\n')
-
-    print(f"vul type top-3 match: {vul_type_top_3_golden_match_num}")
-    print(f"vul type top-3 match v1: {vul_type_top_3_golden_match_num_1}")
-    print(f"vul type top-3 match v2: {vul_type_top_3_golden_match_num_2}")
-    print(f"vul type top-3 match v3: {vul_type_top_3_golden_match_num_3}")
+    # print("\n" + "=" * 100 + '\n')
+    #
+    # print(f"vul type top-1 match: {vul_type_top_1_golden_match_num}")
+    # print(f"vul type top-1 match v1: {vul_type_top_1_golden_match_num_1}")
+    # print(f"vul type top-1 match v2: {vul_type_top_1_golden_match_num_2}")
+    # print(f"vul type top-1 match v3: {vul_type_top_1_golden_match_num_3}")
+    #
+    # print("\n" + "-" * 100 + '\n')
+    #
+    # print(f"vul type top-3 match: {vul_type_top_3_golden_match_num}")
+    # print(f"vul type top-3 match v1: {vul_type_top_3_golden_match_num_1}")
+    # print(f"vul type top-3 match v2: {vul_type_top_3_golden_match_num_2}")
+    # print(f"vul type top-3 match v3: {vul_type_top_3_golden_match_num_3}")
 
     print("\n" + "=" * 100 + '\n')
 
@@ -575,8 +577,144 @@ def evaluate_vul_tasks_with_view_1000(exps_root: str):
     print(f"depth-3 vul type top-3 match v3: {vul_type_top_3_depth_3_match_num_3}")
 
 
+"""EVALUATION FOR PROCESS ABNORMAL ACTION"""
+
+
+def collect_tasks_with_process_abnormal_actions(exps_root: str):
+    task_records = [
+        ["Task ID", "Patch Extraction", "Unsupported Hypothesis Modification", "Too Detailed Hypothesis Modification",
+         "TypeError API Calls", "Post Process Rank", "Finish Process"]
+    ]
+
+
+    def add_proc_id_to_task_data(pid: str, data: List, index: int):
+        if data[index] is None:
+            data[index] = pid
+        else:
+            assert isinstance(data[index], str)
+            data[index] += f" {pid}"
+
+
+    total_proc_num = 0
+    # (1) Patch extraction (PE)
+    pe_proc_num = 0
+    invalid_pe_proc_num = 0
+    # (2) Unsupported hypothesis modification (UHM)
+    uhm_proc_num = 0
+    none_res_uhm_num = 0
+    same_res_uhm_num = 0
+    uns_res_uhm_num = 0
+    good_res_uhm_num = 0
+    # (3) Too detailed hypothesis modification (TDHM)
+    tdhm_proc_num = 0
+    tdhm_num = 0
+    # (4) TypeError api calls (TAC)
+    tac_proc_num = 0
+    tac_num = 0
+    # (5) Post process rank (PPR)
+    ppr_proc_num = 0
+    invalid_ppr_proc_num = 0
+
+    exps = os.listdir(exps_root)
+    for exp in exps:
+        if not exp[0].isdigit():
+            continue
+
+        task_id = exp.split('_')[0]
+
+        meta_fpath = os.path.join(exps_root, exp, "meta.json")
+        with open(meta_fpath, 'r') as f:
+            meta = json.load(f)
+
+        processes_status = meta["completion_info"]["processes_status"]
+        if processes_status:
+            task_data = [None] * 6
+
+            finish_num = 0
+            for proc_num, proc_info in processes_status.items():
+                proc_id = proc_num.split('_')[-1]
+
+                if not proc_info["finish"]:
+                    continue
+                total_proc_num += 1
+                finish_num += 1
+
+                # (1) Patch extraction
+                assert sum(proc_info["patch_extraction"]) <= 1
+                pe_proc_num += sum(proc_info["patch_extraction"])
+                invalid_pe_proc_num += proc_info["patch_extraction"][1]
+
+                if proc_info["patch_extraction"][1] > 0:
+                    add_proc_id_to_task_data(proc_id, task_data, index=0)
+
+                # (2) Unsupported hypothesis modification
+                if sum(proc_info["unsupported_hyp_modification"]) > 0:
+                    uhm_proc_num += 1
+                none_res_uhm_num += proc_info["unsupported_hyp_modification"][0]
+                same_res_uhm_num += proc_info["unsupported_hyp_modification"][1]
+                uns_res_uhm_num += proc_info["unsupported_hyp_modification"][2]
+                good_res_uhm_num += proc_info["unsupported_hyp_modification"][3]
+
+                if proc_info["unsupported_hyp_modification"][0] > 0 or \
+                        proc_info["unsupported_hyp_modification"][1] > 0 or \
+                        proc_info["unsupported_hyp_modification"][2] > 0:
+                    add_proc_id_to_task_data(proc_id, task_data, index=1)
+
+                # (3) Too detailed hypothesis modification
+                if proc_info["too_detailed_hyp_modification"] > 0:
+                    add_proc_id_to_task_data(proc_id, task_data, index=2)
+                    tdhm_proc_num += 1
+                tdhm_num += proc_info["too_detailed_hyp_modification"]
+
+                # (4) TypeError api calls
+                if proc_info["typeerror_api_calls"] > 0:
+                    add_proc_id_to_task_data(proc_id, task_data, index=3)
+                    tac_proc_num += 1
+                tac_num += proc_info["typeerror_api_calls"]
+
+                # (4) Post process rank
+                assert sum(proc_info["post_process_rank"]) <= 1
+                ppr_proc_num += sum(proc_info["post_process_rank"])
+                invalid_ppr_proc_num += proc_info["post_process_rank"][1]
+
+                if proc_info["post_process_rank"][1] > 0:
+                    add_proc_id_to_task_data(proc_id, task_data, index=4)
+
+            task_data[5] = finish_num
+
+            task_records.append([task_id] + task_data)
+        else:
+            task_records.append([task_id] + [None] * 6)
+
+    print("\n" + "#" * 100 + "\n")
+    print("Patch extraction")
+    print(f"Process number (invalid / do / total): {invalid_pe_proc_num}/{pe_proc_num}/{total_proc_num}")
+    print("\n" + "-" * 100 + "\n")
+    print("Unsupported hypothesis modification")
+    print(f"Process number (do / total): {uhm_proc_num}/{total_proc_num}")
+    print("Number (none result / same result / unsupported result / good result): "
+          f"{none_res_uhm_num}/ {same_res_uhm_num} / {uns_res_uhm_num} / {good_res_uhm_num}")
+    print("\n" + "-" * 100 + "\n")
+    print("Too detailed hypothesis modification")
+    print(f"Process number (do / total): {tdhm_proc_num}/{total_proc_num}")
+    print(f"Number: {tdhm_num}")
+    print("\n" + "-" * 100 + "\n")
+    print("TypeError api calls")
+    print(f"Process number (do / total): {tac_proc_num}/{total_proc_num}")
+    print(f"Number: {tac_num}")
+    print("\n" + "-" * 100 + "\n")
+    print("Post process rank")
+    print(f"Process number (invalid / do / total): {invalid_ppr_proc_num}/{ppr_proc_num}/{total_proc_num}")
+    print("\n" + "-" * 100 + "\n")
+
+    output_fpath = os.path.join(exps_root, "task_process_actions.csv")
+    df = pd.DataFrame(task_records, columns=['c1', 'c2', 'c3', 'c4', 'c5', 'c6', 'c7'])
+    df.to_csv(output_fpath, index=False)
+
+
 if __name__ == '__main__':
-    exps_root = "/root/projects/VDTest/output/agent/vul_2024-09-18T02:33:39"
+    exps_root = "/root/projects/VDTest/output/agent/vul_2024-09-21T22:46:18_SAVE"
 
     evaluate_vul_tasks_with_view_1000(exps_root)
+    collect_tasks_with_process_abnormal_actions(exps_root)
 

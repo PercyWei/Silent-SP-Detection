@@ -136,8 +136,6 @@ class RawLocalTask(RawTask):
             repo_name=self.repo_name,
             commit_hash=self.commit_hash,
             commit_content=self.commit_content,
-            commit_type=self.commit_type,
-            cwe_list=self.cwe_list,
             local_repo_dpath=self.local_repo_dpath,
             head_commit_hash=self.head_commit_hash
         )

@@ -196,7 +196,7 @@ class CWEManager:
             return False
 
 
-    def get_fathers_of_weakness(self, cwe_id: str, depth: int = 3) -> List[str] | None:
+    def get_depth_k_fathers_of_weakness(self, cwe_id: str, depth: int = 3) -> List[str] | None:
         assert depth > 0
 
         if cwe_id not in self.cwe_ids:
@@ -207,5 +207,7 @@ class CWEManager:
             if depth < len(cwe_path):
                 father = cwe_path[depth - 1]
                 fathers.append(father)
+
+        fathers = list(set(fathers))
 
         return fathers

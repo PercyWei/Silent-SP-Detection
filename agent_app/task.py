@@ -16,8 +16,6 @@ class Task:
     repo_name: str
     commit_hash: str
     commit_content: str
-    commit_type: int
-    cwe_list: List[str]
     # Setup info
     local_repo_dpath: str
     head_commit_hash: str

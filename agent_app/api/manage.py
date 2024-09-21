@@ -62,7 +62,7 @@ class ProcessManager:
 
         # Manage CWE info
         self.cwe_manager = CWEManager(
-            globals.full_view_id,
+            globals.view_id,
             globals.cwe_entry_file,
             globals.cwe_tree_file,
             globals.all_weakness_entry_file,
