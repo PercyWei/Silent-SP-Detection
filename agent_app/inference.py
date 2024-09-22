@@ -1225,19 +1225,14 @@ def calculate_final_confidence_score(
     return final_hyps
 
 
-def vote_on_result(proc_dpaths: List[str]) -> List[FinalHypothesis]:
-    all_ver_hyps: List[Hypothesis] = []
+def vote_on_result(all_hyp_dicts: List[Dict], proc_num: int) -> List[FinalHypothesis]:
+    all_hyps: List[Hypothesis] = []
 
-    for proc_dpath in proc_dpaths:
-        proc_final_hyp_fpath = os.path.join(proc_dpath, "hypothesis", "final.json")
+    for hyp_dict in all_hyp_dicts:
+        hyp = Hypothesis(hyp_dict["commit_type"], hyp_dict["vulnerability_type"], hyp_dict["confidence_score"])
+        all_hyps.append(hyp)
 
-        with open(proc_final_hyp_fpath, "r") as f:
-            ver_hyps = json.load(f)["verified"]
-            for ver_hyp in ver_hyps:
-                hyp = Hypothesis(ver_hyp["commit_type"], ver_hyp["vulnerability_type"], ver_hyp["confidence_score"])
-                all_ver_hyps.append(hyp)
-
-    final_hyps = calculate_final_confidence_score(all_ver_hyps, proc_num=len(proc_dpaths))
+    final_hyps = calculate_final_confidence_score(all_hyps, proc_num)
 
     return final_hyps
 
@@ -1474,7 +1469,15 @@ def start_conversation_round_stratified(
     #####################################
 
     valid_proc_dpaths = [os.path.join(output_dpath, proc_name) for proc_name, status in all_proc_status.items() if status]
-    final_hyps: List[FinalHypothesis] = vote_on_result(valid_proc_dpaths)
+
+    all_ver_hyp_dicts: List[Dict] = []
+    for proc_dpath in valid_proc_dpaths:
+        proc_final_hyp_fpath = os.path.join(proc_dpath, "hypothesis", "final.json")
+        with open(proc_final_hyp_fpath, "r") as f:
+            ver_hyps = json.load(f)["verified"]
+            all_ver_hyp_dicts.extend(ver_hyps)
+
+    final_hyps: List[FinalHypothesis] = vote_on_result(all_ver_hyp_dicts, len(valid_proc_dpaths))
 
     #########################################
     # STEP 3: Post process the final result #

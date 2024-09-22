@@ -196,7 +196,6 @@ def run_task_groups_parallel(task_groups: Mapping[str, Sequence[RawTask]], num_p
     print_with_time(f"Sorted task groups: {[x[0] for x in task_group_ids_items]}")
     try:
         # Use ProcessPoolExecutor instead of multiprocessing.Pool to support nested sub-processing
-
         group_ids, group_tasks = zip(*task_group_ids_items)
         with ProcessPoolExecutor(num_processes) as executor:
             executor.map(run_task_group, group_ids, group_tasks)
@@ -335,7 +334,7 @@ def construct_tasks(tasks_map_file: str, local_repos_dpath: str) -> List[RawLoca
     checked_task_dirs = [
         "/root/projects/VDTest/output/agent/ast_failure_recordings",
         "/root/projects/VDTest/output/agent/vul_2024-09-08T16:51:25_SAVE",
-        "/root/projects/VDTest/output/agent/vul_2024-09-18T02:33:39_SAVE"
+        "/root/projects/VDTest/output/agent/vul_2024-09-22T03:43:14_SAVE"
     ]
     for task_dir in checked_task_dirs:
         task_full_names = os.listdir(task_dir)
@@ -365,7 +364,7 @@ def construct_tasks(tasks_map_file: str, local_repos_dpath: str) -> List[RawLoca
                 task_id=task_id,
                 cve_id=task_info["cve_id"],
                 commit_type=commit_type,
-                cwe_list=task_info["cwe_list"],
+                cwe_id=task_info["cwe_id"],
                 cwe_depth=task_info["cwe_depth"],
                 repo_name=repo_name,
                 commit_hash=task_info["commit_hash"],
