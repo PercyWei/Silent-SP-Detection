@@ -660,9 +660,9 @@ def get_class_signature_in_nodiff_file(abs_fpath: str, class_name: str, class_ra
 
 
 def get_class_signature_in_diff_file(
-        comb_file_content: str, class_name: str,
-        old_file_content: str | None, old_class_range: LineRange | None, line_id_old2comb: Dict[int, int] | None,
-        new_file_content: str | None, new_class_range: LineRange | None, line_id_new2comb: Dict[int, int] | None
+        comb_file_content: str, old_file_content: str | None, new_file_content: str | None,
+        line_id_old2comb: Dict[int, int] | None, line_id_new2comb: Dict[int, int] | None,
+        class_name: str, old_class_range: LineRange | None, new_class_range: LineRange | None
 ) -> str:
     """Get the class signature.
 
@@ -674,23 +674,23 @@ def get_class_signature_in_diff_file(
           so we get their contents from there instead of the local repo.
     Args:
         comb_file_content (str): Content of combined file.
+        old_file_content (str | None): Content of the old file.
+        new_file_content (str | None): Content of the new file.
+        line_id_old2comb (Dict[int, int] | None): Line id lookup dict, old code -> comb code.
+        line_id_new2comb (Dict[int, int] | None): Line id lookup dict, new code -> comb code.
         class_name (str): Name of the class.
-        old_file_content (str | None): Content of file before commit.
-        old_class_range (LineRange | None): Line range of the class in old file.
-        line_id_old2comb (Dict[int, int] | None): Line id lookup dict, code before -> code comb.
-        new_file_content (str | None): Content of file after commit.
-        new_class_range (LineRange | None): Line range of the class in new file.
-        line_id_new2comb (Dict[int, int] | None): Line id lookup dict, code after -> code comb.
+        old_class_range (LineRange | None): Line range of the class in the old file.
+        new_class_range (LineRange | None): Line range of the class in the new file.
     """
     if old_file_content is None or new_file_content is None:
         # Deleted / added file
         if old_file_content is not None:
-            assert line_id_old2comb is not None
+            assert line_id_old2comb is not None and old_class_range is not None
             ori_content = old_file_content
             class_range = old_class_range
             line_id_ori2comb = line_id_old2comb
         else:
-            assert line_id_new2comb is not None
+            assert line_id_new2comb is not None and new_class_range is not None
             ori_content = new_file_content
             class_range = new_class_range
             line_id_ori2comb = line_id_new2comb
@@ -704,10 +704,16 @@ def get_class_signature_in_diff_file(
     else:
         # Modified file
         assert line_id_old2comb is not None and line_id_new2comb is not None
-        assert is_overlap_in_comb_file(old_class_range, line_id_old2comb, new_class_range, line_id_new2comb)
 
-        old_relevant_line_ids = extract_class_sig_lines_from_file(old_file_content, class_name, old_class_range)
-        new_relevant_line_ids = extract_class_sig_lines_from_file(new_file_content, class_name, new_class_range)
+        if old_class_range is not None and line_id_old2comb is not None:
+            assert is_overlap_in_comb_file(old_class_range, line_id_old2comb, new_class_range, line_id_new2comb)
+        else:
+            assert old_class_range is not None or line_id_old2comb is not None
+
+        old_relevant_line_ids = extract_class_sig_lines_from_file(old_file_content, class_name, old_class_range) \
+                                if old_class_range is not None else []
+        new_relevant_line_ids = extract_class_sig_lines_from_file(new_file_content, class_name, new_class_range) \
+                                if new_class_range is not None else []
 
         comb_relevant_line_ids = []
         for old_line_id in old_relevant_line_ids:

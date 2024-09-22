@@ -272,7 +272,9 @@ class SearchManager:
             self, class_name: str, fpath: str, old_class_range: LineRange | None, new_class_range: LineRange | None
     ) -> str:
         """Get class signature from the specified diff file."""
-        assert fpath in self.del_files + self.add_files + self.mod_files
+        assert fpath in self.diff_files
+        assert old_class_range is not None or new_class_range is not None
+
         comb_code = self.comb_code[fpath]
         old_code = self.old_code[fpath] if fpath in self.old_code else None
         new_code = self.new_code[fpath] if fpath in self.new_code else None
