@@ -1,6 +1,13 @@
+import os
 import json
 
 from typing import *
+
+from preprocess.util import (
+    show_commit_file_names, parse_commit_name_status,
+    show_commit_parents, parse_commit_parents
+)
+from utils import insert_key_value
 
 
 def check_py_items_cwe_id():
@@ -377,10 +384,160 @@ def complete_vul_tasks_with_cwe_with_path_list():
         json.dump(updt_tasks, f, indent=4)
 
 
+"""OTHER"""
+
+
+def count_commit_file(dataset_fpath: str, suffix: List[str] | None = None):
+    if suffix is None:
+        suffix = ['.py']
+
+    with open(dataset_fpath, 'r') as f:
+        dataset = json.load(f)
+
+    repos_root = "/root/projects/clone_projects"
+
+    failure_items = {}
+    updt_dataset = []
+
+    updt_flag = True
+    for i, cve_item in enumerate(dataset):
+        repo_dpath = os.path.join(repos_root, cve_item["repo"].replace('/', "_"))
+        commit_hash = cve_item["commit_hash"]
+
+        res = show_commit_file_names(repo_dpath, commit_hash)
+
+        # (1) Filter out invalid commit hashes
+        if res is None:
+            updt_flag = False
+            failure_items[cve_item['cve_id']] = [
+                cve_item['repo'],
+                commit_hash,
+                f"https://github.com/{cve_item['repo']}/commit/{commit_hash}"
+            ]
+            continue
+
+        flag, commit_files = parse_commit_name_status(res)
+
+        # (2) Filter out unresolvable commit hashes
+        if not flag:
+            updt_flag = False
+            print(f"\n{res}\n")
+            continue
+
+        # (3) Count commit files
+        file_count = 0
+        for file in commit_files["modified_files"]:
+            if any(file.endswith(sf) for sf in suffix):
+                file_count += 1
+
+        for file in commit_files["added_files"]:
+            if any(file.endswith(sf) for sf in suffix):
+                file_count += 1
+
+        for file in commit_files["deleted_files"]:
+            if any(file.endswith(sf) for sf in suffix):
+                file_count += 1
+
+        for _, new_file in commit_files["renamed_files"]:
+            if any(new_file.endswith(sf) for sf in suffix):
+                file_count += 1
+
+        # (4) Filter out empty commit hashes
+        if file_count == 0:
+            commit_parents = show_commit_parents(repo_dpath, commit_hash)
+            assert commit_parents is not None
+            parent_hashes = parse_commit_parents(commit_parents)
+
+            # NOTE: When the commit is a merge commit, it is allowed to contain empty filenames.
+            if len(parent_hashes) <= 1:
+                updt_flag = False
+                print(f"\nhttps://github.com/{cve_item['repo']}/commit/{commit_hash}\n")
+                continue
+            else:
+                file_count = "NOT COUNT"
+
+        # (5) Update original dataset
+        cve_item["file_count"] = file_count
+        updt_dataset.append(cve_item)
+
+    out_root = "/root/projects/VDTest/data"
+    if failure_items:
+        with open(os.path.join(out_root, "commit_file_count_failure.json"), 'w') as f:
+            json.dump(failure_items, f, indent=4)
+
+    if updt_flag:
+        with open(dataset_fpath, 'w') as f:
+            json.dump(updt_dataset, f, indent=4)
+
+
+def filter_dataset_and_save(dataset_fpath: str):
+    with open(dataset_fpath, 'r') as f:
+        dataset = json.load(f)
+
+    new_dataset = {}
+    for i, task in enumerate(dataset):
+        task_id = f"{i}-{task['source']}"
+        new_dataset[task_id] = task
+
+    invalid_task_ids = {
+
+    }
+
+    filter_dataset = {}
+    for task_id, task in new_dataset.items():
+        id = task_id.split("-")[0]
+        if id in invalid_task_ids:
+            cve_id = invalid_task_ids[id].replace(' ', '')
+            assert task['cve_id'] == cve_id
+        else:
+            filter_dataset[task_id] = task
+
+    save_fpath = "/root/filter_dataset.json"
+    with open(save_fpath, 'w') as f:
+        json.dump(filter_dataset, f, indent=4)
+
+
 if __name__ == '__main__':
     pass
 
     # build_novul_tasks_from_vulfix()
     # build_vul_tasks_without_cwe_from_vulfix()
     # build_vul_tasks_with_cwe_from_vulfix_treevul()
-    complete_vul_tasks_with_cwe_with_path_list()
+    # complete_vul_tasks_with_cwe_with_path_list()
+
+    dataset_file = "/root/projects/VDTest/dataset/Final/py_vul_tasks_treevul_view1000_v1.json"
+    count_commit_file(dataset_file)
+
+    # exps_root = "/root/projects/VDTest/output/agent/vul_2024-09-24T09:58:55_SAVE"
+    # exps = os.listdir(exps_root)
+    # exps = [exp for exp in exps if exp[0].isdigit()]
+    # for exp in exps:
+    #     pass
+        # ori_fpath = os.path.join(exps_root, exp)
+        #
+        # ori_task_id = exp.split('_')[0]
+        # ori_index = ori_task_id.split('-')[0]
+        #
+        # meta_fpath = os.path.join(ori_fpath, "meta.json")
+        # with open(meta_fpath, 'r') as f:
+        #     meta = json.load(f)
+        # assert filter_dataset[ori_task_id]["cve_id"] == meta['task_info']['cve_id']
+        #
+        # new_index = filter_dataset_list.index(ori_task_id)
+        #
+        # new_fpath = os.path.join(exps_root, str(new_index) + exp[len(ori_index):])
+        #
+        # os.rename(ori_fpath, new_fpath)
+
+
+        # meta_fpath = os.path.join(exps_root, exp, "meta.json")
+        # with open(meta_fpath, 'r') as f:
+        #     meta = json.load(f)
+        #
+        # task_id = exp.split("_")[0]
+        # meta["task_info"]["instance_id"] = task_id
+        # with open(meta_fpath, 'w') as f:
+        #     json.dump(meta, f, indent=4)
+
+
+

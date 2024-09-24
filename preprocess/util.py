@@ -341,6 +341,98 @@ def extract_commit_info_from_url(commit_url: str) -> Tuple[str, str] | None:
     return auth_repo, commit_hash
 
 
+def show_commit_file_names(local_repo_dpath: str, commit_hash: str) -> str | None:
+    git_show_name_cmd = ['git', 'diff-tree', '--no-commit-id', '--name-status', '-r', '-M', commit_hash]
+
+    result, _ = run_command(git_show_name_cmd, raise_error=False,
+                            cwd=local_repo_dpath, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+    if result is not None:
+        return result.stdout
+    else:
+        return None
+
+
+def parse_commit_name_status(commit_name_status: str) -> Tuple[bool, Dict]:
+    """
+    Input is the output of command 'git diff-tree --no-commit-id --name-status -r -M <commit_hash>'.
+    """
+    m_pattern = r"^M\s+(\S+)$"
+    a_pattern = r"^A\s+(\S+)$"
+    d_pattern = r"^D\s+(\S+)$"
+    r_pattern= r"^R\d+\s+(\S+)\s+(\S+)$"
+
+    modified_files: List[str] = []
+    added_files: List[str] = []
+    deleted_files: List[str] = []
+    renamed_files: List[Tuple[str, str]] = []
+
+    lines = commit_name_status.splitlines(keepends=False)
+    for line in lines:
+        match_flag = False
+
+        m_match = re.match(m_pattern, line)
+        if m_match:
+            modified_files.append(m_match.group(1))
+            match_flag = True
+
+        a_match = re.match(a_pattern, line)
+        if a_match:
+            added_files.append(a_match.group(1))
+            match_flag = True
+
+        d_match = re.match(d_pattern, line)
+        if d_match:
+            deleted_files.append(d_match.group(1))
+            match_flag = True
+
+        r_match = re.match(r_pattern, line)
+        if r_match:
+            renamed_files.append((r_match.group(1), r_match.group(2)))
+            match_flag = True
+
+        if not match_flag:
+            return False, {}
+
+    commit_files = {
+        "modified_files": modified_files,
+        "added_files": added_files,
+        "deleted_files": deleted_files,
+        "renamed_files": renamed_files
+    }
+
+    return True, commit_files
+
+
+def show_commit_parents(local_repo_dpath: str, commit_hash: str) -> str | None:
+    git_show_name_cmd = ['git', 'rev-parse', f'{commit_hash}^@']
+
+    result, _ = run_command(git_show_name_cmd, raise_error=False,
+                            cwd=local_repo_dpath, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+    if result is not None:
+        return result.stdout
+    else:
+        return None
+
+
+def parse_commit_parents(commit_parents: str) -> List[str]:
+    """
+    Input is the output of command 'git rev-parse <commit_hash>^@'.
+    """
+    commit_hash_pattern = r"^[0-9a-f]+$"
+
+    lines = commit_parents.splitlines(keepends=False)
+
+    parent_hashes: List[str]= []
+
+    for line in lines:
+        assert re.match(commit_hash_pattern, line)
+        parent_hashes.append(line)
+
+    return parent_hashes
+
+
 """COMMIT LANGUAGE"""
 
 
