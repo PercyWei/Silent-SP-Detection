@@ -283,9 +283,9 @@ class SearchManager:
         line_id_new_comb = self.line_id_new2comb[fpath] if fpath in self.line_id_new2comb else None
 
         class_sig = search_util_v2.get_class_signature_in_diff_file(
-            comb_code, class_name,
-            old_code, old_class_range, line_id_old2comb,
-            new_code, new_class_range, line_id_new_comb
+            comb_code, old_code, new_code,
+            line_id_old2comb, line_id_new_comb,
+            class_name, old_class_range, new_class_range
         )
 
         return class_sig
