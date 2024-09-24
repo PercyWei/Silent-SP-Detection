@@ -342,6 +342,11 @@ def extract_diff_files_info(
 
             ## Changed code snippet
             diff_code_snippet = commit_content_lines[hunk_start_line_idx + 1: hunk_end_line_idx + 1]
+            # NOTE: This flag appears when the python code does not end in a blank line and happens to be commited,
+            #       but this line is not actually shown in the code
+            # exp: https://github.com/sergeKashkin/Simple-RAT/commit/ef93261b05f1bbbefb47c7c6115cfa0a85cec22b
+            #      line between 288 (old code) and 300 (new code)
+            diff_code_snippet = [line for line in diff_code_snippet if line != "\ No newline at end of file"]
 
             ## Delete line (in old file) and add line (in new line) ids
             # (1) changed_code_snippet index
