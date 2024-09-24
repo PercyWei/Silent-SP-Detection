@@ -6,7 +6,6 @@ import ast
 import contextlib
 import re
 import shutil
-import datetime
 import glob
 import subprocess
 
@@ -199,11 +198,6 @@ def repo_reset_and_clean_checkout(commit_hash: str) -> None:
 def repo_checkout(commit_hash: str) -> None:
     checkout_cmd = ["git", "checkout", commit_hash]
     run_command(checkout_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-    submodule_unbind_cmd = ["git", "submodule", "deinit", "-f", "."]
-    submodule_init_cmd = ["git", "submodule", "update", "--init"]
-    run_command(submodule_unbind_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    run_command(submodule_init_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 def parse_function_invocation(invocation_str: str) -> Tuple[str, List[str]]:
