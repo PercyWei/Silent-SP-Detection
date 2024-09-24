@@ -110,87 +110,6 @@ class CodeSnippetLocation:
         }
 
 
-
-"""PROCESS MANAGE"""
-
-
-class State(str, Enum):
-    START_STATE = "start"
-    REFLEXION_STATE = "reflexion"
-    HYPOTHESIS_CHECK_STATE = "hypothesis_check"
-    CONTEXT_RETRIEVAL_STATE = "context_retrieval"
-    HYPOTHESIS_VERIFY_STATE = "hypothesis_verify"
-    END_STATE = "end"
-    POST_PROCESS_STATE = "post_process"
-
-    @staticmethod
-    def attributes():
-        return [k.value for k in State]
-
-
-@dataclass
-class ProcessActionStatus:
-    """Dataclass to hold status of some actions during the identification processes."""
-    _patch_extraction: List[int] = field(default_factory=lambda: [0, 0])
-    _unsupported_hyp_modification: List[int] = field(default_factory=lambda: [0, 0, 0, 0])
-    _too_detailed_hyp_modification: int = 0
-    _typeerror_api_calls: int = 0
-    _post_process_rank: List[int] = field(default_factory=lambda: [0, 0])
-    _finish: bool = False
-
-
-    def to_dict(self):
-        return {
-            "patch_extraction": self._patch_extraction,
-            "unsupported_hyp_modification": self._unsupported_hyp_modification,
-            "too_detailed_hyp_modification": self._too_detailed_hyp_modification,
-            "typeerror_api_calls": self._typeerror_api_calls,
-            "post_process_rank": self._post_process_rank,
-            "finish": self._finish
-        }
-
-
-    def update_patch_extraction_status(self, success_flag: bool):
-        if success_flag:
-            self._patch_extraction[0] += 1
-        else:
-            self._patch_extraction[1] += 1
-
-
-    def add_unsupported_hyp_modification_case(self, none_result: bool, same_result: bool, uns_result: bool, good_result: bool):
-        assert none_result + same_result + uns_result + good_result == 1
-        if none_result:
-            self._unsupported_hyp_modification[0] += 1
-        elif same_result:
-            self._unsupported_hyp_modification[1] += 1
-        elif uns_result:
-            self._unsupported_hyp_modification[2] += 1
-        else:
-            self._unsupported_hyp_modification[3] += 1
-
-
-    def update_too_detailed_hyp_modification_case(self):
-        self._too_detailed_hyp_modification += 1
-
-
-    def update_typeerror_api_call_status(self):
-        self._typeerror_api_calls += 1
-
-
-    def update_post_process_rank_status(self, success_flag: bool):
-        if success_flag:
-            self._post_process_rank[0] += 1
-        else:
-            self._post_process_rank[1] += 1
-
-
-    def update_finish_status(self, success_flag: bool):
-        if success_flag:
-            self._finish = True
-        else:
-            self._finish = False
-
-
 """COMMIT MANAGE"""
 
 
@@ -236,13 +155,13 @@ class CombineInfo:
 
 
 class SearchStatus(str, Enum):
-    UNKNOWN_SEARCH_API = "UNKNOWN_SEARCH_API"
-    DISPATCH_ERROR = "DISPATCH_ERROR"
-    INVALID_ARGUMENT = "INVALID_ARGUMENT"
-    NON_UNIQUE_FILE = "NON_UNIQUE_FILE"
-    FIND_NONE = "FIND_NONE"
-    FIND_IMPORT = "FIND_IMPORT"
-    FIND_CODE = "FIND_CODE"
+    UNKNOWN_SEARCH_API = "unknown_search_api"
+    DISPATCH_ERROR = "dispatch_error"
+    INVALID_ARGUMENT = "invalid_argument"
+    NON_UNIQUE_FILE = "non_unique_file"
+    FIND_NONE = "find_none"
+    FIND_IMPORT = "find_import"
+    FIND_CODE = "find_code"
 
 
 class FunctionCallIntent:
@@ -387,3 +306,95 @@ class MessageThread:
         with open(file_path) as f:
             messages = json.load(f)
         return cls(messages)
+
+
+"""PROCESS MANAGE"""
+
+
+class State(str, Enum):
+    START_STATE = "start"
+    REFLEXION_STATE = "reflexion"
+    HYPOTHESIS_CHECK_STATE = "hypothesis_check"
+    CONTEXT_RETRIEVAL_STATE = "context_retrieval"
+    HYPOTHESIS_VERIFY_STATE = "hypothesis_verify"
+    END_STATE = "end"
+    POST_PROCESS_STATE = "post_process"
+
+    @staticmethod
+    def attributes():
+        return [k.value for k in State]
+
+
+@dataclass
+class ProcessStatus:
+
+    def to_dict(self):
+        return {attr.lstrip('_'): value for attr, value in vars(self).items()}
+
+
+@dataclass
+class ProcessActionStatus(ProcessStatus):
+    """Dataclass to hold status of some actions during the identification processes."""
+    _patch_extraction: List[int] = field(default_factory=lambda: [0, 0])
+    _unsupported_hyp_modification: List[int] = field(default_factory=lambda: [0, 0, 0, 0])
+    _too_detailed_hyp_modification: int = 0
+    _post_process_rank: List[int] = field(default_factory=lambda: [0, 0])
+    _finish: bool = False
+
+
+    def update_patch_extraction_status(self, success_flag: bool):
+        if success_flag:
+            self._patch_extraction[0] += 1
+        else:
+            self._patch_extraction[1] += 1
+
+
+    def add_unsupported_hyp_modification_case(self, none_result: bool, same_result: bool, uns_result: bool, good_result: bool):
+        assert none_result + same_result + uns_result + good_result == 1
+        if none_result:
+            self._unsupported_hyp_modification[0] += 1
+        elif same_result:
+            self._unsupported_hyp_modification[1] += 1
+        elif uns_result:
+            self._unsupported_hyp_modification[2] += 1
+        else:
+            self._unsupported_hyp_modification[3] += 1
+
+
+    def update_too_detailed_hyp_modification_case(self):
+        self._too_detailed_hyp_modification += 1
+
+
+    def update_post_process_rank_status(self, success_flag: bool):
+        if success_flag:
+            self._post_process_rank[0] += 1
+        else:
+            self._post_process_rank[1] += 1
+
+
+    def update_finish_status(self, success_flag: bool):
+        if success_flag:
+            self._finish = True
+        else:
+            self._finish = False
+
+
+@dataclass
+class ProcessSearchStatus(ProcessStatus):
+    """Dataclass to hold search status of called search APIs during the identification processes."""
+    _unknown_search_api_count: int = 0
+    _dispatch_error_count: int = 0
+    _invalid_argument_count: int = 0
+    _non_unique_file_count: int = 0
+    _find_none_count: int = 0
+    _find_import_count: int = 0
+    _find_code_count: int = 0
+
+
+    def update_by_search_status(self, search_status: SearchStatus):
+        attr_name = f"_{search_status}_count"
+        count = getattr(self, attr_name, None)
+        if count is None:
+            raise ValueError(f"Unknown attr {attr_name}")
+
+        count += 1

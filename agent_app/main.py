@@ -16,7 +16,7 @@ from concurrent.futures import ProcessPoolExecutor
 from loguru import logger
 
 from agent_app import globals, globals_mut, inference, log
-from agent_app.data_structures import ProcessActionStatus
+from agent_app.data_structures import ProcessStatus
 from agent_app.api.manage_v2 import ProcessManager
 from agent_app.model import common
 from agent_app.model.register import register_all_models
@@ -255,15 +255,14 @@ def run_raw_task(task: RawTask, print_callback: Callable[[dict], None] | None = 
         logger.exception(e)
         run_status_message = f"Task {task_id} failed with exception: {e}."
     finally:
-        other_info = {
-            "completion_info": {
-                "processes_status": {
-                    proc_name: proc_status.to_dict()
-                    for proc_name, proc_status in all_proc_status.items()
-                } if all_proc_status else None
+        completion_info = {}
+        for proc_name, status_counts in all_proc_status.items():
+            completion_info[proc_name] = {
+                status_name: status_count.to_dict()
+                for status_name, status_count in status_counts.items()
             }
-        }
-        task.dump_meta_data(task_output_dpath, other_info)
+
+        task.dump_meta_data(task_output_dpath, {"completion_info": completion_info})
 
     log_and_always_print(run_status_message)
 
@@ -274,7 +273,7 @@ def do_inference(
         task: Task,
         task_output_dir: str,
         print_callback: Callable[[dict], None] | None = None
-) -> Dict[str, ProcessActionStatus] | None:
+) -> Dict[str, Dict[str, ProcessStatus]] | None:
     create_dir_if_not_exists(task_output_dir)
     current_task_log_path = os.path.join(task_output_dir, "info.log")
 
@@ -332,9 +331,8 @@ def construct_tasks(tasks_map_file: str, local_repos_dpath: str) -> List[RawLoca
     # TODO: Only in test
     checked_task_ids: List[str] = []
     checked_task_dirs = [
-        "/root/projects/VDTest/output/agent/ast_failure_recordings",
-        "/root/projects/VDTest/output/agent/vul_2024-09-08T16:51:25_SAVE",
-        "/root/projects/VDTest/output/agent/vul_2024-09-22T03:43:14_SAVE"
+        "/root/projects/VDTest/output/agent/on_hold_tasks",
+        "/root/projects/VDTest/output/agent/ast_failure_tasks"
     ]
     for task_dir in checked_task_dirs:
         task_full_names = os.listdir(task_dir)
@@ -350,7 +348,7 @@ def construct_tasks(tasks_map_file: str, local_repos_dpath: str) -> List[RawLoca
     for i, task_info in enumerate(tasks_map):
         commit_type = task_info["commit_type"]
         if (globals.expr_type == "vul" and commit_type == 1) or (globals.expr_type == "novul" and commit_type == 0):
-            task_id = f"{i}-" + task_info["source"]
+            task_id = task_info["task_id"]
 
             if task_id in checked_task_ids:
                 continue

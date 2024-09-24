@@ -22,11 +22,11 @@ from agent_app.api.agent_proxy import ProxyTask
 from agent_app.model import common
 from agent_app.search.search_manage import SearchManager
 from agent_app.data_structures import (
-    State, ProcessActionStatus,
     CommitType,
     CodeSnippetLocation,
     FunctionCallIntent,
-    MessageThread
+    MessageThread,
+    State, ProcessStatus,
 )
 from agent_app.log import (
     print_banner,
@@ -541,9 +541,9 @@ def run_in_start_state(
 
         # ------------------ 2.4 Collect patch locations ------------------ #
         if json_patches is None:
-            manager.proc_action_status.update_patch_extraction_status(success_flag=False)
+            manager.action_status_count.update_patch_extraction_status(success_flag=False)
         else:
-            manager.proc_action_status.update_patch_extraction_status(success_flag=True)
+            manager.action_status_count.update_patch_extraction_status(success_flag=True)
 
             raw_patches = json.loads(json_patches)["patch_locations"]
 
@@ -774,7 +774,7 @@ def run_in_hypothesis_check_state(
             if json_full_cwe_id is None:
                 # TODO: Bad result. This should not happen. (Require Verification)
                 # Bad case 1: modification failed <- invalid response
-                manager.proc_action_status.add_unsupported_hyp_modification_case(
+                manager.action_status_count.add_unsupported_hyp_modification_case(
                     none_result=True, same_result=False, uns_result=False, good_result=False
                 )
 
@@ -786,7 +786,7 @@ def run_in_hypothesis_check_state(
                 if mod_cwe_id == cur_cwe_id:
                     # TODO: Bad result. This should not happen. (Require Verification)
                     # Bad case 2: modification failed <- modified CWE-ID is the same as before
-                    manager.proc_action_status.add_unsupported_hyp_modification_case(
+                    manager.action_status_count.add_unsupported_hyp_modification_case(
                         none_result=False, same_result=True, uns_result=False, good_result=False
                     )
 
@@ -799,7 +799,7 @@ def run_in_hypothesis_check_state(
                     # We follow the strict condition: keep the hypothesis only if the modified CWE-ID is within the consideration.
                     if mod_cwe_id not in manager.cwe_manager.cwe_ids:
                         # Bad case 3: modification failed <- modified CWE-ID is still unsupported
-                        manager.proc_action_status.add_unsupported_hyp_modification_case(
+                        manager.action_status_count.add_unsupported_hyp_modification_case(
                             none_result=False, same_result=False, uns_result=True, good_result=False
                         )
 
@@ -807,7 +807,7 @@ def run_in_hypothesis_check_state(
 
                     else:
                         # Good case 3: modification successful <- modified CWE-ID is supported.
-                        manager.proc_action_status.add_unsupported_hyp_modification_case(
+                        manager.action_status_count.add_unsupported_hyp_modification_case(
                             none_result=False, same_result=False, uns_result=False, good_result=True
                         )
 
@@ -837,7 +837,7 @@ def run_in_hypothesis_check_state(
                          "\nBesides, this CWE-ID is moderately detailed, so it needs no more modification.")
 
     else:
-        manager.proc_action_status.update_too_detailed_hyp_modification_case()
+        manager.action_status_count.update_too_detailed_hyp_modification_case()
 
         # ------------------ 2.1 Get father CWEs at the specified depth ------------------ #
         fathers = manager.cwe_manager.get_depth_k_fathers_of_weakness(cur_cwe_id)
@@ -1350,7 +1350,7 @@ def post_process(
 
         # ------------------ 2.4 Rank the final hypothesis ------------------ #
         if json_ranking is None:
-            manager.proc_action_status.update_post_process_rank_status(success_flag=False)
+            manager.action_status_count.update_post_process_rank_status(success_flag=False)
 
             # TODO: Heuristic: 1) more occurrences -> higher ranking; 2) vulnerability fix > non-vulnerability fix
             commit_type_priority = {CommitType.VulnerabilityPatch: 1, CommitType.NonVulnerabilityPatch: 0}
@@ -1360,7 +1360,7 @@ def post_process(
                 reverse=True
             )
         else:
-            manager.proc_action_status.update_post_process_rank_status(success_flag=True)
+            manager.action_status_count.update_post_process_rank_status(success_flag=True)
 
             raw_ranking = json.loads(json_ranking)["ranking"]
             ranking_hyps = [pending_hyps[i - 1] for i in raw_ranking]
@@ -1376,7 +1376,7 @@ def start_conversation_round_stratified(
         output_dpath: str,
         manager: ProcessManager,
         print_callback: Callable[[dict], None] | None = None
-) -> Dict[str, ProcessActionStatus]:
+) -> Dict[str, Dict[str, ProcessStatus]]:
     """
     This version uses json data to process API calls, instead of using the OpenAI function calling.
     Advantage is that multiple API calls can be made in a single round.
@@ -1387,7 +1387,7 @@ def start_conversation_round_stratified(
     ############################################
 
     # process_name -> status
-    all_proc_status: Dict[str, ProcessActionStatus] = {}
+    all_proc_status: Dict[str, Dict[str, ProcessStatus]] = {}
 
     for proc_no in range(1, globals.complete_process_limit + 1):
         print_banner(f"COMPLETE PROCESS {proc_no}")
@@ -1413,9 +1413,9 @@ def start_conversation_round_stratified(
             tool_call_dpath=curr_proc_tool_call_dpath,
         )
 
-        # Process action status
-        manager.reset_proc_action_status()
-        all_proc_status[curr_proc_name] = manager.proc_action_status
+        # Process status count
+        manager.reset_status_count()
+        all_proc_status[curr_proc_name] = {}
 
         # Message thread
         msg_thread = MessageThread()
@@ -1460,9 +1460,14 @@ def start_conversation_round_stratified(
         finish = run_in_end_state(proc_no, proc_all_hyp, curr_proc_outs, msg_thread, manager, print_callback)
 
         # ------------------------------------ 1.3 Update and save ------------------------------------ #
-        # Update and save process status
-        manager.proc_action_status.update_finish_status(success_flag=finish)
-        all_proc_status[curr_proc_name] = manager.proc_action_status
+        # Update action status count
+        manager.action_status_count.update_finish_status(success_flag=finish)
+
+        # Save
+        all_proc_status[curr_proc_name] = {
+            "Action Status Count": manager.action_status_count,
+            "Search Status Count": manager.search_status_count
+        }
 
     #####################################
     # STEP 2: Vote for the final result #
@@ -1510,9 +1515,8 @@ def run_one_task(
         output_dpath: str,
         manager: ProcessManager,
         print_callback: Callable[[dict], None] | None = None,
-) -> Dict[str, ProcessActionStatus]:
-    """
-    Main entry point to run inference on one task.
+) -> Dict[str, Dict[str, ProcessStatus]]:
+    """Main entry point to run inference on one task.
 
     Args:
         raw_commit_content (str): The original commit content submitted to the task.

@@ -15,7 +15,10 @@ from agent_app.api.agent_proxy import ProxyTask, run_with_retries as run_proxy_w
 from agent_app.CWE.cwe_manage import CWEManager
 from agent_app.commit.commit_manage_v2 import CommitManager
 from agent_app.search.search_manage_v2 import SearchResult, SearchManager
-from agent_app.data_structures import ProcessActionStatus, SearchStatus, FunctionCallIntent, MessageThread
+from agent_app.data_structures import (
+    SearchStatus, FunctionCallIntent, MessageThread,
+    ProcessActionStatus, ProcessSearchStatus
+)
 from agent_app.task import Task
 from agent_app.log import log_exception
 from agent_app import globals
@@ -41,8 +44,11 @@ class ProcessManager:
         # Prepare the repo environment
         self.task.setup_project()
 
-        # Record special cases under processing
-        self.proc_action_status: ProcessActionStatus = ProcessActionStatus()
+        # Process recording
+        # (1) Special action count
+        self.action_status_count: ProcessActionStatus = ProcessActionStatus()
+        # (2) Search status count
+        self.search_status_count: ProcessSearchStatus = ProcessSearchStatus()
 
         # Manage commit info
         self.commit_manager = CommitManager(self.task.project_path, self.task.commit_hash, self.task.commit_content)
@@ -148,6 +154,7 @@ class ProcessManager:
 
         return all_tool_objs
 
+
     def dispatch_intent(self, intent: FunctionCallIntent) -> Tuple[str, SearchStatus, List[SearchResult]]:
         """Dispatch a function call intent to actually perform its action.
 
@@ -170,7 +177,6 @@ class ProcessManager:
         except TypeError as e:
             # TypeError can happen when the function is called with wrong parameters
             log_exception(e)
-            self.proc_action_status.update_typeerror_api_call_status()
             error = str(e)
             call_res = (error, SearchStatus.DISPATCH_ERROR, [])
         except Exception as e:
@@ -182,6 +188,9 @@ class ProcessManager:
 
         # Record this call and its result separately
         _, search_status, _ = call_res
+
+        self.search_status_count.update_by_search_status(search_status)
+
         self.tool_call_sequence.append(intent.to_dict_with_result(search_status))
 
         if not self.tool_call_layers:
@@ -190,19 +199,26 @@ class ProcessManager:
 
         return call_res
 
-    """PROCESS ACTION STATUS"""
 
-    def reset_proc_action_status(self):
-        self.proc_action_status = ProcessActionStatus()
+    """PROCESS STATUS COUNT"""
+
+
+    def reset_status_count(self):
+        self.action_status_count = ProcessActionStatus()
+        self.search_status_count = ProcessSearchStatus()
+
 
     """TOOL CALLs"""
+
 
     def start_new_tool_call_layer(self):
         self.tool_call_layers.append([])
 
+
     def reset_too_call_recordings(self):
         self.tool_call_sequence = []
         self.tool_call_layers = []
+
 
     def dump_tool_call_sequence_to_file(self, tool_call_output_dpath: str, prefix_fname: str = ""):
         """Dump the sequence of tool calls to a file."""
@@ -211,6 +227,7 @@ class ProcessManager:
         with open(tool_call_file, "w") as f:
             json.dump(self.tool_call_sequence, f, indent=4)
 
+
     def dump_tool_call_layers_to_file(self, tool_call_output_dpath: str, prefix_fname: str = ""):
         """Dump the layers of tool calls to a file."""
         fname = f"{prefix_fname}_tool_call_layers.json" if prefix_fname != "" else "tool_call_layers.json"
@@ -218,11 +235,14 @@ class ProcessManager:
         with open(tool_call_file, "w") as f:
             json.dump(self.tool_call_layers, f, indent=4)
 
+
     """SEARCH APIs"""
+
 
     # Not a search API - just to get full class definition when only the class is specified
     def get_class_full_snippet(self, class_name: str):
         return self.search_manager.get_class_full_snippet(class_name)
+
 
     def search_class(self, class_name: str) -> Tuple[str, SearchStatus, List[SearchResult]]:
         """Search for a class in the codebase.
@@ -240,6 +260,7 @@ class ProcessManager:
         """
         return self.search_manager.search_class(class_name)
 
+
     def search_class_in_file(self, class_name: str, file_name: str) -> Tuple[str, SearchStatus, List[SearchResult]]:
         """Search for a class in a given file.
 
@@ -255,6 +276,7 @@ class ProcessManager:
             List[SearchResult]: All search results.
         """
         return self.search_manager.search_class_in_file(class_name, file_name)
+
 
     def search_method_in_file(self, method_name: str, file_name: str) -> Tuple[str, SearchStatus, List[SearchResult]]:
         """Search for a method in a given file.
@@ -272,6 +294,7 @@ class ProcessManager:
         """
         return self.search_manager.search_method_in_file(method_name, file_name)
 
+
     def search_method_in_class(self, method_name: str, class_name: str) -> Tuple[str, SearchStatus, List[SearchResult]]:
         """Search for a method in a given class.
 
@@ -287,6 +310,7 @@ class ProcessManager:
             List[SearchResult]: All search results.
         """
         return self.search_manager.search_method_in_class(method_name, class_name)
+
 
     def search_method_in_class_in_file(self, method_name: str, class_name: str, file_name: str) -> Tuple[str, SearchStatus, List[SearchResult]]:
         """Search for a method in a given class which is in a given file.
@@ -305,7 +329,9 @@ class ProcessManager:
         """
         return self.search_manager.search_method_in_class_in_file(method_name, class_name, file_name)
 
+
     """PROXY AGENT"""
+
 
     def call_proxy_apis(self, text: str, task: ProxyTask) -> Tuple[str | None, str | None, List[MessageThread]]:
         """Call the Proxy Agent to do some tasks.
