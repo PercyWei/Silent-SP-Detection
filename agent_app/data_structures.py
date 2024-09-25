@@ -7,7 +7,6 @@ from typing import *
 from pprint import pformat
 from enum import Enum
 from dataclasses import dataclass, field
-from collections import namedtuple
 
 from openai.types.chat import ChatCompletionMessageToolCall
 from openai.types.chat.chat_completion_message_tool_call import Function as OpenaiFunction

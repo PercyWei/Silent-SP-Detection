@@ -296,21 +296,17 @@ def do_inference(
 
     manager = ProcessManager(task, task_output_dir)
 
-    print("\n" + "-" * 20 + "\n")
-    print(f"https://github.com/{task.repo_name}/commit/{task.commit_hash}\n\n")
-    print(manager.commit_manager.describe_commit_files())
-
     log_and_cprint(f"Manager preparation: {time.time() - start_time.timestamp()}")
 
     all_proc_status = None
-    # try:
-    #     all_proc_status = inference.run_one_task(task.commit_content, manager.output_dpath, manager, print_callback)
-    #
-    #     end_time = datetime.now()
-    #
-    #     dump_cost(task.repo_name, task.commit_hash, start_time, end_time, task_output_dir)
-    # finally:
-    #     task.reset_project()
+    try:
+        all_proc_status = inference.run_one_task(task.commit_content, manager.output_dpath, manager, print_callback)
+
+        end_time = datetime.now()
+
+        dump_cost(task.repo_name, task.commit_hash, start_time, end_time, task_output_dir)
+    finally:
+        task.reset_project()
 
     return all_proc_status
 

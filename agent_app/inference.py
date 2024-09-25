@@ -4,7 +4,6 @@
 import os
 import re
 import json
-from os.path import split
 
 import math
 import inspect
@@ -65,102 +64,6 @@ def get_api_calls_des() -> str:
             "\n- search_method_in_class(method_name: str, class_name: str): Search for a method in the given class, i,e. class methods only"
             "\n- search_method_in_class_in_file(method_name: str, class_name: str, file_name: str): Search for a method in the given class of the given file, i,e. class methods only"
             "\n\nNOTE: You can use MULTIPLE search APIs in one round.")
-
-
-"""EVALUATION"""
-
-
-@dataclass
-class EvalResult:
-    target_commit_type: int
-    target_vul_type: str | None
-    commit_type_match_rank: int | None = None
-    vul_type_match_rank: int | None = None
-
-    def full_to_dict(self):
-        return {
-            "target_commit_type": self.target_commit_type,
-            "target_vul_type": self.target_vul_type,
-            "commit_type_match_rank": self.commit_type_match_rank,
-            "vul_type_match_rank": self.vul_type_match_rank
-        }
-
-    def rank_to_dict(self):
-        return {
-            "commit_type_match_rank": self.commit_type_match_rank,
-            "vul_type_match_rank": self.vul_type_match_rank
-        }
-
-
-def hypothesis_rank_evaluation(
-        target_commit_type: int,
-        target_vul_type: str | None,
-        hyp_list: List[Dict]
-) -> EvalResult:
-    eval_res = EvalResult(target_commit_type, target_vul_type)
-
-    hyp_list = sorted(hyp_list, key=lambda x: x["confidence_score"], reverse=True)
-
-    target_commit_type = "vulnerability_patch" if target_commit_type == 1 else "non_vulnerability_patch"
-
-    for i, hyp in enumerate(hyp_list):
-        # (1) Evaluate commit type
-        if hyp["commit_type"] == target_commit_type and eval_res.commit_type_match_rank is None:
-            eval_res.commit_type_match_rank = i + 1
-
-        # (2) Evaluate vulnerability type
-        if target_vul_type is not None and \
-                hyp["vulnerability_type"] == target_vul_type and \
-                eval_res.vul_type_match_rank is None:
-            eval_res.vul_type_match_rank = i + 1
-
-    return eval_res
-
-
-def task_evaluation(
-        target_commit_type: int,
-        target_vul_type: str | None,
-        proc_dpath_list: List[str],
-        final_res_fpath: str
-) -> Dict:
-    all_res = {
-        "target_commit_type": target_commit_type,
-        "target_vul_type": target_vul_type,
-    }
-
-    proc_results = {}
-    # Step 1: Evaluate each process results
-    for proc_dpath in proc_dpath_list:
-        proc_name = proc_dpath.split("/")[-1]
-        proc_hyp_dpath = os.path.join(proc_dpath, "hypothesis")
-
-        # (1) Process init hypothesis
-        init_hyp_fpath = os.path.join(proc_hyp_dpath, "init.json")
-        with open(init_hyp_fpath, "r") as f:
-            proc_init_hyps = json.load(f)["unverified"]
-            proc_init_res = hypothesis_rank_evaluation(target_commit_type, target_vul_type, proc_init_hyps)
-
-        # (2) Process final hypothesis
-        end_hyp_fpath = os.path.join(proc_hyp_dpath, "final.json")
-        with open(end_hyp_fpath, "r") as f:
-            proc_final_hyps = json.load(f)["verified"]
-            proc_final_res = hypothesis_rank_evaluation(target_commit_type, target_vul_type, proc_final_hyps)
-
-        proc_results[proc_name] = {
-            "init": proc_init_res.rank_to_dict(),
-            "final": proc_final_res.rank_to_dict()
-        }
-
-    all_res["process_results"] = proc_results
-
-    # Step 2: Evaluate the final results
-    with open(final_res_fpath, "r") as f:
-        final_hyps = json.load(f)
-    final_res = hypothesis_rank_evaluation(target_commit_type, target_vul_type, final_hyps)
-
-    all_res["final_result"] = final_res.rank_to_dict()
-
-    return all_res
 
 
 """HYPOTHESIS"""
@@ -1495,15 +1398,6 @@ def start_conversation_round_stratified(
     final_res_fpath = os.path.join(output_dpath, "result.json")
     with open(final_res_fpath, "w") as f:
         json.dump([hyp.to_dict() for hyp in final_hyps], f, indent=4)
-
-    ######################
-    # STEP 4: Evaluation #
-    ######################
-
-    # eval_result = task_evaluation(manager.task.commit_type, manager.task.cwe_id, valid_proc_dpaths, final_res_fpath)
-    #
-    # eval_res_path = Path(output_dpath, "evaluation.json")
-    # eval_res_path.write_text(json.dumps(eval_result, indent=4))
 
     logger.info("Ending workflow.")
 
