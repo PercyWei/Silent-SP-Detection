@@ -394,7 +394,7 @@ class ProcessSearchStatus(ProcessStatus):
     def update_by_search_status(self, search_status: SearchStatus):
         attr_name = f"_{search_status}_count"
         count = getattr(self, attr_name, None)
-        if count is None:
+        if count is not None:
+            setattr(self, attr_name, count + 1)
+        else:
             raise ValueError(f"Unknown attr {attr_name}")
-
-        count += 1
