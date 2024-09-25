@@ -22,6 +22,41 @@ def cal_class_or_func_def_range(node: ast.ClassDef | ast.FunctionDef | ast.Async
     return start_lineno, end_lineno
 
 
+def extract_class_sig_lines_from_code(class_code: str) -> List[int]:
+    """Extract the class signature from the class code.
+    NOTE: Contain only the class definition and assign signatures, not class method signatures.
+    """
+    tree = ast.parse(class_code)
+    assert len(tree.body) == 1 and isinstance(tree.body[0], ast.ClassDef)
+
+    class_ast: ast.ClassDef = tree.body[0]
+
+    # (1) Extract the class definition
+    sig_start_line = 1
+
+    if class_ast.body:
+        body_start_line = class_ast.body[0].lineno
+        sig_end_line = body_start_line - 1
+    else:
+        sig_end_line = class_ast.end_lineno
+
+    sig_lines = list(range(sig_start_line, sig_end_line + 1))
+
+    # (2) Extract the assign signatures
+    for stmt in class_ast.body:
+        if isinstance(stmt, ast.Assign):
+            # For Assign, skip some useless cases where the assignment is to create docs
+            stmt_str_format = ast.dump(stmt)
+            if "__doc__" in stmt_str_format:
+                continue
+
+            assert stmt.end_lineno is not None
+            assign_range = list(range(stmt.lineno, stmt.end_lineno + 1))
+            sig_lines.extend(assign_range)
+
+    return sig_lines
+
+
 """ADD LOCATION"""
 
 
@@ -228,7 +263,7 @@ def _add_unit_location(
     return global_loc, cur_loc_id
 
 
-def _is_main_line(line: str) -> bool:
+def is_main_line(line: str) -> bool:
     pattern = r'^\s*if\s+__name__\s*==\s*[\'"]__main__[\'"]\s*:'
     match = re.search(pattern, line, re.MULTILINE)
     return bool(match)
@@ -387,7 +422,7 @@ def parse_python_file_locations(file_content: str) -> Tuple[Dict[int, Location],
             _, cur_loc_id = _add_class_location(
                 classes, classes_funcs, locations, li2loc_lookup, child, cur_loc_id, root_loc.id)
 
-        elif isinstance(child, ast.If) and _is_main_line(file_lines[child.lineno - 1]):
+        elif isinstance(child, ast.If) and is_main_line(file_lines[child.lineno - 1]):
             _, cur_loc_id = _add_main_location(mains, locations, li2loc_lookup, child, cur_loc_id, root_loc.id)
 
         else:
