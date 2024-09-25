@@ -571,15 +571,15 @@ def extract_class_sig_lines_from_ast(class_ast: ast.ClassDef) -> List[int]:
         List[int]: The source line numbers that contains the class signature (1-based).
     """
     # STEP (1): Extract the class signature
-    sig_start_line = class_ast.lineno
+    start_lineno, _ = cal_class_or_func_def_range(class_ast)
+    sig_start_line = start_lineno
+
     if class_ast.body:
-        # has body
         body_start_line = class_ast.body[0].lineno
         sig_end_line = body_start_line - 1
     else:
-        # no body
         sig_end_line = class_ast.end_lineno
-    assert sig_end_line is not None
+
     sig_lines = list(range(sig_start_line, sig_end_line + 1))
 
     # STEP (2): Extract the function signatures and assign signatures
@@ -587,11 +587,11 @@ def extract_class_sig_lines_from_ast(class_ast: ast.ClassDef) -> List[int]:
         if isinstance(stmt, ast.FunctionDef):
             sig_lines.extend(extract_func_sig_lines_from_ast(stmt))
         elif isinstance(stmt, ast.Assign):
-            # for Assign, skip some useless cases where the assignment is to create docs
+            # For Assign, skip some useless cases where the assignment is to create docs
             stmt_str_format = ast.dump(stmt)
             if "__doc__" in stmt_str_format:
                 continue
-            # otherwise, Assign is easy to handle
+
             assert stmt.end_lineno is not None
             assign_range = list(range(stmt.lineno, stmt.end_lineno + 1))
             sig_lines.extend(assign_range)
