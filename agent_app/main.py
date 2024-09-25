@@ -160,20 +160,20 @@ def run_task_groups(
     globals_mut.init_total_num_tasks(num_tasks)
 
     # Print some info about task
-    print_with_time(f"Total number of tasks: {num_tasks}")
-    print_with_time(f"Total number of processes: {num_processes}")
-    print_with_time(f"Task group info: (number of groups: {len(task_groups)})")
+    log_and_always_print(f"Total number of tasks: {num_tasks}")
+    log_and_always_print(f"Total number of processes: {num_processes}")
+    log_and_always_print(f"Task group info: (number of groups: {len(task_groups)})")
     for key, tasks in task_groups.items():
-        print_with_time(f"\t{key}: {len(tasks)} tasks")
+        log_and_always_print(f"\t{key}: {len(tasks)} tasks")
 
     if num_processes == 1:
         # Single-process mode
-        print_with_time("Running in single-process mode.")
+        log_and_always_print("Running in single-process mode.")
         run_tasks_serial(all_tasks)
-        print_with_time("Finished all tasks sequentially.")
+        log_and_always_print("Finished all tasks sequentially.")
     else:
         # Multi-process mode
-        print_with_time("Running in multi-process mode.")
+        log_and_always_print("Running in multi-process mode.")
         run_task_groups_parallel(task_groups, num_processes)
 
 
@@ -193,14 +193,14 @@ def run_task_groups_parallel(task_groups: Mapping[str, Sequence[RawTask]], num_p
     task_group_ids_items: List[Tuple[str, Sequence[RawTask]]] = sorted(
         task_groups.items(), key=lambda x: len(x[1]), reverse=True
     )
-    print_with_time(f"Sorted task groups: {[x[0] for x in task_group_ids_items]}")
+    log_and_always_print(f"Sorted task groups: {[x[0] for x in task_group_ids_items]}")
     try:
         # Use ProcessPoolExecutor instead of multiprocessing.Pool to support nested sub-processing
         group_ids, group_tasks = zip(*task_group_ids_items)
         with ProcessPoolExecutor(num_processes) as executor:
             executor.map(run_task_group, group_ids, group_tasks)
     finally:
-        print_with_time("Finishing all tasks in the pool.")
+        log_and_always_print("Finishing all tasks in the pool.")
 
 
 def run_task_group(task_group_id: str, task_group_items: List[RawTask]) -> None:
@@ -208,13 +208,14 @@ def run_task_group(task_group_id: str, task_group_items: List[RawTask]) -> None:
     Run all tasks in a task group sequentially.
     Main entry to parallel processing.
     """
-    log.print_with_time(f"Starting process for task group {task_group_id}. Number of tasks: {len(task_group_items)}.")
+    log_and_always_print(f"Starting process for task group {task_group_id}. Number of tasks: {len(task_group_items)}.")
+
     for task in task_group_items:
         # Within a group, the runs are always sequential
         run_task_in_subprocess(task)
-        log.print_with_time(globals_mut.inc_task_return_msg())
+        log_and_always_print(globals_mut.inc_task_return_msg())
 
-    log.print_with_time(f"{globals_mut.inc_task_group_return_msg()} Finished task group {task_group_id}.")
+    log_and_always_print(f"{globals_mut.inc_task_group_return_msg()} Finished task group {task_group_id}.")
 
 
 def run_task_in_subprocess(task: RawTask) -> None:
@@ -241,26 +242,34 @@ def run_raw_task(task: RawTask, print_callback: Callable[[dict], None] | None = 
     task_output_dpath = os.path.join(globals.expr_dpath, f"{task_id}_{start_time_s}")
     create_dir_if_not_exists(task_output_dpath)
 
-    log_and_always_print(f"============= Running task {task_id} =============")
+    log_and_always_print("=" * 10 + f" Running task {task_id} " + "=" * 10)
 
     all_proc_status = None
     try:
+        logger.disable(__name__)
         all_proc_status = do_inference(task.to_task(), task_output_dpath, print_callback)
+        logger.enable(__name__)
 
         if all_proc_status:
             run_status_message = f"Task {task_id} completed successfully."
         else:
             run_status_message = f"Task {task_id} failed without exception."
     except Exception as e:
+        logger.enable(__name__)
         logger.exception(e)
         run_status_message = f"Task {task_id} failed with exception: {e}."
     finally:
-        completion_info = {}
-        for proc_name, status_counts in all_proc_status.items():
-            completion_info[proc_name] = {
-                status_name: status_count.to_dict()
-                for status_name, status_count in status_counts.items()
-            }
+        logger.enable(__name__)
+
+        if all_proc_status is not None:
+            completion_info = {}
+            for proc_name, status_counts in all_proc_status.items():
+                completion_info[proc_name] = {
+                    status_name: status_count.to_dict()
+                    for status_name, status_count in status_counts.items()
+                }
+        else:
+            completion_info = None
 
         task.dump_meta_data(task_output_dpath, {"completion_info": completion_info})
 
@@ -287,17 +296,21 @@ def do_inference(
 
     manager = ProcessManager(task, task_output_dir)
 
+    print("\n" + "-" * 20 + "\n")
+    print(f"https://github.com/{task.repo_name}/commit/{task.commit_hash}\n\n")
+    print(manager.commit_manager.describe_commit_files())
+
     log_and_cprint(f"Manager preparation: {time.time() - start_time.timestamp()}")
 
     all_proc_status = None
-    try:
-        all_proc_status = inference.run_one_task(task.commit_content, manager.output_dpath, manager, print_callback)
-
-        end_time = datetime.now()
-
-        dump_cost(task.repo_name, task.commit_hash, start_time, end_time, task_output_dir)
-    finally:
-        task.reset_project()
+    # try:
+    #     all_proc_status = inference.run_one_task(task.commit_content, manager.output_dpath, manager, print_callback)
+    #
+    #     end_time = datetime.now()
+    #
+    #     dump_cost(task.repo_name, task.commit_hash, start_time, end_time, task_output_dir)
+    # finally:
+    #     task.reset_project()
 
     return all_proc_status
 
@@ -442,6 +455,14 @@ def main(args):
     globals.state_retry_limit = args.state_retry_limit
     globals.state_round_limit = args.state_round_limit
     globals.hypothesis_limit = args.hypothesis_limit
+
+    # ------------------------- Logger ------------------------- #
+    total_log_path = os.path.join(globals.expr_dpath, "info.log")
+    logger.add(
+        total_log_path,
+        level="DEBUG",
+        format="<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | <level>{message}</level>"
+    )
 
     # ------------------------- Save args ------------------------- #
     json_args = vars(args)
