@@ -807,14 +807,14 @@ def update_comb_info_with_struct_index(
     # (1) Update comb_info with old struct index
     old_func_index, old_class_index, old_class_func_index = \
         build_struct_index_from_locations(comb_info.old_locations, old_structs_info)
-    comb_info.old_func_index = old_class_index
+    comb_info.old_func_index = old_func_index
     comb_info.old_class_index = old_class_index
     comb_info.old_classFunc_index = old_class_func_index
 
     # (2) Update comb_info with new struct index
     new_func_index, new_class_index, new_class_func_index = \
         build_struct_index_from_locations(comb_info.new_locations, new_structs_info)
-    comb_info.new_func_index = new_class_index
+    comb_info.new_func_index = new_func_index
     comb_info.new_class_index = new_class_index
     comb_info.new_classFunc_index = new_class_func_index
 
