@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 import tokenize
 import subprocess
@@ -10,7 +11,10 @@ from io import StringIO
 from dataclasses import dataclass
 from enum import Enum
 
-from agent_app.commit.parse import extract_class_sig_lines_from_code, is_main_line, parse_python_file_locations
+from agent_app.commit.parse import is_main_line, parse_python_file_locations
+from agent_app.static_analysis.ast_parse import (
+    are_overlap_lines,
+    extract_func_sig_lines_from_code, extract_class_sig_lines_from_code)
 from agent_app.data_structures import LineRange, Location, line_loc_types, CombineInfo, LocationType
 from utils import run_command
 
@@ -845,9 +849,56 @@ def diff_lines_to_str(diff_lines: List[DiffLine]) -> str:
     return desc
 
 
-def are_overlap_lines(line_ids_1: List[int], line_ids_2: List[int]) -> bool:
-    overlap = list(set(line_ids_1) & set(line_ids_2))
-    return len(overlap) > 0
+def extract_diff_lines_context(
+        source: SourceFileType,
+        diff_lines: List[DiffLine],
+        start_line_id: int,
+        end_line_id: int,
+        offset: int = 3
+) -> List[int]:
+    """Extract the context of diff lines from a code snippet."""
+    context_line_ids: List[int] = []
+
+    for diff_line in diff_lines:
+        if diff_line.source == source and start_line_id <= diff_line.lineno <= end_line_id:
+            li_context_start = max(start_line_id, diff_line.lineno - offset)
+            li_context_end = min(end_line_id, diff_line.lineno + offset)
+            li_context = list(range(li_context_start, li_context_end + 1))
+            context_line_ids.extend(li_context)
+
+    context_line_ids = list(set(context_line_ids))
+
+    return context_line_ids
+
+
+def extract_relevant_lines_in_func(
+        source: SourceFileType,
+        func_loc: Location,
+        code_lines: List[str],
+        diff_lines: List[DiffLine]
+) -> List[int]:
+    """Extract relevant lines in function, including top-level functions and class methods."""
+    func_rel_line_ids: List[int] = []
+
+    # Option 1:
+    # func_rel_line_ids = func_loc.get_full_range()
+
+    # Option 2:
+    func_start, func_end = func_loc.range
+    func_code = '\n'.join(code_lines[func_start - 1: func_end])
+
+    # 1) Add func signature lines
+    func_sig_line_ids = extract_func_sig_lines_from_code(func_code)
+    func_sig_line_ids = [func_start + line_id - 1 for line_id in func_sig_line_ids]
+    func_rel_line_ids.extend(func_sig_line_ids)
+
+    # 2) Add context of diff lines in the func
+    diff_context_line_ids = extract_diff_lines_context(source, diff_lines, func_start, func_end)
+    func_rel_line_ids.extend(diff_context_line_ids)
+
+    func_rel_line_ids = list(set(func_rel_line_ids))
+
+    return func_rel_line_ids
 
 
 def extract_complete_lines_containing_diff_lines(
@@ -861,113 +912,141 @@ def extract_complete_lines_containing_diff_lines(
     For all deleted / added lines, extract detailed and complete code lines containing them from the old / new files.
 
     For now, the extraction principles are as follows:
-    1. For lines in the top-level function, extract all lines of the function.
-    2. For lines in the (top-level) class, consider two situations:
-        - a. For lines in the class method, extract all lines of the method.
+    #1. For lines in the top-level function, extract the following lines:
+        Option 1:
+            - All lines in the function.
+        Option 2 (Default):
+            - Function signature, i.e. the function definition.
+            - Diff lines and their context (range is -3 <= x <= +3).
+    #2. For lines in the (top-level) class, consider two situations:
+        - a. For lines in the class method, refer to #1.
         - b. For the rest lines, extract all lines of the AST node where they are located,
             which is a top level child of the class root node.
         - Besides, extract lines of the class signature, which contains only the class definition and assign signatures,
             not class method signatures.
-    3. For lines in the if_main block, refer to 2b, besides, extract lines like 'if __name__ == "__main__":'
-    4. For the rest lines, refer to 2b.
+    #3. For lines in the if_main block, refer to #2b, besides, extract lines like 'if __name__ == "__main__":'
+    #4. For the rest lines, refer to #2b.
     Simply summarized as the range of line location where the diff line is located.
 
     NOTE: Only for modified files.
     """
+    code_lines = code.splitlines(keepends=False)
+
     ## I. Find relevant line locations
-    relevant_loc_ids: List[int] = []
+    relevant_units: List[int] = []
+    relevant_funcs: List[int] = []
+    relevant_classes: Dict[int, List[int]] = defaultdict(list)
+    relevant_mains: Dict[int, List[int]] = defaultdict(list)
 
     for diff_line in diff_lines:
         if diff_line.source == source:
             loc_id = li2loc_lookup[diff_line.lineno]
-            assert locations[loc_id].type in line_loc_types
+            loc = locations[loc_id]
 
-            if loc_id not in relevant_loc_ids:
-                relevant_loc_ids.append(loc_id)
-
-    relevant_loc_ids = sorted(relevant_loc_ids)
+            if loc.type == LocationType.FUNCTION and loc_id not in relevant_funcs:
+                # (1) Relevant functions
+                relevant_funcs.append(loc_id)
+            elif loc.type == LocationType.CLASS_UNIT or loc.type == LocationType.CLASS_FUNCTION:
+                # (2) Relevant classes
+                class_loc_id = loc.father
+                if loc_id not in relevant_classes[class_loc_id]:
+                    relevant_classes[class_loc_id].append(loc_id)
+            elif loc.type == LocationType.MAIN_UNIT:
+                # (3) Relevant main blocks
+                main_loc_id = loc.father
+                if loc_id not in relevant_mains[main_loc_id]:
+                    relevant_mains[main_loc_id].append(loc_id)
+            else:
+                # (4) Relevant top-level statements
+                assert loc.type == LocationType.UNIT
+                if loc_id not in relevant_units:
+                    relevant_units.append(loc_id)
 
     ## II. Find relevant lines
     relevant_line_ids: List[int] = []
 
-    # class loc id -> [line ids]
-    class2rel_line_ids: Dict[int, List[int]] = defaultdict(list)
-    # main loc id -> [line ids]
-    main2rel_line_ids: Dict[int, List[int]] = defaultdict(list)
+    # II.1 Add relevant lines in relevant functions
+    for loc_id in relevant_funcs:
+        func_loc = locations[loc_id]
 
-    # II.1 Iterate through all relevant locations
-    for loc_id in relevant_loc_ids:
-        loc = locations[loc_id]
+        # (1) Add relevant lines in function
+        func_rel_line_ids = extract_relevant_lines_in_func(source, func_loc, code_lines, diff_lines)
 
-        # (1) Function containing diff lines
-        if loc.type == LocationType.FUNCTION:
-            func_line_ids = loc.get_full_range()
-            assert not are_overlap_lines(relevant_line_ids, func_line_ids)
-            relevant_line_ids.extend(func_line_ids)
+        # (2) Add to all
+        assert not are_overlap_lines(relevant_line_ids, func_rel_line_ids)
+        relevant_line_ids.extend(func_rel_line_ids)
 
-        # (2) Unit statement containing diff lines
-        if loc.type == LocationType.UNIT:
-            unit_line_ids = loc.get_full_range()
-            assert not are_overlap_lines(relevant_line_ids, unit_line_ids)
-            relevant_line_ids.extend(unit_line_ids)
+    # II.2 Add relevant lines in relevant classes
+    for class_loc_id, children in relevant_classes.items():
+        class_rel_line_ids: List[int] = []
 
-        # (3) Main unit statement containing diff lines
-        if loc.type == LocationType.MAIN_UNIT:
-            main_loc_id = loc.father
-            main_unit_line_ids = loc.get_full_range()
+        # (1) Add relevant lines in class body
+        for loc_id in children:
+            child_loc = locations[loc_id]
 
-            assert not are_overlap_lines(main2rel_line_ids[main_loc_id], main_unit_line_ids)
-            main2rel_line_ids[main_loc_id].extend(main_unit_line_ids)
+            # 1.1 Class unit containing diff lines
+            if child_loc.type == LocationType.CLASS_UNIT:
+                class_unit_line_ids = child_loc.get_full_range()
 
-        # (4) Class method containing diff lines
-        if loc.type == LocationType.CLASS_FUNCTION:
-            class_loc_id = loc.father
-            class_func_line_ids = loc.get_full_range()
+                assert not are_overlap_lines(class_rel_line_ids, class_unit_line_ids)
+                class_rel_line_ids.extend(class_unit_line_ids)
 
-            assert not are_overlap_lines(class2rel_line_ids[class_loc_id], class_func_line_ids)
-            class2rel_line_ids[class_loc_id].extend(class_func_line_ids)
+            # 2.1 Class methods containing diff lines
+            if child_loc.type == LocationType.CLASS_FUNCTION:
+                class_func_rel_line_ids = extract_relevant_lines_in_func(source, child_loc, code_lines, diff_lines)
 
-        # (5) Class unit statement containing diff lines
-        if loc.type == LocationType.CLASS_UNIT:
-            class_loc_id = loc.father
-            class_unit_line_ids = loc.get_full_range()
+                assert not are_overlap_lines(class_rel_line_ids, class_func_rel_line_ids)
+                class_rel_line_ids.extend(class_func_rel_line_ids)
 
-            assert not are_overlap_lines(class2rel_line_ids[class_loc_id], class_unit_line_ids)
-            class2rel_line_ids[class_loc_id].extend(class_unit_line_ids)
+        # (2) Add class signature lines
+        class_start, class_end = locations[class_loc_id].range
+        class_code = '\n'.join(code_lines[class_start - 1: class_end])
+        class_sig_line_ids = extract_class_sig_lines_from_code(class_code, include_func_sig=False)
+        class_sig_line_ids = [class_start + line_id - 1 for line_id in class_sig_line_ids]
 
+        class_rel_line_ids.extend(class_sig_line_ids)
 
-    code_lines = code.splitlines(keepends=False)
+        # (3) Add to all
+        assert not are_overlap_lines(relevant_line_ids, class_rel_line_ids)
+        relevant_line_ids.extend(class_rel_line_ids)
 
-    # II.2 Add Main signature lines
-    for main_loc_id, main_rel_line_ids in main2rel_line_ids.items():
-        main_line_ids = locations[main_loc_id].get_full_range()
-        # 1) Get main signature line id
+    # II.3 Add relevant lines in relevant main blocks
+    for main_loc_id, children in relevant_mains.items():
+        main_rel_line_ids: List[int] = []
+
+        # (1) Add relevant lines in main block body
+        for loc_id in children:
+            child_loc = locations[loc_id]
+
+            main_unit_line_ids = child_loc.get_full_range()
+
+            assert not are_overlap_lines(main_rel_line_ids, main_unit_line_ids)
+            main_rel_line_ids.extend(main_unit_line_ids)
+
+        # (2) Add main block signature line
         main_sig_line_id = None
-        for line_id in main_line_ids:
+        for line_id in locations[main_loc_id].get_full_range():
             if is_main_line(code_lines[line_id - 1]):
                 main_sig_line_id = line_id
                 break
         assert main_sig_line_id is not None
-        # 2) Complete main relevant line ids
         if main_sig_line_id not in main_rel_line_ids:
             main_rel_line_ids.append(main_sig_line_id)
-        # 3) Add to all
+
+        # (3) Add to all
         assert not are_overlap_lines(relevant_line_ids, main_rel_line_ids)
         relevant_line_ids.extend(main_rel_line_ids)
 
-    # II.3 Add class signature lines
-    for class_loc_id, class_rel_line_ids in class2rel_line_ids.items():
-        start_line_id, end_line_id = locations[class_loc_id].range
-        class_code = '\n'.join(code_lines[start_line_id - 1: end_line_id])
-        # 1) Get class signature line ids
-        class_sig_line_ids = extract_class_sig_lines_from_code(class_code)
-        class_sig_line_ids = [start_line_id + line_id - 1  for line_id in class_sig_line_ids]
-        # 2) Complete class relevant line ids
-        class_rel_line_ids.extend(class_sig_line_ids)
-        class_rel_line_ids = list(set(class_rel_line_ids))
-        # 3) Add to all
-        assert not are_overlap_lines(relevant_line_ids, class_rel_line_ids)
-        relevant_line_ids.extend(class_rel_line_ids)
+    # II.4 Add relevant lines in relevant top-level statements
+    for loc_id in relevant_units:
+        loc = locations[loc_id]
+
+        # (1) Add all lines of the statement
+        unit_line_ids = loc.get_full_range()
+
+        # (2) Add to all
+        assert not are_overlap_lines(relevant_line_ids, unit_line_ids)
+        relevant_line_ids.extend(unit_line_ids)
 
     return relevant_line_ids
 
@@ -1012,7 +1091,7 @@ def extract_diff_code_snippets(diff_lines: List[DiffLine], comb_info: CombineInf
 
     for i in range(len(relevant_line_ids)):
         line_id = relevant_line_ids[i]
-
+        # (1) Add sep '...'
         if i == 0:
             if line_id != 1:
                 snippet = "..."
@@ -1020,8 +1099,11 @@ def extract_diff_code_snippets(diff_lines: List[DiffLine], comb_info: CombineInf
             last_line_id = relevant_line_ids[i - 1]
             if line_id != last_line_id + 1:
                 snippet += "\n..."
-
+        # (2) Add code line
         snippet += f"\n{comb_code_lines[line_id - 1]}"
+
+    if relevant_line_ids[-1] != len(comb_code_lines):
+        snippet += "\n..."
 
     return snippet
 

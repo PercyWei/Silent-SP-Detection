@@ -11,7 +11,7 @@ from typing import *
 from dataclasses import dataclass
 
 from agent_app.data_structures import LineRange, CodeSnippetLocation
-from agent_app.commit.parse import cal_class_or_func_def_range
+from agent_app.static_analysis.ast_parse import cal_class_or_func_def_range, extract_class_sig_lines_from_ast
 
 
 @dataclass
@@ -533,70 +533,6 @@ def get_code_snippets_in_nodiff_file(abs_fpath: str, start: int, end: int) -> st
     for i in range(start - 1, end):
         snippet += file_content[i]
     return snippet
-
-
-def extract_func_sig_lines_from_ast(func_ast: ast.FunctionDef) -> List[int]:
-    """Extract the function signature from the AST node.
-
-    Includes the decorators, method name, and parameters.
-    Args:
-        func_ast (ast.FunctionDef): AST of the function.
-    Returns:
-        List[int]: The source line numbers that contains the function signature (1-based).
-    """
-    func_start_line = func_ast.lineno
-    if func_ast.decorator_list:
-        # has decorators
-        decorator_start_lines = [d.lineno for d in func_ast.decorator_list]
-        decorator_first_line = min(decorator_start_lines)
-        func_start_line = min(decorator_first_line, func_start_line)
-    # decide end line from body
-    if func_ast.body:
-        # has body
-        body_start_line = func_ast.body[0].lineno
-        end_line = body_start_line - 1
-    else:
-        # no body
-        end_line = func_ast.end_lineno
-    assert end_line is not None
-    return list(range(func_start_line, end_line + 1))
-
-
-def extract_class_sig_lines_from_ast(class_ast: ast.ClassDef) -> List[int]:
-    """Extract the class signature from the AST node.
-
-    Args:
-        class_ast (ast.ClassDef): AST of the class.
-    Returns:
-        List[int]: The source line numbers that contains the class signature (1-based).
-    """
-    # STEP (1): Extract the class signature
-    start_lineno, _ = cal_class_or_func_def_range(class_ast)
-    sig_start_line = start_lineno
-
-    if class_ast.body:
-        body_start_line = class_ast.body[0].lineno
-        sig_end_line = body_start_line - 1
-    else:
-        sig_end_line = class_ast.end_lineno
-
-    sig_lines = list(range(sig_start_line, sig_end_line + 1))
-
-    # STEP (2): Extract the function signatures and assign signatures
-    for stmt in class_ast.body:
-        if isinstance(stmt, ast.FunctionDef):
-            sig_lines.extend(extract_func_sig_lines_from_ast(stmt))
-        elif isinstance(stmt, ast.Assign):
-            # For Assign, skip some useless cases where the assignment is to create docs
-            stmt_str_format = ast.dump(stmt)
-            if "__doc__" in stmt_str_format:
-                continue
-
-            assert stmt.end_lineno is not None
-            assign_range = list(range(stmt.lineno, stmt.end_lineno + 1))
-            sig_lines.extend(assign_range)
-
-    return sig_lines
 
 
 def extract_class_sig_lines_from_file(file_content: str, class_name: str, class_range: LineRange) -> List[int]:

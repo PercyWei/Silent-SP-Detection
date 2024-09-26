@@ -6,55 +6,7 @@ from typing import *
 from loguru import logger
 
 from agent_app.data_structures import LineRange, LocationType, Location
-
-
-def cal_class_or_func_def_range(node: ast.ClassDef | ast.FunctionDef | ast.AsyncFunctionDef) -> Tuple[int, int]:
-    start_lineno = node.lineno    # 1-based
-    end_lineno = node.end_lineno  # 1-based
-
-    # NOTE: For ClassDef / FunctionDef node, `lineno`, `end_lineno` and `decorator_list` are treated separately.
-    for decorator in node.decorator_list:
-        if hasattr(decorator, 'lineno'):
-            start_lineno = min(start_lineno, decorator.lineno)
-        if hasattr(decorator, 'end_lineno'):
-            end_lineno = max(end_lineno, decorator.end_lineno)
-
-    return start_lineno, end_lineno
-
-
-def extract_class_sig_lines_from_code(class_code: str) -> List[int]:
-    """Extract the class signature from the class code.
-    NOTE: Contain only the class definition and assign signatures, not class method signatures.
-    """
-    tree = ast.parse(class_code)
-    assert len(tree.body) == 1 and isinstance(tree.body[0], ast.ClassDef)
-
-    class_ast: ast.ClassDef = tree.body[0]
-
-    # (1) Extract the class definition
-    sig_start_line = 1
-
-    if class_ast.body:
-        body_start_line = class_ast.body[0].lineno
-        sig_end_line = body_start_line - 1
-    else:
-        sig_end_line = class_ast.end_lineno
-
-    sig_lines = list(range(sig_start_line, sig_end_line + 1))
-
-    # (2) Extract the assign signatures
-    for stmt in class_ast.body:
-        if isinstance(stmt, ast.Assign):
-            # For Assign, skip some useless cases where the assignment is to create docs
-            stmt_str_format = ast.dump(stmt)
-            if "__doc__" in stmt_str_format:
-                continue
-
-            assert stmt.end_lineno is not None
-            assign_range = list(range(stmt.lineno, stmt.end_lineno + 1))
-            sig_lines.extend(assign_range)
-
-    return sig_lines
+from agent_app.static_analysis.ast_parse import cal_class_or_func_def_range
 
 
 """ADD LOCATION"""
