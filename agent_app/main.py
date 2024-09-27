@@ -246,21 +246,16 @@ def run_raw_task(task: RawTask, print_callback: Callable[[dict], None] | None = 
 
     all_proc_status = None
     try:
-        logger.disable(__name__)
         all_proc_status = do_inference(task.to_task(), task_output_dpath, print_callback)
-        logger.enable(__name__)
 
         if all_proc_status:
             run_status_message = f"Task {task_id} completed successfully."
         else:
             run_status_message = f"Task {task_id} failed without exception."
     except Exception as e:
-        logger.enable(__name__)
         logger.exception(e)
         run_status_message = f"Task {task_id} failed with exception: {e}."
     finally:
-        logger.enable(__name__)
-
         if all_proc_status is not None:
             completion_info = {}
             for proc_name, status_counts in all_proc_status.items():
@@ -453,12 +448,12 @@ def main(args):
     globals.hypothesis_limit = args.hypothesis_limit
 
     # ------------------------- Logger ------------------------- #
-    total_log_path = os.path.join(globals.expr_dpath, "info.log")
-    logger.add(
-        total_log_path,
-        level="DEBUG",
-        format="<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | <level>{message}</level>"
-    )
+    # total_log_path = os.path.join(globals.expr_dpath, "info.log")
+    # logger.add(
+    #     total_log_path,
+    #     level="DEBUG",
+    #     format="<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level> | <level>{message}</level>"
+    # )
 
     # ------------------------- Save args ------------------------- #
     json_args = vars(args)
