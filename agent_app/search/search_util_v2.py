@@ -414,7 +414,7 @@ def is_overlap_in_comb_file(
 ) -> bool:
     old_comb_range = (line_id_old2comb[old_range.start], line_id_old2comb[old_range.end])
     new_comb_range = (line_id_new2comb[new_range.start], line_id_new2comb[new_range.end])
-    return old_comb_range[0] >= new_comb_range[1] and old_comb_range[1] <= new_comb_range[0]
+    return old_comb_range[0] <= new_comb_range[1] and new_comb_range[0] <= old_comb_range[1]
 
 
 def match_overlap_structs(

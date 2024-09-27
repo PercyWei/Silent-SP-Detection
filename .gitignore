@@ -9,3 +9,6 @@
 
 # JetBrains configuration
 .idea/
+
+# Model parameters
+baselines/TreeVul/model/
