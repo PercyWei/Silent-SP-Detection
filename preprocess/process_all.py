@@ -2,8 +2,11 @@ import os
 import json
 
 from typing import *
+from copy import deepcopy
+from unidiff import PatchSet
 
 from preprocess.util import (
+    show_commit_content,
     show_commit_file_names, parse_commit_name_status,
     show_commit_parents, parse_commit_parents
 )
@@ -497,6 +500,149 @@ def filter_dataset_and_save(dataset_fpath: str):
         json.dump(filter_dataset, f, indent=4)
 
 
+def filter_dataset_for_baseline_treevul(dataset_fpath: str):
+    repos_root = "/root/projects/clone_projects"
+
+    valid_cwes_fpath = "/root/projects/TreeVul/data/valid_cwes.json"
+    with open(valid_cwes_fpath, 'r') as f:
+        valid_cwes = json.load(f)
+
+    with open(dataset_fpath, 'r') as f:
+        dataset = json.load(f)
+
+    print(f"Original dataset: {len(dataset)}")
+
+    ## Step 1: Filter
+    filter_dataset = []
+    for item in dataset:
+        if item["cwe_depth"] == 3 and item["cwe_id"] in valid_cwes[2] and item["file_count"] != "NOT COUNT":
+            filter_dataset.append(item)
+
+    print(f"Filtered dataset: {len(filter_dataset)}")
+
+    ## Step 2: Build new dataset (follow TreeVul)
+    cwe_paths_fpath = "/root/projects/TreeVul/data/cwe_path.json"
+    with open(cwe_paths_fpath, 'r') as f:
+        cwe_paths = json.load(f)
+
+    save_flag = True
+
+    extent2lang = {
+        ".py": "Python"
+    }
+
+    composed_patch = 0
+    new_dataset = []
+
+    for item in filter_dataset:
+        new_item = dict()
+        new_item["cve_list"] = item["cve_id"]
+        new_item["cwe_list"] = item["cwe_id"]
+
+        assert new_item["cwe_list"] in cwe_paths
+        cwe_path = cwe_paths[new_item["cwe_list"]]
+        assert len(cwe_path) == 3
+        new_item["path_list"] = [cwe_path]
+
+        new_item["repo"] = item["repo"]
+        new_item["commit_id"] = item["commit_hash"]
+
+        local_repo_dpath = os.path.join(repos_root, new_item["repo"].replace('/', "_"))
+        commit_content = show_commit_content(local_repo_dpath, new_item["commit_id"])
+        assert commit_content is not None
+
+        try:
+            patch = PatchSet.from_string(commit_content)
+        except Exception as e:
+            save_flag = False
+            print("\n" + "=" * 100 + "\n")
+            print(commit_content + "\n\n")
+            print(e)
+            continue
+
+        new_item["Total_LOC_REM"] = patch.removed
+        new_item["Total_LOC_ADD"] = patch.added
+        new_item["Total_LOC_MOD"] = new_item["Total_LOC_ADD"] + new_item["Total_LOC_REM"]
+        new_item["Total_NUM_FILE"] = len(set(f.path for f in patch))
+        if len(set(f.path for f in patch)) < len(patch):
+            composed_patch += 1
+
+        new_item["Total_NUM_HUNK"] = sum([len(f) for f in patch])
+
+        # (1) Remove large commits (perform at the commit-level)
+        thres_file_num = 100
+        thres_LOC = 10000
+
+        if new_item["Total_NUM_FILE"] > thres_file_num or new_item["Total_LOC_MOD"] > thres_LOC:
+            continue
+
+        # (2) Add dataset item for each file in commits
+        for f in (patch.modified_files + patch.removed_files + patch.added_files):
+            if f.is_binary_file:
+                continue
+
+            if len(f) == 0:
+                if not f.is_rename:
+                    raise ValueError("0 change, not renamed")
+                continue
+
+            if '.' not in f.path:
+                continue
+
+            extension = '.' + f.path.split('.')[-1]
+            if extension not in extent2lang:
+                continue
+
+            new_item["file_name"] = f.path
+
+            if f.is_modified_file:
+                new_item["file_type"] = "modified"
+            elif f.is_added_file:
+                new_item["file_type"] = "added"
+            elif f.is_removed_file:
+                new_item["file_type"] = "removed"
+
+            new_item["PL"] = extent2lang[extension]
+
+            new_item["LOC_REM"] = f.removed
+            new_item["LOC_ADD"] = f.added
+            new_item["LOC_MOD"] = new_item["LOC_ADD"] + new_item["LOC_REM"]
+
+            new_item["NUM_HUNK"] = len(f)
+
+            rem_lines = list()
+            add_lines = list()
+
+            for hunk in f:
+                # hunk-level
+                l_rem = ''.join([str(l)[1:] for l in hunk.source_lines() if not l.is_context])
+                l_add = ''.join([str(l)[1:] for l in hunk.target_lines() if not l.is_context])
+                for s in ['\r\n', '\r', '\n']:
+                    # preprocess code exactly the same as the CodeBERT
+                    l_rem = l_rem.replace(s, ' ')
+                    l_add = l_add.replace(s, ' ')
+                l_rem = ' '.join(l_rem.split())
+                l_add = ' '.join(l_add.split())
+
+                rem_lines.append(l_rem)
+                add_lines.append(l_add)
+
+            # hunk-level
+            new_item["REM_DIFF"] = rem_lines
+            new_item["ADD_DIFF"] = add_lines
+
+            new_dataset.append(deepcopy(new_item))
+
+    print(f"New dataset: {len(new_dataset)}")
+    print(f"Composed patch: {composed_patch}")
+
+    ## Step 3: Save
+    if save_flag:
+        save_fpath = "/root/projects/TreeVul/dataset/py_vul_tasks_vulfix.json"
+        with open(save_fpath, 'w') as f:
+            json.dump(new_dataset, f, indent=4)
+
+
 if __name__ == '__main__':
     pass
 
@@ -505,8 +651,10 @@ if __name__ == '__main__':
     # build_vul_tasks_with_cwe_from_vulfix_treevul()
     # complete_vul_tasks_with_cwe_with_path_list()
 
-    dataset_file = "/root/projects/VDTest/dataset/Final/py_vul_tasks_treevul_view1000_v1.json"
-    count_commit_file(dataset_file)
+    dataset_file = "/root/projects/VDTest/dataset/Final/py_vul_tasks_vulfix_view1000_v1.json"
+    # count_commit_file(dataset_file)
+
+    filter_dataset_for_baseline_treevul(dataset_file)
 
     # exps_root = "/root/projects/VDTest/output/agent/vul_2024-09-24T09:58:55_SAVE"
     # exps = os.listdir(exps_root)

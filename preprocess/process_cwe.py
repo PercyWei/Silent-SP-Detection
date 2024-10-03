@@ -273,6 +273,45 @@ def process_raw_cwe_tree(view_id: Literal["1400", "699", "888"]):
         json.dump(updt_cwe_tree, f, indent=4)
 
 
+def compare_cwe_collected_with_treevul():
+    """
+    Compare CWE paths collected and in baseline TreeVul.
+    """
+    ## (1) Get CWE paths in TreeVul
+    # NOTE: Only include CWE paths that appear in the TreeVul dataset
+    treevul_cwe_paths_fpath = "/root/projects/TreeVul/data/cwe_path.json"
+    with open(treevul_cwe_paths_fpath, "r") as f:
+        treevul_full_cwe_paths = json.load(f)
+
+    treevul_cwe_paths: Dict[str, List[str]] = {}
+    for full_cwe_id, full_cwe_path in treevul_full_cwe_paths.items():
+        cwe_id = full_cwe_id.split("-")[-1]
+        cwe_path = [c.split("-")[-1] for c in full_cwe_path]
+        treevul_cwe_paths[cwe_id] = cwe_path
+
+    print(len(treevul_cwe_paths))
+
+    ## (2) Get CWE paths collected
+    coll_cwe_tree_fpath = "/root/projects/VDTest/data/CWE/VIEW_1000/CWE_tree.json"
+    with open(coll_cwe_tree_fpath, "r") as f:
+        coll_cwe_tree = json.load(f)
+
+    coll_cwe_paths: Dict[str, List[List[str]]] = {}
+    for cwe_id, data in coll_cwe_tree.items():
+        coll_cwe_paths[cwe_id] = data["cwe_paths"]
+
+    print(len(coll_cwe_paths))
+
+    ## (3) Compare
+    for cwe_id, cwe_path in treevul_cwe_paths.items():
+        coll_paths = coll_cwe_paths[cwe_id]
+        if cwe_path not in coll_paths:
+            print(f"CWE-{cwe_id}:"
+                  f"\n - Collected: {json.dumps([' '.join(path) for path in coll_paths], indent=4)}"
+                  f"\n - In TreeVul: {cwe_path}"
+                  f"\n\n")
+
+
 if __name__ == '__main__':
     pass
 
@@ -286,3 +325,5 @@ if __name__ == '__main__':
     # crawl_view_888_category_name(view_id)
 
     # process_raw_cwe_tree(view_id)
+
+    compare_cwe_collected_with_treevul()

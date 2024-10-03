@@ -341,6 +341,18 @@ def extract_commit_info_from_url(commit_url: str) -> Tuple[str, str] | None:
     return auth_repo, commit_hash
 
 
+def show_commit_content(local_repo_dpath: str, commit_hash: str) -> str | None:
+    git_show_cmd = ['git', 'show', commit_hash]
+
+    result, _ = run_command(git_show_cmd, raise_error=False,
+                            cwd=local_repo_dpath, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+    if result is not None:
+        return result.stdout
+    else:
+        return None
+
+
 def show_commit_file_names(local_repo_dpath: str, commit_hash: str) -> str | None:
     git_show_name_cmd = ['git', 'diff-tree', '--no-commit-id', '--name-status', '-r', '-M', commit_hash]
 
