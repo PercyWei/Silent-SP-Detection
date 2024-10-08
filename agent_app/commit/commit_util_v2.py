@@ -960,9 +960,10 @@ def extract_relevant_lines_in_file(
             loc_id = li2loc_lookup[diff_line.lineno]
             loc = locations[loc_id]
 
-            if loc.type == LocationType.FUNCTION and loc_id not in relevant_funcs:
+            if loc.type == LocationType.FUNCTION:
                 # (1) Relevant functions
-                relevant_funcs.append(loc_id)
+                if loc_id not in relevant_funcs:
+                    relevant_funcs.append(loc_id)
             elif loc.type == LocationType.CLASS_UNIT or loc.type == LocationType.CLASS_FUNCTION:
                 # (2) Relevant classes
                 class_loc_id = loc.father
