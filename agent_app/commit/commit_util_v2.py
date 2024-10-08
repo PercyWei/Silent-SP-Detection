@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 import re
 import tokenize
 import subprocess
@@ -828,6 +827,16 @@ def update_comb_info_with_struct_index(
 """EXTRACT DIFF CODE SNIPPETS"""
 
 
+def adjust_code_snippet_indent(code_lines: List[str]) -> str:
+    """Remove spare indent based on the first code line."""
+    first_line = code_lines[0]
+
+    indent_len = len(first_line) - len(first_line.lstrip())
+    stripped_code_lines = [line[indent_len:] for line in code_lines]
+
+    return '\n'.join(stripped_code_lines)
+
+
 def diff_lines_to_str(diff_lines: List[DiffLine]) -> str:
     assert not diff_lines[0].sep and not diff_lines[-1].sep
 
@@ -885,7 +894,7 @@ def extract_relevant_lines_in_func(
 
     # Option 2:
     func_start, func_end = func_loc.range
-    func_code = '\n'.join(code_lines[func_start - 1: func_end])
+    func_code = adjust_code_snippet_indent(code_lines[func_start - 1: func_end])
 
     # 1) Add func signature lines
     func_sig_line_ids = extract_func_sig_lines_from_code(func_code)
@@ -901,13 +910,13 @@ def extract_relevant_lines_in_func(
     return func_rel_line_ids
 
 
-def extract_complete_lines_containing_diff_lines(
+def extract_relevant_lines_in_file(
         source: SourceFileType,
         diff_lines: List[DiffLine],
         code: str,
         locations: Dict[int, Location],
         li2loc_lookup: Dict[int, int]
-):
+) -> List[int]:
     """
     For all deleted / added lines, extract detailed and complete code lines containing them from the old / new files.
 
@@ -932,12 +941,20 @@ def extract_complete_lines_containing_diff_lines(
     """
     code_lines = code.splitlines(keepends=False)
 
-    ## I. Find relevant line locations
+    # ------------------ I. Find relevant line locations ------------------ #
+    all_imports: List[int] = []
     relevant_units: List[int] = []
     relevant_funcs: List[int] = []
     relevant_classes: Dict[int, List[int]] = defaultdict(list)
     relevant_mains: Dict[int, List[int]] = defaultdict(list)
 
+    ## (1) Find all import statements
+    for loc_id, loc in locations.items():
+        if loc.father is not None and locations[loc.father].type == LocationType.MODULE and \
+                (loc.ast == "Import" or loc.ast == "ImportFrom"):
+            all_imports.append(loc_id)
+
+    ## (2) Find line locations where the diff lines
     for diff_line in diff_lines:
         if diff_line.source == source:
             loc_id = li2loc_lookup[diff_line.lineno]
@@ -962,25 +979,34 @@ def extract_complete_lines_containing_diff_lines(
                 if loc_id not in relevant_units:
                     relevant_units.append(loc_id)
 
-    ## II. Find relevant lines
+    # ------------------ II. Find relevant line ids ------------------ #
     relevant_line_ids: List[int] = []
 
-    # II.1 Add relevant lines in relevant functions
+    ## (1) Add all lines in import statements
+    for loc_id in all_imports:
+        # 1. Add all lines of the statement
+        import_line_ids = locations[loc_id].get_full_range()
+
+        # 2. Add to all
+        assert not are_overlap_lines(relevant_line_ids, import_line_ids)
+        relevant_line_ids.extend(import_line_ids)
+
+    ## (2) Add relevant lines in relevant functions
     for loc_id in relevant_funcs:
         func_loc = locations[loc_id]
 
-        # (1) Add relevant lines in function
+        # 1. Add relevant lines in function
         func_rel_line_ids = extract_relevant_lines_in_func(source, func_loc, code_lines, diff_lines)
 
-        # (2) Add to all
+        # 2. Add to all
         assert not are_overlap_lines(relevant_line_ids, func_rel_line_ids)
         relevant_line_ids.extend(func_rel_line_ids)
 
-    # II.2 Add relevant lines in relevant classes
+    ## (3) Add relevant lines in relevant classes
     for class_loc_id, children in relevant_classes.items():
         class_rel_line_ids: List[int] = []
 
-        # (1) Add relevant lines in class body
+        # 1. Add relevant lines in class body
         for loc_id in children:
             child_loc = locations[loc_id]
 
@@ -998,23 +1024,23 @@ def extract_complete_lines_containing_diff_lines(
                 assert not are_overlap_lines(class_rel_line_ids, class_func_rel_line_ids)
                 class_rel_line_ids.extend(class_func_rel_line_ids)
 
-        # (2) Add class signature lines
+        # 2. Add class signature lines
         class_start, class_end = locations[class_loc_id].range
-        class_code = '\n'.join(code_lines[class_start - 1: class_end])
+        class_code = adjust_code_snippet_indent(code_lines[class_start - 1: class_end])
         class_sig_line_ids = extract_class_sig_lines_from_code(class_code, include_func_sig=False)
         class_sig_line_ids = [class_start + line_id - 1 for line_id in class_sig_line_ids]
 
         class_rel_line_ids.extend(class_sig_line_ids)
 
-        # (3) Add to all
+        # 3. Add to all
         assert not are_overlap_lines(relevant_line_ids, class_rel_line_ids)
         relevant_line_ids.extend(class_rel_line_ids)
 
-    # II.3 Add relevant lines in relevant main blocks
+    ## (4) Add relevant lines in relevant main blocks
     for main_loc_id, children in relevant_mains.items():
         main_rel_line_ids: List[int] = []
 
-        # (1) Add relevant lines in main block body
+        # 1. Add relevant lines in main block body
         for loc_id in children:
             child_loc = locations[loc_id]
 
@@ -1023,7 +1049,7 @@ def extract_complete_lines_containing_diff_lines(
             assert not are_overlap_lines(main_rel_line_ids, main_unit_line_ids)
             main_rel_line_ids.extend(main_unit_line_ids)
 
-        # (2) Add main block signature line
+        # 2. Add main block signature line
         main_sig_line_id = None
         for line_id in locations[main_loc_id].get_full_range():
             if is_main_line(code_lines[line_id - 1]):
@@ -1033,28 +1059,28 @@ def extract_complete_lines_containing_diff_lines(
         if main_sig_line_id not in main_rel_line_ids:
             main_rel_line_ids.append(main_sig_line_id)
 
-        # (3) Add to all
+        # 3. Add to all
         assert not are_overlap_lines(relevant_line_ids, main_rel_line_ids)
         relevant_line_ids.extend(main_rel_line_ids)
 
-    # II.4 Add relevant lines in relevant top-level statements
+    ## (5) Add relevant lines in relevant top-level statements
     for loc_id in relevant_units:
-        loc = locations[loc_id]
+        # 1. Add all lines of the statement
+        unit_line_ids = locations[loc_id].get_full_range()
 
-        # (1) Add all lines of the statement
-        unit_line_ids = loc.get_full_range()
-
-        # (2) Add to all
-        assert not are_overlap_lines(relevant_line_ids, unit_line_ids)
+        # 2. Add to all
         relevant_line_ids.extend(unit_line_ids)
 
     return relevant_line_ids
 
 
-def extract_diff_code_snippets(diff_lines: List[DiffLine], comb_info: CombineInfo) -> str:
-    """Extract a more detailed and complete code snippet containing all diff lines."""
+def extract_diff_context_in_file(diff_lines: List[DiffLine], comb_info: CombineInfo) -> str:
+    """Extract a more detailed and complete context containing all diff lines.
+
+    NOTE: Only for modified files.
+    """
     ## (1) Extract relevant line ids in old code and new code respectively
-    old_relevant_line_ids = extract_complete_lines_containing_diff_lines(
+    old_relevant_line_ids = extract_relevant_lines_in_file(
         source=SourceFileType.OLD,
         diff_lines=diff_lines,
         code=comb_info.old_code,
@@ -1062,7 +1088,7 @@ def extract_diff_code_snippets(diff_lines: List[DiffLine], comb_info: CombineInf
         li2loc_lookup=comb_info.old_li2loc
     )
 
-    new_relevant_line_ids = extract_complete_lines_containing_diff_lines(
+    new_relevant_line_ids = extract_relevant_lines_in_file(
         source=SourceFileType.NEW,
         diff_lines=diff_lines,
         code=comb_info.new_code,
@@ -1104,6 +1130,8 @@ def extract_diff_code_snippets(diff_lines: List[DiffLine], comb_info: CombineInf
 
     if relevant_line_ids[-1] != len(comb_code_lines):
         snippet += "\n..."
+
+    snippet = snippet.strip('\n')
 
     return snippet
 
@@ -1149,8 +1177,8 @@ def analyse_modified_file(
 
         # --------------------------- Step VII: Build DiffCodeSnippet  --------------------------- #
         # diff_code_snips = diff_lines_to_str(nb_diff_lines)
-        diff_code_snips = extract_diff_code_snippets(nb_diff_lines, comb_info)
+        diff_context = extract_diff_context_in_file(nb_diff_lines, comb_info)
 
-        return nb_comb_info, diff_code_snips
+        return nb_comb_info, diff_context
     else:
         return None
