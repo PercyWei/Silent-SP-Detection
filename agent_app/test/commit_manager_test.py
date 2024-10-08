@@ -6,8 +6,12 @@ from agent_app.util import (
 from agent_app.commit.commit_manage_v2 import CommitManager
 
 
-project_path = "/root/projects/clone_projects/saltstack_salt"
-commit_hash = "28aa9b105804ff433d8f663b2f9b804f2b75495a"
+# Good example
+# project_path = "/root/projects/clone_projects/xi_django-mfa3"
+# commit_hash = "32f656e22df120b84bdf010e014bb19bd97971de"
+
+project_path = "/root/projects/clone_projects/xi_django-mfa3"
+commit_hash = "32f656e22df120b84bdf010e014bb19bd97971de"
 
 raw_commit = get_commit_content(commit_hash, project_path)
 
@@ -18,6 +22,12 @@ with cd(project_path):
 
 try:
     manager = CommitManager(project_path, commit_hash, raw_commit)
+
+    # Test 1: Show the constructed commit init context
+    print("\n\n" + "-" * 40 + "Commit Init Context" + "-" * 40 + "\n\n")
+    print(manager.describe_commit_files())
+    print("\n\n" + "-" * 100 + "\n\n")
+
 finally:
     with cd(project_path):
         repo_checkout(head_commit_hash)

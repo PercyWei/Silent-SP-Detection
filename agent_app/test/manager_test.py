@@ -10,8 +10,8 @@ from agent_app.api.manage_v2 import ProcessManager
 
 
 # Need modify
-repo = "andialbrecht/sqlparse"
-commit_hash = "b4a39d9850969b4e1d6940d32094ee0b42a2cf03"
+repo = "janeczku/calibre-web"
+commit_hash = "0c0313f375bed7b035c8c0482bbb09599e16bfcf"
 output_dpath = "/root/projects/VDTest/agent_app/test/output"
 
 # Main test
@@ -45,6 +45,7 @@ try:
         local_repo_dpath=local_repo_path
     )
     manager = ProcessManager(raw_task.to_task(), output_dpath)
+    print(manager.commit_manager.describe_commit_files())
 
     # method_name = "_set_headers"
     # file_name = "rdiffweb/tools/security.py"
