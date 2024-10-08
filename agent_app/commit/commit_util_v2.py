@@ -14,7 +14,7 @@ from agent_app.commit.parse import is_main_line, parse_python_file_locations
 from agent_app.static_analysis.ast_parse import (
     are_overlap_lines,
     extract_func_sig_lines_from_code, extract_class_sig_lines_from_code)
-from agent_app.data_structures import LineRange, Location, line_loc_types, CombineInfo, LocationType
+from agent_app.data_structures import LineRange, Location, CombineInfo, LocationType
 from utils import run_command
 
 

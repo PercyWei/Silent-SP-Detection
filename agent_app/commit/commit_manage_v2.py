@@ -35,8 +35,8 @@ class CommitManager:
         self.file_comb_info: Dict[str, CombineInfo] = {}
 
         ####################### Information only for modified files #######################
-        # file_path -> diff code snippet
-        self.file_diff_code_snip: Dict[str, str] = {}
+        # file_path -> diff context (includes imports, class signatures and function signatures)
+        self.file_diff_context: Dict[str, str] = {}
 
         ####################### Update #######################
         try:
@@ -44,7 +44,9 @@ class CommitManager:
         except Exception as e:
             raise e
 
+
     """ UPDATE """
+
 
     def _update(self) -> None:
         commit_info = parse_commit_content(self.raw_commit_content)
@@ -61,6 +63,7 @@ class CommitManager:
                 self._update_with_deleted_file(diff_file_info)
             else:
                 self._update_with_modified_file(diff_file_info)
+
 
     def _update_with_modified_file(self, diff_file_info: Dict) -> None:
         parent_commit = diff_file_info["parent_commit"]
@@ -86,7 +89,7 @@ class CommitManager:
         if res is not None:
             self.valid_file_num += 1
 
-            comb_info, diff_code_snip = res
+            comb_info, diff_context = res
 
             ## (1) File path
             assert fpath is not None
@@ -95,15 +98,9 @@ class CommitManager:
             ## (2) File content
             self.file_comb_info[fpath] = comb_info
 
-            ## (5) Diff code snippet (used to prepare init commit prompt)
-            self.file_diff_code_snip[fpath] = diff_code_snip
+            ## (5) Diff context (used to prepare init commit prompt)
+            self.file_diff_context[fpath] = diff_context
 
-        else:
-            # TODO: For test, delete later.
-            with open("/root/projects/VDTest/output/agent/log.json", "a") as f:
-                repo = self.local_repo_dpath.split("/")[-1].replace("_", "/")
-                f.write(f"url: https://github.com/{repo}/commit/{self.commit_hash}\n"
-                        f"Empty file: {fpath}\n\n")
 
     def _update_with_added_file(self, diff_file_info: Dict) -> None:
         new_fpath = diff_file_info["new_fpath"]
@@ -125,6 +122,7 @@ class CommitManager:
 
         self.file_comb_info[new_fpath] = comb_info
 
+
     def _update_with_deleted_file(self, diff_file_info: Dict) -> None:
         parent_commit = diff_file_info["parent_commit"]
         old_fpath = diff_file_info["old_fpath"]
@@ -144,7 +142,9 @@ class CommitManager:
 
         self.file_comb_info[old_fpath] = comb_info
 
+
     """ Convert files information to seq """
+
 
     def describe_commit_files(self) -> str:
         add_file_descs: Dict[str, str] = {}
@@ -162,38 +162,45 @@ class CommitManager:
         file_num = 0
         commit_desc = ""
         if len(add_file_descs) > 0:
-            commit_desc += "## ADD files:\n"
+            commit_desc += "## ADD files:"
             for fname, file_desc in add_file_descs.items():
                 file_num += 1
-                commit_desc += f"# File {file_num}: {fname}\n"
-                commit_desc += file_desc + "\n"
+                commit_desc += (f"\n\n# File {file_num}: {fname}"
+                                f"\n{file_desc}")
+
+            commit_desc += "\n\n"
 
         if len(del_file_descs) > 0:
-            commit_desc += "## DELETE files:\n"
+            commit_desc += "## DELETE files:"
             for fname, file_desc in del_file_descs.items():
                 file_num += 1
-                commit_desc += f"# File {file_num}: {fname}\n"
-                commit_desc += file_desc + "\n"
+                commit_desc += (f"\n\n# File {file_num}: {fname}"
+                                f"\n{file_desc}")
+
+            commit_desc += "\n\n"
 
         if len(mod_file_descs) > 0:
-            commit_desc += "## MODIFY files:\n"
+            commit_desc += "## MODIFY files:"
             for fname, file_desc in mod_file_descs.items():
                 file_num += 1
-                commit_desc += f"# File {file_num}: {fname}\n"
-                commit_desc += file_desc + "\n"
+                commit_desc += (f"\n\n# File {file_num}: {fname}"
+                                f"\n{file_desc}")
 
-        commit_desc = f"<commit>\n{commit_desc}</commit>"
+        commit_desc = commit_desc.strip()
+        commit_desc = f"<commit>\n{commit_desc}\n</commit>"
 
         return commit_desc
+
 
     def _mod_file_info_desc(self, fpath: str) -> str | None:
         if fpath not in self.mod_files:
             return None
 
-        diff_code_snip = self.file_diff_code_snip[fpath]
-        file_desc = f"\n<code>\n{diff_code_snip}\n</code>"
+        diff_context = self.file_diff_context[fpath]
+        file_desc = f"<code>\n{diff_context}\n</code>"
 
         return file_desc
+
 
     def _add_file_info_desc(self, fpath: str) -> str | None:
         if fpath not in self.add_files:
@@ -203,9 +210,10 @@ class CommitManager:
         code = self.file_comb_info[fpath].new_code
         assert code is not None
 
-        file_desc = f"\n<code>\n{code}\n</code>"
+        file_desc = f"<code>\n{code}\n</code>"
 
         return file_desc
+
 
     def _del_file_info_desc(self, fpath: str) -> str | None:
         if fpath not in self.del_files:
@@ -215,15 +223,18 @@ class CommitManager:
         code = self.file_comb_info[fpath].old_code
         assert code is not None
 
-        file_desc = f"\n<code>\n{code}\n</code>"
+        file_desc = f"<code>\n{code}\n</code>"
 
         return file_desc
 
+
     """ Find related code """
+
 
     def find_related_code(self, locations: Dict):
         # FIXME
         pass
+
 
     def _find_diff_line(self, fpath: str, line: str, source: str | None = None):
         # FIXME
