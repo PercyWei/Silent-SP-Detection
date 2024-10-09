@@ -972,7 +972,7 @@ def collect_tasks_with_process_abnormal_actions(exps_root: str):
 
 
 if __name__ == '__main__':
-    exps_root = "/root/projects/VDTest/output/agent/vul_2024-09-22T04:12:32_SAVE"
+    exps_root = "/root/projects/VDTest/output/agent/vul_2024-09-22T23:04:50_SAVE"
 
     find_run_failure_tasks(exps_root)
 

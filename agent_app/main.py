@@ -17,7 +17,7 @@ from loguru import logger
 
 from agent_app import globals, globals_mut, inference, log
 from agent_app.data_structures import ProcessStatus
-from agent_app.api.manage_v2 import ProcessManager
+from agent_app.api.manage import ProcessManager
 from agent_app.model import common
 from agent_app.model.register import register_all_models
 from agent_app.raw_tasks import RawTask, RawLocalTask

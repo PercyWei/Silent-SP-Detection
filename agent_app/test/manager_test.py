@@ -6,7 +6,7 @@ from agent_app.util import (
     get_commit_content
 )
 from agent_app.raw_tasks import RawLocalTask
-from agent_app.api.manage_v2 import ProcessManager
+from agent_app.api.manage import ProcessManager
 
 
 # Need modify

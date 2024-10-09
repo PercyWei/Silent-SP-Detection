@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from loguru import logger
 
 from agent_app import globals
-from agent_app.api.manage_v2 import ProcessManager
+from agent_app.api.manage import ProcessManager
 from agent_app.api.agent_proxy import ProxyTask
 from agent_app.model import common
 from agent_app.search.search_manage import SearchManager

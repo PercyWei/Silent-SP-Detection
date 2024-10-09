@@ -1,15 +1,14 @@
-import json
 import os
+import json
 
 from typing import *
 
 from agent_app.commit.commit_util import (
-    SourceFileType,
-    CombineInfo, DiffCodeSnippet,
-    extract_commit_content_info, get_code_before_commit,
-    build_struct_indexes_from_common_code, analyse_modified_file
+    CombineInfo,
+    parse_commit_content, get_code_before_commit,
+    init_comb_info_for_del_file, init_comb_info_for_add_file,
+    analyse_modified_file
 )
-from agent_app.data_structures import LineRange
 
 
 class CommitInitError(Exception):
@@ -24,37 +23,20 @@ class CommitManager:
         self.raw_commit_content = raw_commit_content
 
         ####################### Information for all files involved #######################
-        ######## (1) Record commit file number ########
-        self.valid_files_num: int = 0
+        # (1) Record commit file number
+        self.valid_file_num: int = 0
 
-        ######## (2) Record commit file paths ########
+        # (2) Record commit file paths
         self.del_files: List[str] = []
         self.add_files: List[str] = []
         self.mod_files: List[str] = []
 
-        ######## (3) Record commit file content ########
-        # NOTE: We remain the same, and do not add '-'
-        self.code_before: Dict[str, str] = {}  # file_path (before commit) -> file_code
-        # NOTE: We remain the same, and do not add '+'
-        self.code_after: Dict[str, str] = {}   # file_path (after commit) -> file_code
-        # NOTE: We filter out blank lines and comment lines
-        self.code_comb: Dict[str, str] = {}    # file_path (before / after commit) -> file_code
-
-        ######## (4) Record line id lookup dict ########
-        self.line_id_before2comb: Dict[str, Dict[int, int]] = {}  # code_before -> code_comb
-        self.line_id_after2comb: Dict[str, Dict[int, int]] = {}   # code_after  -> code_comb
-
-        ######## (5) Record structs in combined code ########
-        # file_path -> [(func_name, func_range)]
-        self.file_func_index: Dict[str, List[Tuple[str, LineRange]]] = {}
-        # file_path -> [(class_name, class_range)]
-        self.file_class_index: Dict[str, List[Tuple[str, LineRange]]] = {}
-        # file_path -> [(class_name -> [(classFunc_name, classFunc_range)])]
-        self.file_classFunc_index: Dict[str, List[Tuple[str, List[Tuple[str, LineRange]]]]] = {}
+        # (3) Record commit file content info
+        self.file_comb_info: Dict[str, CombineInfo] = {}
 
         ####################### Information only for modified files #######################
-        # file_path -> [diff code snippet]
-        self.files_diff_code_snips: Dict[str, List[DiffCodeSnippet]] = {}
+        # file_path -> diff context (includes imports, class signatures and function signatures)
+        self.file_diff_context: Dict[str, str] = {}
 
         ####################### Update #######################
         try:
@@ -62,10 +44,12 @@ class CommitManager:
         except Exception as e:
             raise e
 
+
     """ UPDATE """
 
+
     def _update(self) -> None:
-        commit_info = extract_commit_content_info(self.raw_commit_content)
+        commit_info = parse_commit_content(self.raw_commit_content)
 
         if len(commit_info) == 0:
             raise CommitInitError()
@@ -80,63 +64,48 @@ class CommitManager:
             else:
                 self._update_with_modified_file(diff_file_info)
 
+
     def _update_with_modified_file(self, diff_file_info: Dict) -> None:
+        parent_commit = diff_file_info["parent_commit"]
         old_fpath = diff_file_info["old_fpath"]
         new_fpath = diff_file_info["new_fpath"]
 
+        # TODO: For now, we do not consider commits that contain files with both: 1) changed path 2) changed content.
         if old_fpath != new_fpath:
             with open("/root/projects/VDTest/output/agent/rename_file.txt", "a") as f:
                 repo = self.local_repo_dpath.split("/")[-1].replace("_", "/")
                 f.write(f"url: https://github.com/{repo}/commit/{self.commit_hash}\n"
                         f"old_fpath: {old_fpath}, new_fpath: {new_fpath}\n\n")
             raise CommitInitError("The file path has changed")
-
         fpath = old_fpath
 
-        old_ori_content = get_code_before_commit(self.local_repo_dpath, self.commit_hash, old_fpath)
+        old_ori_code = get_code_before_commit(self.local_repo_dpath, self.commit_hash, old_fpath, parent_commit)
         abs_new_fpath = os.path.join(self.local_repo_dpath, new_fpath)
         with open(abs_new_fpath, "r") as f:
-            new_ori_content = f.read()
+            new_ori_code = f.read()
 
-        comb_info, diff_code_snips, comb_funcs, comb_classes, comb_classesFuncs = \
-            analyse_modified_file(fpath, old_ori_content, new_ori_content, diff_file_info)
+        res = analyse_modified_file(old_ori_code, new_ori_code, diff_file_info)
 
-        if comb_info is not None:
-            self.valid_files_num += 1
+        if res is not None:
+            self.valid_file_num += 1
+
+            comb_info, diff_context = res
 
             ## (1) File path
             assert fpath is not None
-            # NOTE: For modified file, key is the name of file after, value is the name of file before, same below
             self.mod_files.append(fpath)
 
-            ## (2) File content (original, combined)
-            self.code_before[fpath] = comb_info.code_before
-            self.code_after[fpath] = comb_info.code_after
-            self.code_comb[fpath] = comb_info.code_comb
+            ## (2) File content
+            self.file_comb_info[fpath] = comb_info
 
-            ## (3) All structs in combined code (used for searching)
-            self.file_func_index[fpath] = comb_funcs
-            self.file_class_index[fpath] = comb_classes
-            self.file_classFunc_index[fpath] = comb_classesFuncs
+            ## (5) Diff context (used to prepare init commit prompt)
+            self.file_diff_context[fpath] = diff_context
 
-            ## (4) Line id lookup (used for searching)
-            self.line_id_before2comb[fpath] = comb_info.li_lookup_before2comb
-            self.line_id_after2comb[fpath] = comb_info.li_lookup_after2comb
-
-            ## (5) Diff lines (used to prepare init commit prompt)
-            self.files_diff_code_snips[fpath] = diff_code_snips
-
-        else:
-            # TODO: For test, delete later.
-            with open("/root/projects/VDTest/output/agent/log.json", "a") as f:
-                repo = self.local_repo_dpath.split("/")[-1].replace("_", "/")
-                f.write(f"url: https://github.com/{repo}/commit/{self.commit_hash}\n"
-                        f"Empty file: {fpath}\n\n")
 
     def _update_with_added_file(self, diff_file_info: Dict) -> None:
         new_fpath = diff_file_info["new_fpath"]
 
-        self.valid_files_num += 1
+        self.valid_file_num += 1
 
         ## (1) File path
         assert new_fpath is not None
@@ -145,47 +114,37 @@ class CommitManager:
         ## (2) File content (original, combined)
         abs_new_fpath = os.path.join(self.local_repo_dpath, new_fpath)
         with open(abs_new_fpath, "r") as f:
-            new_ori_content = f.read()
-        assert len(new_ori_content.splitlines()) == len(diff_file_info["code_diff"][0]["diff_code_snippet"])
+            ori_code = f.read()
+        comb_code_lines = diff_file_info["code_diff"][0]["diff_code_snippet"]
+        assert len(ori_code.splitlines()) == len(comb_code_lines)
 
-        self.code_after[new_fpath] = new_ori_content
-        self.code_comb[new_fpath] = diff_file_info["code_diff"][0]["diff_code_snippet"]
+        comb_info = init_comb_info_for_add_file(ori_code, '\n'.join(comb_code_lines))
 
-        ## (3) All structs in combined code (used to search in)
-        funcs, classes, classes_funcs = build_struct_indexes_from_common_code(new_ori_content)
-        self.file_func_index[new_fpath] = funcs
-        self.file_class_index[new_fpath] = classes
-        self.file_classFunc_index[new_fpath] = classes_funcs
+        self.file_comb_info[new_fpath] = comb_info
 
-        ## (4) Line id lookup (used for searching)
-        self.line_id_after2comb[new_fpath] = {i + 1: i + 1 for i in range(len(new_ori_content))}
 
     def _update_with_deleted_file(self, diff_file_info: Dict) -> None:
+        parent_commit = diff_file_info["parent_commit"]
         old_fpath = diff_file_info["old_fpath"]
 
-        self.valid_files_num += 1
+        self.valid_file_num += 1
 
         ## (1) File path
         assert old_fpath is not None
         self.del_files.append(old_fpath)
 
         ## (2) File content (original, combined)
-        old_ori_content = get_code_before_commit(self.local_repo_dpath, self.commit_hash, old_fpath)
-        assert len(old_ori_content.splitlines()) == len(diff_file_info["code_diff"][0]["diff_code_snippet"])
+        ori_code = get_code_before_commit(self.local_repo_dpath, self.commit_hash, old_fpath, parent_commit)
+        comb_code_lines = diff_file_info["code_diff"][0]["diff_code_snippet"]
+        assert len(ori_code.splitlines()) == len(comb_code_lines)
 
-        self.code_before[old_fpath] = old_ori_content
-        self.code_comb[old_fpath] = diff_file_info["code_diff"][0]["diff_code_snippet"]
+        comb_info = init_comb_info_for_del_file(ori_code, '\n'.join(comb_code_lines))
 
-        ## (3) All structs in combined code (used to search in)
-        funcs, classes, classes_funcs = build_struct_indexes_from_common_code(old_ori_content)
-        self.file_func_index[old_fpath] = funcs
-        self.file_class_index[old_fpath] = classes
-        self.file_classFunc_index[old_fpath] = classes_funcs
+        self.file_comb_info[old_fpath] = comb_info
 
-        ## (4) Line id lookup (used for searching)
-        self.line_id_before2comb[old_fpath] = {i + 1: i + 1 for i in range(len(old_ori_content))}
 
     """ Convert files information to seq """
+
 
     def describe_commit_files(self) -> str:
         add_file_descs: Dict[str, str] = {}
@@ -203,119 +162,79 @@ class CommitManager:
         file_num = 0
         commit_desc = ""
         if len(add_file_descs) > 0:
-            commit_desc += "## ADD files:\n"
+            commit_desc += "## ADD files:"
             for fname, file_desc in add_file_descs.items():
                 file_num += 1
-                commit_desc += f"# File {file_num}: {fname}\n"
-                commit_desc += file_desc + "\n"
+                commit_desc += (f"\n\n# File {file_num}: {fname}"
+                                f"\n{file_desc}")
+
+            commit_desc += "\n\n"
 
         if len(del_file_descs) > 0:
-            commit_desc += "## DELETE files:\n"
+            commit_desc += "## DELETE files:"
             for fname, file_desc in del_file_descs.items():
                 file_num += 1
-                commit_desc += f"# File {file_num}: {fname}\n"
-                commit_desc += file_desc + "\n"
+                commit_desc += (f"\n\n# File {file_num}: {fname}"
+                                f"\n{file_desc}")
+
+            commit_desc += "\n\n"
 
         if len(mod_file_descs) > 0:
-            commit_desc += "## MODIFY files:\n"
+            commit_desc += "## MODIFY files:"
             for fname, file_desc in mod_file_descs.items():
                 file_num += 1
-                commit_desc += f"# File {file_num}: {fname}\n"
-                commit_desc += file_desc + "\n"
+                commit_desc += (f"\n\n# File {file_num}: {fname}"
+                                f"\n{file_desc}")
 
-        commit_desc = f"<commit>\n{commit_desc}</commit>"
+        commit_desc = commit_desc.strip()
+        commit_desc = f"<commit>\n{commit_desc}\n</commit>"
 
         return commit_desc
 
-    def _mod_file_info_desc(self, fpath: str) -> str | None:
-        """
-        For a modified file involved in the commit, return the sorted modified content.
 
-        Args:
-            fpath: File path after commit.
-        Returns:
-            str:
-        """
+    def _mod_file_info_desc(self, fpath: str) -> str | None:
         if fpath not in self.mod_files:
             return None
 
-        file_diff_desc = ""
-        for diff_code_snip in self.files_diff_code_snips[fpath]:
-            diff_code_str = diff_code_snip.get_only_diff_code()
+        diff_context = self.file_diff_context[fpath]
+        file_desc = f"<code>\n{diff_context}\n</code>"
 
-            prefix = ""
-            if diff_code_snip.class_name is not None:
-                prefix += "<class>" + diff_code_snip.class_name + "</class> "
-            if diff_code_snip.func_name is not None:
-                prefix += "<func>" + diff_code_snip.func_name + "</func>"
+        return file_desc
 
-            file_diff_desc += f"{prefix}\n<code>\n{diff_code_str}\n</code>\n\n"
-
-        return file_diff_desc
 
     def _add_file_info_desc(self, fpath: str) -> str | None:
         if fpath not in self.add_files:
             return None
 
         # TODO: For files added in the commit, we just show its original file content
-        file_seq = self.code_after[fpath]
-        if file_seq.splitlines()[-1].strip() != "":
-            file_seq += "\n"
+        code = self.file_comb_info[fpath].new_code
+        assert code is not None
 
-        file_seq += (f"\n<code>"
-                     f"\n{file_seq}"
-                     f"\n</code>")
+        file_desc = f"<code>\n{code}\n</code>"
 
-        return file_seq
+        return file_desc
+
 
     def _del_file_info_desc(self, fpath: str) -> str | None:
         if fpath not in self.del_files:
             return None
 
         # TODO: For files deleted in the commit, we just show its original file content
-        file_seq = self.code_before[fpath]
-        if file_seq.splitlines()[-1].strip() != "":
-            file_seq += "\n"
+        code = self.file_comb_info[fpath].old_code
+        assert code is not None
 
-        file_seq += (f"\n<code>"
-                     f"\n{file_seq}"
-                     f"\n</code>")
+        file_desc = f"<code>\n{code}\n</code>"
 
-        return file_seq
+        return file_desc
+
 
     """ Find related code """
 
+
     def find_related_code(self, locations: Dict):
-        """
+        # FIXME
+        pass
 
-        Args:
-            locations (Dict): Generated by Proxy Agent
-        """
-        for loc in locations:
-            fpath = loc["file"]
-            code_snippet = loc["code"]
-            class_name = loc["class"] if "class" in loc else None
-            func_name = loc["func"] if "func" in loc else None
-
-            if fpath in self.del_files:
-                # FIXME
-                pass
-
-            if fpath in self.add_files:
-                # FIXME
-                pass
-
-            if fpath in self.mod_files or fpath in list(self.mod_files.values()):
-                full_code_snippet = []
-
-                lines = code_snippet.split("\n")
-                for line in lines:
-                    if line.startswith("-"):
-                        source = SourceFileType.OLD
-                    elif line.startswith("+"):
-                        source = SourceFileType.NEW
-                    else:
-                        source = None
 
     def _find_diff_line(self, fpath: str, line: str, source: str | None = None):
         # FIXME

@@ -3,7 +3,7 @@ from agent_app.util import (
     get_head_commit_hash, cd, repo_checkout,
     get_commit_content
 )
-from agent_app.commit.commit_manage_v2 import CommitManager
+from agent_app.commit.commit_manage import CommitManager
 
 
 # Good example

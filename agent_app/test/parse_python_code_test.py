@@ -21,7 +21,7 @@ try:
 
     file_content = pathlib.Path(file_path).read_text(encoding=result['encoding'])
     # print(file_content)
-    struct_info = search_util.parse_python_code(file_content)
+    struct_info = search_util_v2.parse_python_code(file_content)
 finally:
     with cd(project_path):
         repo_checkout(head_commit_hash)
