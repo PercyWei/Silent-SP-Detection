@@ -173,8 +173,8 @@ class ControlFlowGraph:
             networkx.draw_spring(graph, with_labels=True)
 
             # Show file locations in shell
-            for node in list(graph.nodes()):
-                print(node + ": " + networkx_data.nodes[node]['file'])
+            for node in list(graph.all_nodes()):
+                print(node + ": " + networkx_data.all_nodes[node]['file'])
             plt.show()
 
     def _resolve_module_imports(self, file_path: str):

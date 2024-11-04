@@ -6,7 +6,6 @@ from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 
-
 from logs import base_log_and_cprint
 
 
@@ -44,14 +43,14 @@ def run_command(
         return result, None
 
     except subprocess.CalledProcessError as e:
-        error_msg = f"Error running command: {command}, {e}"
+        error_msg = f"Error running command: {' '.join(command)}\nError msg: {e}"
         base_log_and_cprint(error_msg, print_log=print_log, print_stdout=print_stdout)
         if raise_error:
             raise e
         return None, str(e)
 
     except Exception as e:
-        error_msg = f"Error running command: {command}, {e}"
+        error_msg = f"Error running command: {' '.join(command)}\nError msg: {e}"
         base_log_and_cprint(error_msg, print_log=print_log, print_stdout=print_stdout)
         if raise_error:
             raise e

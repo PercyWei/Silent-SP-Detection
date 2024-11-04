@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 import tokenize
 import subprocess
@@ -10,11 +11,25 @@ from io import StringIO
 from dataclasses import dataclass
 from enum import Enum
 
-from agent_app.commit.parse import is_main_line, parse_python_file_locations
-from agent_app.static_analysis.ast_parse import (
-    are_overlap_lines,
-    extract_func_sig_lines_from_code, extract_class_sig_lines_from_code)
-from agent_app.data_structures import LineRange, Location, CombineInfo, LocationType
+from agent_app import globals_opt
+from agent_app.static_analysis.py_ast_parse import (
+    ASTParser as PyASTParser,
+    extract_func_sig_lines_from_snippet as extract_func_sig_lines_from_py_code,
+    extract_class_sig_lines_from_snippet as extract_class_sig_lines_from_py_code
+)
+from agent_app.static_analysis.java_ast_parse import (
+    ASTParser as JavaASTParser,
+    filter_code_content_by_processing_java_script,
+    extract_iface_sig_lines_from_snippet as extract_iface_sig_lines_from_java_code,
+    extract_class_sig_lines_from_snippet as extract_class_sig_lines_from_java_code,
+    extract_method_sig_lines_from_snippet as extract_method_sig_lines_from_java_code
+)
+from agent_app.data_structures import (
+    DiffFileInfo, PyDiffFileInfo, JavaDiffFileInfo,
+    PySimNodeType, JavaSimNodeType,
+    PySimNode, JavaSimNode
+)
+from agent_app.util import make_tmp_file, remove_tmp_file
 from utils import run_command
 
 
@@ -422,14 +437,14 @@ def _get_diff_line_source_file(diff_line: str) -> SourceFileType:
         raise Exception("Unexpected diff line")
 
 
-def combine_diff_code_info_within_file(diff_file_info: Dict) -> List[DiffLine]:
-    """Combine diff code within file, using sep to separate discontinuous diff lines.
+def extract_all_diff_lines_within_file(diff_file_info: Dict) -> List[DiffLine]:
+    """Extract all diff code within a file of the commit, using sep to separate discontinuous diff lines.
 
     NOTE: Only for modified files.
     Args:
-        diff_file_info (Dict): For detailed format, see the method `extract_diff_files_info`.
+        diff_file_info (Dict): For detailed format, see the method 'extract_diff_files_info'.
     Returns:
-        List[DiffLine]: List of diff lines within file.
+        List[DiffLine]: All diff lines within a file.
     """
     diff_lines: List[DiffLine] = []
 
@@ -481,181 +496,263 @@ def _is_only_comment(line: str) -> bool:
     return line.strip().startswith('#')
 
 
-def find_comment_lines(code: str) -> List[int]:
-    """Find lines containing comment like "# xxx".
-    NOTE: We do not consider Docstrings here.
-    """
-    comment_lines: List[int] = []
+def _update_line_id_map_for_filtering(line_id_map: Dict[int, int], retained_line_ids: List[int]) -> Dict[int, int]:
+    """Update line id mapping for code filtering.
 
-    # Step 1: Find all comment lines
+    Args:
+        line_id_map (Dict[int, int]): Line id mapping from original code to filtered code.
+        retained_line_ids (List[int]): Retained line ids.
+    Returns:
+        Dict[int, int]: Line id mapping (1-based) from original code to new filtered code.
+    """
+    ## Check
+    assert set(retained_line_ids).issubset(set(line_id_map.values()))
+
+    ## Update
+    new_line_id_map: Dict[int, int] = {}
+
+    line_id_map = dict(sorted(line_id_map.items()))
+    retained_line_ids = sorted(retained_line_ids)
+
+    for ori_line_id, map_line_id in line_id_map.items():
+        if map_line_id in retained_line_ids:
+            new_map_line_id = retained_line_ids.index(map_line_id) + 1
+            new_line_id_map[ori_line_id] = new_map_line_id
+
+    return new_line_id_map
+
+
+def filter_comments_in_py_code(code: str, line_id_map: Dict[int, int]) -> Tuple[str, Dict[int, int]]:
+    """Filter out comments in Python code.
+    TODO: Since multi-line comments marked with three single quotes or three double quotes are parsed as ast.Expr in
+          python ast, for now, we only consider single-line commits that won't be parsed by ast and also take up a
+          single line.
+    """
+    ## Step 1: Check
+    code_lines = code.splitlines(keepends=False)
+    if line_id_map:
+        assert len(code_lines) == len(line_id_map)
+    else:
+        line_id_map = {i: i for i in range(1, len(code_lines) + 1)}
+
+    ## Step 2: Find all comment lines
+    cand_comment_line_ids: List[int] = []
+
     code_io = StringIO(code)
     tokens = tokenize.generate_tokens(code_io.readline)
     for token in tokens:
         if token.type == tokenize.COMMENT:
-            comment_lines.append(token.start[0])
+            cand_comment_line_ids.append(token.start[0])
 
-    # Step 2: Find all comment lines containing only comment
+    ## Step 3: Find all comment lines containing only comment
+    for i in range(len(cand_comment_line_ids) - 1, -1, -1):
+        line_id = cand_comment_line_ids[i]
+        if not _is_only_comment(code_lines[line_id - 1]):
+            del cand_comment_line_ids[i]
+
+    ## Step 4: Remove all candidate comment lines
+    retained_line_ids = sorted(list(set(line_id_map.values()) - set(cand_comment_line_ids)))
+
+    # (1) Filtered code
+    filtered_code_lines: List[str] = []
+    for i, line in enumerate(code_lines):
+        if (i + 1) in retained_line_ids:
+            filtered_code_lines.append(line)
+    # (2) New line id mapping
+    new_line_id_map = _update_line_id_map_for_filtering(line_id_map, retained_line_ids)
+
+    return '\n'.join(filtered_code_lines), new_line_id_map
+
+
+def filter_blank_lines_in_py_code(code: str, line_id_map: Dict[int, int]) -> Tuple[str, Dict[int, int]]:
+    """Filter out blank lines in Python code."""
+    ## Check
     code_lines = code.splitlines(keepends=False)
+    if line_id_map:
+        assert len(code_lines) == len(line_id_map), (f"\n{len(code_lines)}\n"
+                                                     f"{json.dumps(code_lines, indent=4)}\n\n"
+                                                     f"{len(line_id_map)}\n"
+                                                     f"{json.dumps(line_id_map, indent=4)}")
+    else:
+        line_id_map = {i: i for i in range(1, len(code_lines) + 1)}
 
-    single_comment_lines: List[int] = []
-    for comment_line in comment_lines:
-        if _is_only_comment(code_lines[comment_line - 1]):
-            single_comment_lines.append(comment_line)
+    ## Filter
+    retained_line_ids: List[int] = []
 
-    return single_comment_lines
+    # (1) Filtered code
+    filtered_code_lines: List[str] = []
+    for i, line in enumerate(code_lines):
+        if line.strip() != "":
+            filtered_code_lines.append(line)
+            retained_line_ids.append(i + 1)
+
+    # (2) New line id mapping
+    new_line_id_map = _update_line_id_map_for_filtering(line_id_map, retained_line_ids)
+
+    return '\n'.join(filtered_code_lines), new_line_id_map
 
 
-def filter_blank_and_comment_in_code(code: str, filter_comment: bool = True) -> Tuple[str, Dict[int, int]]:
-    """Filter out blank lines and comment lines in file.
+def filter_py_code_content(
+        code: str,
+        filter_comment: bool = True,
+        filter_blank: bool = True
+) -> Tuple[str, Dict[int, int]]:
+    """Filter the content of Python code.
 
     Args:
-        code (str): File content.
-        filter_comment (bool): Whether to filter out comment.
-            FIXME: Since ast does not consider comment lines while analyzing, so we filter out lines which
-                contain only comments. More detailed comment classification will be considered in the future.
+        code (str): Python code.
+        filter_comment (bool): Whether to filter out comments.
+        filter_blank (bool): Whether to filter out blank lines.
     Returns:
-        str: Filtered file.
-        Dict[int, int]: line id in original file (1-based) -> line id in filtered file (1-based).
+        str: Filtered python code.
+        Dict[int, int]: Line id mapping (1-based) from original code to filtered code.
     """
-    lines = code.splitlines(keepends=False)
-    nb_lines: List[str] = []
-    line_id_lookup: Dict[int, int] = {}
+    code_lines = code.splitlines(keepends=False)
+    filtered_code: str = code
+    line_id_map: Dict[int, int] = {i: i for i in range(1, len(code_lines) + 1)}
 
-    # Find comment lines if needed, otherwise empty
+    # Step 1: Filter out comments
     if filter_comment:
-        comment_lines = find_comment_lines(code)
+        filtered_code, line_id_map = filter_comments_in_py_code(filtered_code, line_id_map)
+
+    # Step 2: Filter out blank lines
+    if filter_blank:
+        filtered_code, line_id_map = filter_blank_lines_in_py_code(filtered_code, line_id_map)
+
+    return filtered_code, line_id_map
+
+
+def filter_java_code_content(
+        code: str,
+        filter_comment: bool = True,
+        filter_javadoc: bool = False,
+        filter_blank: bool = True
+) -> Tuple[str, Dict[int, int]] | None:
+    """Filter the content of Java code.
+
+    Args:
+       code (str): Java code.
+       filter_comment (bool): Whether to filter out comments.
+       filter_javadoc (bool): Whether to filter out javadocs.
+       filter_blank (bool): Whether to filter out blank lines.
+    Returns:
+       str: Filtered Java code.
+       Dict[int, int]: Line id mapping (1-based) from original code to filtered code.
+    """
+    code_fpath = None
+    output_fpath = None
+
+    filtered_code: str | None = None
+    line_id_map: Dict[int, int] | None = None
+
+    try:
+        code_fpath = make_tmp_file(code)
+        output_fpath = make_tmp_file("", ".json")
+
+        filter_flag = filter_code_content_by_processing_java_script(
+            code_fpath, output_fpath, filter_comment, filter_javadoc, filter_blank
+        )
+
+        if filter_flag:
+            with open(output_fpath, "r") as f:
+                filtered_res = json.load(f)
+
+            filtered_code = filtered_res["code"]
+            line_id_map = filtered_res["lineIdMap"]
+
+            line_id_map = {int(ori_li): int(new_li) for ori_li, new_li in line_id_map.items()}
+            line_id_map = dict(sorted(line_id_map.items()))
+    finally:
+        if code_fpath is not None:
+            remove_tmp_file(code_fpath)
+        if output_fpath is not None:
+            remove_tmp_file(output_fpath)
+
+    if filtered_code is None or line_id_map is None:
+        return None
     else:
-        comment_lines = []
-
-    # Fiter blank lines (and comment lines)
-    for i, line in enumerate(lines):
-        if line.strip() != "" and (i + 1) not in comment_lines:
-            nb_lines.append(line)
-            line_id_lookup[i + 1] = len(nb_lines)
-
-    return "\n".join(nb_lines), line_id_lookup
+        return filtered_code, line_id_map
 
 
-def filter_blank_lines_in_commit(
+def filter_file_diff_content(
         file_diff_lines: List[DiffLine],
-        old_line_id_lookup: Dict[int, int],
-        new_line_id_lookup: Dict[int, int]
+        old_line_id_map: Dict[int, int],
+        new_line_id_map: Dict[int, int]
 ) -> List[DiffLine]:
-    """Filter blank lines and comment lines in commit, including lines deleted / added / unchanged.
+    """Filter the changed content of file in the commit according to the (old / new) line id mapping.
 
-    NOTE 1: Only for modified files.
-    NOTE 2: `file_diff_lines` is obtained from `combine_diff_code_info_within_file`.
-    NOTE 3: Whether to filter comment lines depends on the parameters `old_line_id_lookup` and `new_line_id_lookup`,
-            which are obtained by method `filter_blank_lines_in_file`, and in both look-up dict, there are no
-            corresponding key-value pairs for blank lines or comment lines.
-
+    NOTE 1: Only for modified file.
+    NOTE 2: Useful for Python file and Java file.
+    NOTE 3: 'file_diff_lines' is obtained from function 'combine_diff_code_info_within_file'.
     Args:
         file_diff_lines (List[DiffLine]): List of original diff lines within file.
-        old_line_id_lookup (Dict[int, int]): line id in original file -> line id in filtered file
-        new_line_id_lookup (Dict[int, int]): line id in original file -> line id in filtered file
+        old_line_id_map (Dict[int, int]): Line id mapping (1-based) from original old code to filtered old code.
+        new_line_id_map (Dict[int, int]): Line id mapping (1-based) from original new code to filtered new code.
     Returns:
         List[DiffLine]: List of filtered diff lines within file.
     """
-    nb_file_diff_lines: List[DiffLine] = []
+    filtered_file_diff_lines: List[DiffLine] = []
     last_is_sep = False
 
     for diff_line in file_diff_lines:
-        # Sep
+        # (1) Separation
         if diff_line.sep:
-            if len(nb_file_diff_lines) == 0 or last_is_sep:
+            if len(filtered_file_diff_lines) == 0 or last_is_sep:
                 # Do not add sep in the beginning or after sep
                 pass
             else:
                 # Update sep info
-                diff_line.id = len(nb_file_diff_lines)
+                diff_line.id = len(filtered_file_diff_lines)
 
-                nb_file_diff_lines.append(diff_line)
+                filtered_file_diff_lines.append(diff_line)
                 last_is_sep = True
             continue
 
-        # Code
-        if diff_line.source == SourceFileType.OLD and diff_line.lineno in old_line_id_lookup:
-            nb_line_id = old_line_id_lookup[diff_line.lineno]
-
+        # (2) Code
+        if diff_line.source == SourceFileType.OLD and diff_line.lineno in old_line_id_map:
             # Update diff line info
-            diff_line.id = len(nb_file_diff_lines)
-            diff_line.lineno = nb_line_id
-
-            nb_file_diff_lines.append(diff_line)
+            diff_line.id = len(filtered_file_diff_lines)
+            diff_line.lineno = old_line_id_map[diff_line.lineno]
+            # Add diff line
+            filtered_file_diff_lines.append(diff_line)
             last_is_sep = False
-        elif diff_line.source == SourceFileType.NEW and diff_line.lineno in new_line_id_lookup:
-            nb_line_id = new_line_id_lookup[diff_line.lineno]
-
+        elif diff_line.source == SourceFileType.NEW and diff_line.lineno in new_line_id_map:
             # Update diff line info
-            diff_line.id = len(nb_file_diff_lines)
-            diff_line.lineno = nb_line_id
-
-            nb_file_diff_lines.append(diff_line)
+            diff_line.id = len(filtered_file_diff_lines)
+            diff_line.lineno = new_line_id_map[diff_line.lineno]
+            # Add diff line
+            filtered_file_diff_lines.append(diff_line)
             last_is_sep = False
 
-    if nb_file_diff_lines and nb_file_diff_lines[-1].sep:
-        nb_file_diff_lines.pop(-1)
+    if filtered_file_diff_lines and filtered_file_diff_lines[-1].sep:
+        filtered_file_diff_lines.pop(-1)
 
-    return nb_file_diff_lines
+    return filtered_file_diff_lines
 
 
 """COMBINE"""
 
 
-def init_comb_info_for_del_file(old_code: str, comb_code: str) -> CombineInfo:
-    ## (1) Initialization
-    comb_info = CombineInfo(old_code=old_code, new_code=None, comb_code=comb_code)
+def combine_code_old_and_new(
+        old_code: str,
+        new_code: str,
+        file_diff_lines: List[DiffLine]
+) -> Tuple[str, Dict[int, int], Dict[int, int], Dict[int, int]]:
+    """Combine old code and new code.
 
-    ## (2) Update
-    locations, lookup_li2loc, structs_info = parse_python_file_locations(old_code)
-    # 1. Location
-    comb_info.old_locations = locations
-    # 2. Look-up dict
-    comb_info.old_li2loc = lookup_li2loc
-    # 3. Structures
-    funcs, classes, classes_funcs = build_struct_index_from_locations(locations, structs_info)
-    comb_info.old_func_index = funcs
-    comb_info.old_class_index = classes
-    comb_info.old_classFunc_index = classes_funcs
-
-    return comb_info
-
-
-def init_comb_info_for_add_file(new_code: str, comb_code: str) -> CombineInfo:
-    ## (1) Initialization
-    comb_info = CombineInfo(old_code=None, new_code=new_code, comb_code=comb_code)
-
-    ## (2) Update
-    locations, lookup_li2loc, structs_info = parse_python_file_locations(new_code)
-    # 1. Location
-    comb_info.new_locations = locations
-    # 2. Look-up dict
-    comb_info.new_li2loc = lookup_li2loc
-    # 3. Structures
-    funcs, classes, classes_funcs = build_struct_index_from_locations(locations, structs_info)
-    comb_info.new_func_index = funcs
-    comb_info.new_class_index = classes
-    comb_info.new_classFunc_index = classes_funcs
-
-    return comb_info
-
-
-def combine_code_old_and_new(comb_info: CombineInfo, file_diff_lines: List[DiffLine]) -> CombineInfo:
-    """Combine old code and new code while reflecting the changes.
-
-    NOTE 1: Only for modified files.
-    NOTE 2: Code lines start with '-' or '+' appear in combined code.
+    NOTE 1: Only for modified file.
+    NOTE 2: The '+' / '-' at the beginning of the diff line will be retained in the combined code.
     NOTE 3: Old code, new code and diff lines need to be in the same state.
             By default, blank lines and comment lines are filtered out.
     Args:
-        comb_info (CombineInfo): Info of combined file.
+        old_code (str): Old code.
+        new_code (str): New code.
         file_diff_lines (List[DiffLine]): List of diff lines.
     Returns:
-        comb_info (CombineInfo): Updated info of combined file. The updated info includes:
-            - comb_code
-            - li_lookup_old2new
-            - li_lookup_old2comb
-            - li_lookup_new2comb
+        str: Combined code.
+        Dict[int, int]: Line id mapping from old code to new code.
+        Dict[int, int]: Line id mapping from old code to combined code.
+        Dict[int, int]: Line id mapping from new code to combined code.
     """
     #######################################
     # Step I: Group continuous diff lines #
@@ -684,27 +781,27 @@ def combine_code_old_and_new(comb_info: CombineInfo, file_diff_lines: List[DiffL
     # Step II: Add unchanged lines to combine old code and new code #
     #################################################################
 
-    old_lines = comb_info.old_code.splitlines(keepends=False)
-    new_lines = comb_info.new_code.splitlines(keepends=False)
+    old_code_lines = old_code.splitlines(keepends=False)
+    new_code_lines = new_code.splitlines(keepends=False)
 
-    li_lookup_old2new : Dict[int, int] = {}  # 1-based, 1-based
-    li_lookup_old2comb: Dict[int, int] = {}  # 1-based, 1-based
-    li_lookup_new2comb: Dict[int, int] = {}  # 1-based, 1-based
+    line_id_old2new: Dict[int, int] = {}   # 1-based, 1-based
+    line_id_old2comb: Dict[int, int] = {}  # 1-based, 1-based
+    line_id_new2comb: Dict[int, int] = {}  # 1-based, 1-based
 
     cur_old_li = cur_new_li = 0
 
     ####### (1) Add unchanged lines in the beginning #######
     start_diff_li = diff_li_groups[0][0]
-    assert old_lines[:start_diff_li.lineno - 1] == new_lines[:start_diff_li.lineno - 1]
+    assert old_code_lines[:start_diff_li.lineno - 1] == new_code_lines[:start_diff_li.lineno - 1]
 
-    lines_before: List[str] = old_lines[:start_diff_li.lineno - 1]
+    lines_before: List[str] = old_code_lines[:start_diff_li.lineno - 1]
 
     for cur_comb_li in range(1, len(lines_before) + 1):
         cur_old_li = cur_new_li = cur_comb_li
-        # Update lookup dict
-        li_lookup_old2new[cur_old_li] = cur_new_li
-        li_lookup_old2comb[cur_old_li] = cur_comb_li
-        li_lookup_new2comb[cur_new_li] = cur_comb_li
+        # Update mapping
+        line_id_old2new[cur_old_li] = cur_new_li
+        line_id_old2comb[cur_old_li] = cur_comb_li
+        line_id_new2comb[cur_new_li] = cur_comb_li
 
     ####### (2) Add unchanged lines between diff line groups #######
     lines_between: List[str] = []
@@ -717,15 +814,15 @@ def combine_code_old_and_new(comb_info: CombineInfo, file_diff_lines: List[DiffL
             # Update current line (old / new)
             cur_old_li += 1
             cur_new_li += 1
-            assert old_lines[cur_old_li - 1] == new_lines[cur_new_li - 1]
+            assert old_code_lines[cur_old_li - 1] == new_code_lines[cur_new_li - 1]
             # Add comb line and update current line (comb)
-            lines_between.append(old_lines[cur_old_li - 1])
+            lines_between.append(old_code_lines[cur_old_li - 1])
             cur_comb_li = len(lines_before) + len(lines_between)
 
-            # Update lookup dict
-            li_lookup_old2new[cur_old_li] = cur_new_li
-            li_lookup_old2comb[cur_old_li] = cur_comb_li
-            li_lookup_new2comb[cur_new_li] = cur_comb_li
+            # Update mapping
+            line_id_old2new[cur_old_li] = cur_new_li
+            line_id_old2comb[cur_old_li] = cur_comb_li
+            line_id_new2comb[cur_new_li] = cur_comb_li
 
         # 2. Add diff lines
         for diff_li in diff_line_group:
@@ -733,453 +830,873 @@ def combine_code_old_and_new(comb_info: CombineInfo, file_diff_lines: List[DiffL
             lines_between.append(diff_li.code)
             cur_comb_li = len(lines_before) + len(lines_between)
 
-            # Update current line (old / new) and lookup dict
+            # Update current line (old / new) and mapping
             if diff_li.source == SourceFileType.OLD:
                 cur_old_li += 1
-                li_lookup_old2comb[cur_old_li] = cur_comb_li
+                line_id_old2comb[cur_old_li] = cur_comb_li
             else:
                 cur_new_li += 1
-                li_lookup_new2comb[cur_new_li] = cur_comb_li
+                line_id_new2comb[cur_new_li] = cur_comb_li
 
     ####### (3) Add unchanged lines in the end #######
-    assert old_lines[cur_old_li:] == new_lines[cur_new_li:]
+    assert old_code_lines[cur_old_li:] == new_code_lines[cur_new_li:]
 
-    lines_after: List[str] = old_lines[cur_old_li:]
+    lines_after: List[str] = old_code_lines[cur_old_li:]
 
     for i in range(len(lines_after)):
         # Update current line (old / new / comb)
         cur_old_li += 1
         cur_new_li += 1
         cur_comb_li = len(lines_before) + len(lines_between) + i + 1
-        # Update lookup dict
-        li_lookup_old2new[cur_old_li] = cur_new_li
-        li_lookup_old2comb[cur_old_li] = cur_comb_li
-        li_lookup_new2comb[cur_new_li] = cur_comb_li
+        # Update mapping
+        line_id_old2new[cur_old_li] = cur_new_li
+        line_id_old2comb[cur_old_li] = cur_comb_li
+        line_id_new2comb[cur_new_li] = cur_comb_li
 
     ####### (4) End #######
     code_comb = "\n".join(lines_before + lines_between + lines_after)
 
-    #############################
-    # Step III: Update CombInfo #
-    #############################
-
-    comb_info.comb_code = code_comb
-    comb_info.lime_id_old2new = li_lookup_old2new
-    comb_info.line_id_old2comb = li_lookup_old2comb
-    comb_info.line_id_new2comb = li_lookup_new2comb
-
-    return comb_info
+    return code_comb, line_id_old2new, line_id_old2comb, line_id_new2comb
 
 
-"""STRUCT INDEX"""
-
-
-def build_struct_index_from_locations(
-        locations: Dict[int, Location], structs_info: Dict
-) -> Tuple[List[Tuple[str, LineRange]], List[Tuple[str, LineRange]], List[Tuple[str, List[Tuple[str, LineRange]]]]]:
-    func_index: List[Tuple[str, LineRange]] = []
-    class_index: List[Tuple[str, LineRange]] = []
-    class_func_index: List[Tuple[str, List[Tuple[str, LineRange]]]] = []
-
-    func_loc_ids: List[int] = structs_info["funcs"]
-    class_loc_ids: List[int] = structs_info["classes"]
-    class_func_loc_ids: Dict[int, List[int]] = structs_info["classes_funcs"]
-
-    for loc_id in func_loc_ids:
-        loc = locations[loc_id]
-        func_index.append((loc.name, loc.range))
-
-    for loc_id in class_loc_ids:
-        loc = locations[loc_id]
-        class_index.append((loc.name, loc.range))
-
-    for class_loc_id, func_loc_ids in class_func_loc_ids.items():
-        class_name = locations[class_loc_id].name
-        class_funcs: List[Tuple[str, LineRange]] = []
-        for func_loc_id in func_loc_ids:
-            loc = locations[func_loc_id]
-            class_funcs.append((loc.name, loc.range))
-        class_func_index.append((class_name, class_funcs))
-
-    return func_index, class_index, class_func_index
-
-
-def update_comb_info_with_struct_index(
-        comb_info: CombineInfo, old_structs_info: Dict, new_structs_info: Dict
-) -> CombineInfo:
-    # (1) Update comb_info with old struct index
-    old_func_index, old_class_index, old_class_func_index = \
-        build_struct_index_from_locations(comb_info.old_locations, old_structs_info)
-    comb_info.old_func_index = old_func_index
-    comb_info.old_class_index = old_class_index
-    comb_info.old_classFunc_index = old_class_func_index
-
-    # (2) Update comb_info with new struct index
-    new_func_index, new_class_index, new_class_func_index = \
-        build_struct_index_from_locations(comb_info.new_locations, new_structs_info)
-    comb_info.new_func_index = new_func_index
-    comb_info.new_class_index = new_class_index
-    comb_info.new_classFunc_index = new_class_func_index
-
-    return comb_info
-
-
-"""EXTRACT DIFF CODE SNIPPETS"""
-
-
-def adjust_code_snippet_indent(code_lines: List[str]) -> str:
-    """Remove spare indent based on the first code line."""
-    first_line = code_lines[0]
-
-    indent_len = len(first_line) - len(first_line.lstrip())
-    stripped_code_lines = [line[indent_len:] for line in code_lines]
-
-    return '\n'.join(stripped_code_lines)
+"""BUILD FILE DIFF CONTENT"""
 
 
 def diff_lines_to_str(diff_lines: List[DiffLine]) -> str:
-    assert not diff_lines[0].sep and not diff_lines[-1].sep
+    diff_lines = sorted(diff_lines, key=lambda x: x.id)
 
     desc = "..."
     last_sep = True
 
     for diff_line in diff_lines:
-        if diff_line.sep:
-            assert not last_sep
+        if diff_line.sep and not last_sep:
             desc += "\n..."
             last_sep = True
-        else:
+        elif not diff_line.sep:
             desc += f"\n{diff_line.code}"
             last_sep = False
 
-    assert not last_sep
-    desc += "\n..."
+    if not last_sep:
+        desc += "\n..."
 
     return desc
 
 
-def extract_diff_lines_context(
-        source: SourceFileType,
-        diff_lines: List[DiffLine],
-        start_line_id: int,
-        end_line_id: int,
-        offset: int = 3
-) -> List[int]:
-    """Extract the context of diff lines from a code snippet."""
-    context_line_ids: List[int] = []
+class DiffContextBuilder:
+    """Base tool class for building diff content of file."""
+    @staticmethod
+    def _adjust_code_snippet_indent(code_lines: List[str]) -> str:
+        """Remove spare indent based on the first code line."""
+        first_line = code_lines[0]
 
-    for diff_line in diff_lines:
-        if diff_line.source == source and start_line_id <= diff_line.lineno <= end_line_id:
-            li_context_start = max(start_line_id, diff_line.lineno - offset)
-            li_context_end = min(end_line_id, diff_line.lineno + offset)
-            li_context = list(range(li_context_start, li_context_end + 1))
-            context_line_ids.extend(li_context)
+        indent_len = len(first_line) - len(first_line.lstrip())
+        stripped_code_lines = [line[indent_len:] for line in code_lines]
 
-    context_line_ids = list(set(context_line_ids))
-
-    return context_line_ids
+        return '\n'.join(stripped_code_lines)
 
 
-def extract_relevant_lines_in_func(
-        source: SourceFileType,
-        func_loc: Location,
-        code_lines: List[str],
-        diff_lines: List[DiffLine]
-) -> List[int]:
-    """Extract relevant lines in function, including top-level functions and class methods."""
-    func_rel_line_ids: List[int] = []
+    @staticmethod
+    def _extract_diff_lines_context(
+            source: SourceFileType,
+            diff_lines: List[DiffLine],
+            start_line_id: int,
+            end_line_id: int,
+            offset: int = 3
+    ) -> List[int]:
+        """Extract the context of diff lines from a code snippet.
+        Strategy: Extract code lines within x (default = 3) lines of the diff line (forward, backward).
+        """
+        context_line_ids: List[int] = []
 
-    # Option 1:
-    # func_rel_line_ids = func_loc.get_full_range()
+        for diff_line in diff_lines:
+            if diff_line.source == source and start_line_id <= diff_line.lineno <= end_line_id:
+                li_context_start = max(start_line_id, diff_line.lineno - offset)
+                li_context_end = min(end_line_id, diff_line.lineno + offset)
+                li_context = list(range(li_context_start, li_context_end + 1))
+                context_line_ids.extend(li_context)
 
-    # Option 2:
-    func_start, func_end = func_loc.range
-    func_code = adjust_code_snippet_indent(code_lines[func_start - 1: func_end])
+        context_line_ids = list(set(context_line_ids))
 
-    # 1) Add func signature lines
-    func_sig_line_ids = extract_func_sig_lines_from_code(func_code)
-    func_sig_line_ids = [func_start + line_id - 1 for line_id in func_sig_line_ids]
-    func_rel_line_ids.extend(func_sig_line_ids)
-
-    # 2) Add context of diff lines in the func
-    diff_context_line_ids = extract_diff_lines_context(source, diff_lines, func_start, func_end)
-    func_rel_line_ids.extend(diff_context_line_ids)
-
-    func_rel_line_ids = list(set(func_rel_line_ids))
-
-    return func_rel_line_ids
+        return context_line_ids
 
 
-def extract_relevant_lines_in_file(
-        source: SourceFileType,
-        diff_lines: List[DiffLine],
-        code: str,
-        locations: Dict[int, Location],
-        li2loc_lookup: Dict[int, int]
-) -> List[int]:
-    """
-    For all deleted / added lines, extract detailed and complete code lines containing them from the old / new files.
+class PyDiffContextBuilder(DiffContextBuilder):
+    """Tool class for building diff content of Python file."""
+    @staticmethod
+    def _extract_relevant_lines_in_func(
+            source: SourceFileType,
+            func_node: PySimNode,
+            code_lines: List[str],
+            diff_lines: List[DiffLine]
+    ) -> List[int]:
+        """Extract relevant lines in function, including top-level functions and class methods."""
+        rel_line_ids: List[int] = []
 
-    For now, the extraction principles are as follows:
-    #1. For lines in the top-level function, extract the following lines:
-        Option 1:
-            - All lines in the function.
-        Option 2 (Default):
-            - Function signature, i.e. the function definition.
-            - Diff lines and their context (range is -3 <= x <= +3).
-    #2. For lines in the (top-level) class, consider two situations:
-        - a. For lines in the class method, refer to #1.
-        - b. For the rest lines, extract all lines of the AST node where they are located,
-            which is a top level child of the class root node.
-        - Besides, extract lines of the class signature, which contains only the class definition and assign signatures,
-            not class method signatures.
-    #3. For lines in the if_main block, refer to #2b, besides, extract lines like 'if __name__ == "__main__":'
-    #4. For the rest lines, refer to #2b.
-    Simply summarized as the range of line location where the diff line is located.
+        if globals_opt.opt_to_func_diff_context == 1:
+            rel_line_ids = func_node.get_full_range()
+        elif globals_opt.opt_to_func_diff_context == 2:
+            func_start, func_end = func_node.range
+            func_code = PyDiffContextBuilder._adjust_code_snippet_indent(code_lines[func_start - 1: func_end])
 
-    NOTE: Only for modified files.
-    """
-    code_lines = code.splitlines(keepends=False)
+            # (1) Add function signature lines
+            sig_line_ids = extract_func_sig_lines_from_py_code(func_code, func_start)
+            rel_line_ids.extend(sig_line_ids)
 
-    # ------------------ I. Find relevant line locations ------------------ #
-    all_imports: List[int] = []
-    relevant_units: List[int] = []
-    relevant_funcs: List[int] = []
-    relevant_classes: Dict[int, List[int]] = defaultdict(list)
-    relevant_mains: Dict[int, List[int]] = defaultdict(list)
+            # (2) Add context of diff lines in the function
+            dlc_line_ids = PyDiffContextBuilder._extract_diff_lines_context(source, diff_lines, func_start, func_end)
+            rel_line_ids.extend(dlc_line_ids)
 
-    ## (1) Find all import statements
-    for loc_id, loc in locations.items():
-        if loc.father is not None and locations[loc.father].type == LocationType.MODULE and \
-                (loc.ast == "Import" or loc.ast == "ImportFrom"):
-            all_imports.append(loc_id)
+            # (3) Normalize
+            rel_line_ids = list(set(rel_line_ids))
+        else:
+            raise NotImplementedError(f"Strategy {globals_opt.opt_to_func_diff_context} for building "
+                                      f"function diff context is not supported yet.")
 
-    ## (2) Find line locations where the diff lines
-    for diff_line in diff_lines:
-        if diff_line.source == source:
-            loc_id = li2loc_lookup[diff_line.lineno]
-            loc = locations[loc_id]
+        return rel_line_ids
 
-            if loc.type == LocationType.FUNCTION:
-                # (1) Relevant functions
-                if loc_id not in relevant_funcs:
-                    relevant_funcs.append(loc_id)
-            elif loc.type == LocationType.CLASS_UNIT or loc.type == LocationType.CLASS_FUNCTION:
-                # (2) Relevant classes
-                class_loc_id = loc.father
-                if loc_id not in relevant_classes[class_loc_id]:
-                    relevant_classes[class_loc_id].append(loc_id)
-            elif loc.type == LocationType.MAIN_UNIT:
-                # (3) Relevant main blocks
-                main_loc_id = loc.father
-                if loc_id not in relevant_mains[main_loc_id]:
-                    relevant_mains[main_loc_id].append(loc_id)
-            else:
-                # (4) Relevant top-level statements
-                assert loc.type == LocationType.UNIT
-                if loc_id not in relevant_units:
-                    relevant_units.append(loc_id)
 
-    # ------------------ II. Find relevant line ids ------------------ #
-    relevant_line_ids: List[int] = []
+    @staticmethod
+    def _extract_relevant_lines_in_class(
+            source: SourceFileType,
+            class_node: PySimNode,
+            relevant_child_nodes: List[PySimNode],
+            code_lines: List[str],
+            diff_lines: List[DiffLine]
+    ) -> List[int]:
+        """Extract relevant lines in class."""
+        rel_line_ids: List[int] = []
 
-    ## (1) Add all lines in import statements
-    for loc_id in all_imports:
-        # 1. Add all lines of the statement
-        import_line_ids = locations[loc_id].get_full_range()
-
-        # 2. Add to all
-        assert not are_overlap_lines(relevant_line_ids, import_line_ids)
-        relevant_line_ids.extend(import_line_ids)
-
-    ## (2) Add relevant lines in relevant functions
-    for loc_id in relevant_funcs:
-        func_loc = locations[loc_id]
-
-        # 1. Add relevant lines in function
-        func_rel_line_ids = extract_relevant_lines_in_func(source, func_loc, code_lines, diff_lines)
-
-        # 2. Add to all
-        assert not are_overlap_lines(relevant_line_ids, func_rel_line_ids)
-        relevant_line_ids.extend(func_rel_line_ids)
-
-    ## (3) Add relevant lines in relevant classes
-    for class_loc_id, children in relevant_classes.items():
-        class_rel_line_ids: List[int] = []
-
-        # 1. Add relevant lines in class body
-        for loc_id in children:
-            child_loc = locations[loc_id]
-
+        # (1) Add relevant lines in class body
+        for child_node in relevant_child_nodes:
             # 1.1 Class unit containing diff lines
-            if child_loc.type == LocationType.CLASS_UNIT:
-                class_unit_line_ids = child_loc.get_full_range()
+            if child_node.type == PySimNodeType.CLASS_UNIT:
+                child_rel_line_ids = child_node.get_full_range()
+                rel_line_ids.extend(child_rel_line_ids)
 
-                assert not are_overlap_lines(class_rel_line_ids, class_unit_line_ids)
-                class_rel_line_ids.extend(class_unit_line_ids)
+            # 1.2 Inclass methods containing diff lines
+            if child_node.type == PySimNodeType.CLASS_METHOD:
+                child_rel_line_ids = PyDiffContextBuilder._extract_relevant_lines_in_func(
+                    source, child_node, code_lines, diff_lines
+                )
+                rel_line_ids.extend(child_rel_line_ids)
 
-            # 2.1 Class methods containing diff lines
-            if child_loc.type == LocationType.CLASS_FUNCTION:
-                class_func_rel_line_ids = extract_relevant_lines_in_func(source, child_loc, code_lines, diff_lines)
+        # (2) Add class signature lines
+        class_start, class_end = class_node.range
+        class_code = PyDiffContextBuilder._adjust_code_snippet_indent(code_lines[class_start - 1: class_end])
+        sig_line_ids = extract_class_sig_lines_from_py_code(class_code, class_start, detailed=False)
 
-                assert not are_overlap_lines(class_rel_line_ids, class_func_rel_line_ids)
-                class_rel_line_ids.extend(class_func_rel_line_ids)
+        rel_line_ids.extend(sig_line_ids)
 
-        # 2. Add class signature lines
-        class_start, class_end = locations[class_loc_id].range
-        class_code = adjust_code_snippet_indent(code_lines[class_start - 1: class_end])
-        class_sig_line_ids = extract_class_sig_lines_from_code(class_code, include_func_sig=False)
-        class_sig_line_ids = [class_start + line_id - 1 for line_id in class_sig_line_ids]
+        # (3) Normalize
+        rel_line_ids = sorted(list(set(rel_line_ids)))
 
-        class_rel_line_ids.extend(class_sig_line_ids)
+        return rel_line_ids
 
-        # 3. Add to all
-        assert not are_overlap_lines(relevant_line_ids, class_rel_line_ids)
-        relevant_line_ids.extend(class_rel_line_ids)
 
-    ## (4) Add relevant lines in relevant main blocks
-    for main_loc_id, children in relevant_mains.items():
-        main_rel_line_ids: List[int] = []
+    @staticmethod
+    def _extract_relevant_lines_in_main(
+            main_node: PySimNode,
+            relevant_child_nodes: List[PySimNode],
+            code_lines: List[str],
+    ) -> List[int]:
+        """Extract relevant lines in main block."""
+        rel_line_ids: List[int] = []
 
         # 1. Add relevant lines in main block body
-        for loc_id in children:
-            child_loc = locations[loc_id]
-
-            main_unit_line_ids = child_loc.get_full_range()
-
-            assert not are_overlap_lines(main_rel_line_ids, main_unit_line_ids)
-            main_rel_line_ids.extend(main_unit_line_ids)
+        for child_node in relevant_child_nodes:
+            child_rel_line_ids = child_node.get_full_range()
+            rel_line_ids.extend(child_rel_line_ids)
 
         # 2. Add main block signature line
-        main_sig_line_id = None
-        for line_id in locations[main_loc_id].get_full_range():
-            if is_main_line(code_lines[line_id - 1]):
-                main_sig_line_id = line_id
+        sig_line_id = None
+        for line_id in main_node.get_full_range():
+            if PyASTParser.is_main_line(code_lines[line_id - 1]):
+                sig_line_id = line_id
                 break
-        assert main_sig_line_id is not None
-        if main_sig_line_id not in main_rel_line_ids:
-            main_rel_line_ids.append(main_sig_line_id)
+        assert sig_line_id is not None
+        if sig_line_id not in rel_line_ids:
+            rel_line_ids.append(sig_line_id)
 
-        # 3. Add to all
-        assert not are_overlap_lines(relevant_line_ids, main_rel_line_ids)
-        relevant_line_ids.extend(main_rel_line_ids)
-
-    ## (5) Add relevant lines in relevant top-level statements
-    for loc_id in relevant_units:
-        # 1. Add all lines of the statement
-        unit_line_ids = locations[loc_id].get_full_range()
-
-        # 2. Add to all
-        relevant_line_ids.extend(unit_line_ids)
-
-    return relevant_line_ids
+        return rel_line_ids
 
 
-def extract_diff_context_in_file(diff_lines: List[DiffLine], comb_info: CombineInfo) -> str:
-    """Extract a more detailed and complete context containing all diff lines.
+    @staticmethod
+    def extract_relevant_lines_in_file(
+            source: SourceFileType,
+            diff_lines: List[DiffLine],
+            code: str,
+            all_nodes: Dict[int, PySimNode],
+            li2node_map: Dict[int, int]
+    ) -> List[int]:
+        """
+        For all deleted / added lines, extract detailed and complete code lines containing them from the old / new file.
 
-    NOTE: Only for modified files.
+        For now, the extraction principles are as follows:
+        #1. For lines in the top-level function, extract the following lines:
+            Option 1:
+                - All lines in the function.
+            Option 2 (Default):
+                - Function signature, i.e. the function definition.
+                - Diff lines and their context (range is -3 <= x <= +3).
+        #2. For lines in the (top-level) class, consider two situations:
+            - a. For lines in the class method, refer to #1.
+            - b. For the rest lines, extract all lines of the AST node where they are located,
+                which is a top level child of the class root node.
+            - Besides, extract lines of the class signature, which contains only the class definition and assign signatures,
+                not class method signatures.
+        #3. For lines in the if_main block, refer to #2b, besides, extract lines like 'if __name__ == "__main__":'
+        #4. For the rest lines, refer to #2b.
+        Simply summarized as the range of line location where the diff line is located.
+
+        NOTE 1: Only for Python file.
+        NOTE 2: Only for modified file.
+        """
+        code_lines = code.splitlines(keepends=False)
+
+        # ------------------ I. Find relevant Simple Nodes ------------------ #
+        all_imports: List[int] = []
+        relevant_units: List[int] = []
+        relevant_funcs: List[int] = []
+        relevant_classes: Dict[int, List[int]] = defaultdict(list)
+        relevant_mains: Dict[int, List[int]] = defaultdict(list)
+
+        ## (1) Find all import statements
+        for node_id, node in all_nodes.items():
+            if node.father is not None and all_nodes[node.father].type == PySimNodeType.ROOT and \
+                    (node.ast == "Import" or node.ast == "ImportFrom"):
+                all_imports.append(node_id)
+
+        ## (2) Find Simple Nodes where the diff lines locate
+        for diff_line in diff_lines:
+            if diff_line.source == source:
+                node_id = li2node_map[diff_line.lineno]
+                node = all_nodes[node_id]
+
+                if node.type == PySimNodeType.FUNCTION:
+                    # (1) Relevant functions
+                    if node_id not in relevant_funcs:
+                        relevant_funcs.append(node_id)
+                elif node.type == PySimNodeType.CLASS_UNIT or node.type == PySimNodeType.CLASS_METHOD:
+                    # (2) Relevant classes
+                    class_node_id = node.father
+                    if node_id not in relevant_classes[class_node_id]:
+                        relevant_classes[class_node_id].append(node_id)
+                elif node.type == PySimNodeType.MAIN_UNIT:
+                    # (3) Relevant main blocks
+                    main_loc_id = node.father
+                    if node_id not in relevant_mains[main_loc_id]:
+                        relevant_mains[main_loc_id].append(node_id)
+                else:
+                    # (4) Relevant top-level statements
+                    assert node.type == PySimNodeType.UNIT
+                    if node_id not in relevant_units:
+                        relevant_units.append(node_id)
+
+        # ------------------ II. Find relevant line ids ------------------ #
+        relevant_line_ids: List[int] = []
+
+        ## (1) Add all lines in import statements
+        for node_id in all_imports:
+            # 1. Add all lines of the statement
+            import_line_ids = all_nodes[node_id].get_full_range()
+
+            # 2. Add to all
+            relevant_line_ids.extend(import_line_ids)
+
+        ## (2) Add relevant lines in relevant functions
+        for node_id in relevant_funcs:
+            func_node = all_nodes[node_id]
+
+            # 1. Add relevant lines in function
+            func_rel_line_ids = PyDiffContextBuilder._extract_relevant_lines_in_func(
+                source, func_node, code_lines, diff_lines
+            )
+
+            # 2. Add to all
+            relevant_line_ids.extend(func_rel_line_ids)
+
+        ## (3) Add relevant lines in relevant classes
+        for class_node_id, child_node_ids in relevant_classes.items():
+            class_node = all_nodes[class_node_id]
+            child_nodes = [all_nodes[child_node_id] for child_node_id in child_node_ids]
+
+            # 1. Add relevant lines in class
+            class_rel_line_ids = PyDiffContextBuilder._extract_relevant_lines_in_class(
+                source, class_node, child_nodes, code_lines, diff_lines
+            )
+
+            # 2. Add to all
+            relevant_line_ids.extend(class_rel_line_ids)
+
+        ## (4) Add relevant lines in relevant main blocks
+        for main_node_id, child_node_ids in relevant_mains.items():
+            main_node = all_nodes[main_node_id]
+            child_nodes = [all_nodes[child_node_id] for child_node_id in child_node_ids]
+
+            # 1. Add relevant lines in main block
+            main_rel_line_ids = PyDiffContextBuilder._extract_relevant_lines_in_main(main_node, child_nodes, code_lines)
+
+            # 2. Add to all
+            relevant_line_ids.extend(main_rel_line_ids)
+
+        ## (5) Add relevant lines in relevant top-level statements
+        for node_id in relevant_units:
+            # 1. Add all lines of the statement
+            unit_line_ids = all_nodes[node_id].get_full_range()
+
+            # 2. Add to all
+            relevant_line_ids.extend(unit_line_ids)
+
+        return relevant_line_ids
+
+
+class JavaDiffContextBuilder(DiffContextBuilder):
+    """Tool class for building diff content of Java file."""
+    @staticmethod
+    def _extract_relevant_lines_in_iface(
+            source: SourceFileType,
+            iface_node: JavaSimNode,
+            code_lines: List[str],
+            diff_lines: List[DiffLine]
+    ) -> List[int]:
+        """Extract relevant lines in interface."""
+        rel_line_ids: List[int] = []
+
+        if globals_opt.opt_to_iface_diff_context == 1:
+            rel_line_ids = iface_node.get_full_range()
+        elif globals_opt.opt_to_iface_diff_context == 2:
+            iface_start, iface_end = iface_node.range
+            iface_code = JavaDiffContextBuilder._adjust_code_snippet_indent(code_lines[iface_start - 1: iface_end])
+
+            # (1) Add iface signature lines
+            sig_line_ids = extract_iface_sig_lines_from_java_code(iface_code, iface_start)
+
+            # TODO: FOR TEST (Output line ids should not be None)
+            assert sig_line_ids is not None
+
+            rel_line_ids.extend(sig_line_ids)
+
+            # (2) Add context of diff lines in the interface
+            dlc_line_ids = JavaDiffContextBuilder._extract_diff_lines_context(source, diff_lines, iface_start, iface_end)
+            rel_line_ids.extend(dlc_line_ids)
+
+            # (3) Normalize
+            rel_line_ids = list(set(rel_line_ids))
+        else:
+            raise NotImplementedError(f"Strategy {globals_opt.opt_to_func_diff_context} for building "
+                                      f"function diff context is not supported yet.")
+
+        return rel_line_ids
+
+    @staticmethod
+    def _extract_relevant_lines_in_class_child(
+            source: SourceFileType,
+            child_node: JavaSimNode,
+            code_lines: List[str],
+            diff_lines: List[DiffLine]
+    ) -> List[int]:
+        """Extract relevant lines in class child struct.
+
+        Strategy:
+        - 1) Focus on 6 types of inclass structures:
+             1. method
+             2. interface: normal interface, annotation type
+             3. class: normal class, enum, record
+        - 2) We only extract 2 parts of it
+             1. base signature, i.e., outer part outside the body ('{...}')
+             2. context of diff lines in it.
+        """
+        assert child_node.type in [JavaSimNodeType.CLASS_INTERFACE, JavaSimNodeType.CLASS_CLASS, JavaSimNodeType.CLASS_METHOD]
+
+        rel_line_ids: List[int] = []
+
+        child_start, child_end = child_node.range
+        child_code = JavaDiffContextBuilder._adjust_code_snippet_indent(code_lines[child_start - 1: child_end])
+
+        # (1) Add base signature lines
+        if child_node.type == JavaSimNodeType.CLASS_INTERFACE:
+            bsig_line_ids = extract_iface_sig_lines_from_java_code(child_code, child_start)
+        elif child_node.type == JavaSimNodeType.CLASS_CLASS:
+            bsig_line_ids = extract_class_sig_lines_from_java_code(child_code, child_start, base=True, detailed=False)
+        else:
+            bsig_line_ids = extract_method_sig_lines_from_java_code(child_code, child_start)
+
+        # TODO: FOR TEST (Output line ids should not be None)
+        assert bsig_line_ids is not None
+
+        rel_line_ids.extend(bsig_line_ids)
+
+        # (2) Add context of diff lines
+        dlc_line_ids = JavaDiffContextBuilder._extract_diff_lines_context(source, diff_lines, child_start, child_end)
+        rel_line_ids.extend(dlc_line_ids)
+
+        # (3) Normalize
+        rel_line_ids = list(set(rel_line_ids))
+
+        return rel_line_ids
+
+
+    @staticmethod
+    def _extract_relevant_lines_in_class(
+            source: SourceFileType,
+            class_node: JavaSimNode,
+            relevant_child_nodes: List[JavaSimNode],
+            code_lines: List[str],
+            diff_lines: List[DiffLine]
+    ) -> List[int]:
+        """Extract relevant lines in class."""
+        rel_line_ids: List[int] = []
+
+        # (1) Add relevant lines in class body
+        for child_node in relevant_child_nodes:
+            # 1.1 Class unit containing diff lines
+            if child_node.type == JavaSimNodeType.CLASS_UNIT:
+                child_rel_line_ids = child_node.get_full_range()
+                rel_line_ids.extend(child_rel_line_ids)
+
+            # 1.2 Inclass interface / class / method containing diff lines
+            if child_node.type == JavaSimNodeType.CLASS_INTERFACE or \
+                    child_node.type == JavaSimNodeType.CLASS_CLASS or \
+                    child_node.type == JavaSimNodeType.CLASS_METHOD:
+                child_rel_line_ids = JavaDiffContextBuilder._extract_relevant_lines_in_class_child(
+                    source, child_node, code_lines, diff_lines
+                )
+                rel_line_ids.extend(child_rel_line_ids)
+
+        # (2) Add class signature lines
+        class_start, class_end = class_node.range
+        class_code = JavaDiffContextBuilder._adjust_code_snippet_indent(code_lines[class_start - 1: class_end])
+        sig_line_ids = extract_class_sig_lines_from_java_code(class_code, class_start, detailed=False)
+
+        rel_line_ids.extend(sig_line_ids)
+
+        # (3) Normalize
+        rel_line_ids = sorted(list(set(rel_line_ids)))
+
+        return rel_line_ids
+
+
+    @staticmethod
+    def extract_relevant_lines_in_file(
+            source: SourceFileType,
+            diff_lines: List[DiffLine],
+            code: str,
+            all_nodes: Dict[int, JavaSimNode],
+            li2node_map: Dict[int, int]
+    ) -> List[int]:
+        """
+        For all deleted / added lines, extract detailed and complete code lines containing them from the old / new file.
+
+        NOTE 1: Only for Java file.
+        NOTE 2: Only for modified file.
+        """
+        code_lines = code.splitlines(keepends=False)
+
+        # ------------------ I. Find relevant Simple Nodes ------------------ #
+        all_imports: List[int] = []
+        relevant_units: List[int] = []
+        relevant_ifaces: List[int] = []
+        relevant_classes: Dict[int, List[int]] = defaultdict(list)
+
+        ## (1) Find all import statements
+        for node_id, node in all_nodes.items():
+            if node.father is not None and all_nodes[node.father].type == JavaSimNodeType.ROOT and node.ast == "IMPORT_DECLARATION":
+                all_imports.append(node_id)
+
+        ## (2) Find Simple Nodes where the diff lines locate
+        for diff_line in diff_lines:
+            if diff_line.source == source:
+                node_id = li2node_map[diff_line.lineno]
+                node = all_nodes[node_id]
+
+                if node.type == JavaSimNodeType.INTERFACE:
+                    # (1) Relevant interfaces
+                    if node_id not in relevant_ifaces:
+                        relevant_ifaces.append(node_id)
+                elif node.type == JavaSimNodeType.CLASS_UNIT or node.type == JavaSimNodeType.CLASS_INTERFACE or \
+                        node.type == JavaSimNodeType.CLASS_CLASS or node.type == JavaSimNodeType.CLASS_METHOD:
+                    # (2) Relevant classes
+                    class_node_id = node.father
+                    if node_id not in relevant_classes[class_node_id]:
+                        relevant_classes[class_node_id].append(node_id)
+                else:
+                    # (4) Relevant top-level statements
+                    assert node.type == JavaSimNodeType.UNIT
+                    if node_id not in relevant_units:
+                        relevant_units.append(node_id)
+
+        # ------------------ II. Find relevant line ids ------------------ #
+        relevant_line_ids: List[int] = []
+
+        ## (1) Add all lines in import statements
+        for node_id in all_imports:
+            # 1. Add all lines of the statement
+            import_line_ids = all_nodes[node_id].get_full_range()
+
+            # 2. Add to all
+            relevant_line_ids.extend(import_line_ids)
+
+        ## (2) Add relevant lines in relevant interfaces
+        for node_id in relevant_ifaces:
+            iface_node = all_nodes[node_id]
+
+            # 1. Add relevant lines in interface
+            iface_rel_line_ids = JavaDiffContextBuilder._extract_relevant_lines_in_iface(
+                source, iface_node, code_lines, diff_lines
+            )
+
+            # 2. Add to all
+            relevant_line_ids.extend(iface_rel_line_ids)
+
+        ## (3) Add relevant lines in relevant classes
+        for class_node_id, child_node_ids in relevant_classes.items():
+            class_node = all_nodes[class_node_id]
+            child_nodes = [all_nodes[child_node_id] for child_node_id in child_node_ids]
+
+            # 1. Add relevant lines in class
+            class_rel_line_ids = JavaDiffContextBuilder._extract_relevant_lines_in_class(
+                source, class_node, child_nodes, code_lines, diff_lines
+            )
+
+            # 2. Add to all
+            relevant_line_ids.extend(class_rel_line_ids)
+
+        ## (4) Add relevant lines in relevant top-level statements
+        for node_id in relevant_units:
+            # 1. Add all lines of the statement
+            unit_line_ids = all_nodes[node_id].get_full_range()
+
+            # 2. Add to all
+            relevant_line_ids.extend(unit_line_ids)
+
+        return relevant_line_ids
+
+
+def build_file_diff_context(diff_lines: List[DiffLine], diff_file_info: DiffFileInfo) -> str:
+    """Extract a more detailed and complete context containing all diff lines from a file.
+
+    NOTE 1: Only for modified file.
+    NOTE 2: Valid for Python file and Java file.
     """
     ## (1) Extract relevant line ids in old code and new code respectively
-    old_relevant_line_ids = extract_relevant_lines_in_file(
-        source=SourceFileType.OLD,
-        diff_lines=diff_lines,
-        code=comb_info.old_code,
-        locations=comb_info.old_locations,
-        li2loc_lookup=comb_info.old_li2loc
-    )
-
-    new_relevant_line_ids = extract_relevant_lines_in_file(
-        source=SourceFileType.NEW,
-        diff_lines=diff_lines,
-        code=comb_info.new_code,
-        locations=comb_info.new_locations,
-        li2loc_lookup=comb_info.new_li2loc
-    )
+    if isinstance(diff_file_info, PyDiffFileInfo):
+        old_relevant_line_ids = PyDiffContextBuilder.extract_relevant_lines_in_file(
+            source=SourceFileType.OLD,
+            diff_lines=diff_lines,
+            code=diff_file_info.old_code,
+            all_nodes=diff_file_info.old_nodes,
+            li2node_map=diff_file_info.old_li2node
+        )
+        new_relevant_line_ids = PyDiffContextBuilder.extract_relevant_lines_in_file(
+            source=SourceFileType.NEW,
+            diff_lines=diff_lines,
+            code=diff_file_info.new_code,
+            all_nodes=diff_file_info.new_nodes,
+            li2node_map=diff_file_info.new_li2node
+        )
+    elif isinstance(diff_file_info, JavaDiffFileInfo):
+        old_relevant_line_ids = JavaDiffContextBuilder.extract_relevant_lines_in_file(
+            source=SourceFileType.OLD,
+            diff_lines=diff_lines,
+            code=diff_file_info.old_code,
+            all_nodes=diff_file_info.old_nodes,
+            li2node_map=diff_file_info.old_li2node
+        )
+        new_relevant_line_ids = JavaDiffContextBuilder.extract_relevant_lines_in_file(
+            source=SourceFileType.NEW,
+            diff_lines=diff_lines,
+            code=diff_file_info.new_code,
+            all_nodes=diff_file_info.new_nodes,
+            li2node_map=diff_file_info.new_li2node
+        )
+    else:
+        raise NotImplementedError(f"Language {diff_file_info.lang} is not supported yet.")
 
     ## (2) Combine relevant line ids
     relevant_line_ids: List[int] = []
 
     for line_id in old_relevant_line_ids:
-        comb_line_id = comb_info.line_id_old2comb[line_id]
+        comb_line_id = diff_file_info.line_id_old2merge[line_id]
         if comb_line_id not in relevant_line_ids:
             relevant_line_ids.append(comb_line_id)
 
     for line_id in new_relevant_line_ids:
-        comb_line_id = comb_info.line_id_new2comb[line_id]
+        comb_line_id = diff_file_info.line_id_new2merge[line_id]
         if comb_line_id not in relevant_line_ids:
             relevant_line_ids.append(comb_line_id)
 
-    relevant_line_ids = sorted(relevant_line_ids)
+    relevant_line_ids = sorted(list(set(relevant_line_ids)))
 
     ## (3) Extract code snippets
-    comb_code_lines = comb_info.comb_code.splitlines(keepends=False)
-    snippet = ""
+    comb_code_lines = diff_file_info.merge_code.splitlines(keepends=False)
+    context = ""
 
     for i in range(len(relevant_line_ids)):
         line_id = relevant_line_ids[i]
         # (1) Add sep '...'
         if i == 0:
             if line_id != 1:
-                snippet = "..."
+                context = "..."
         else:
             last_line_id = relevant_line_ids[i - 1]
             if line_id != last_line_id + 1:
-                snippet += "\n..."
+                context += "\n..."
         # (2) Add code line
-        snippet += f"\n{comb_code_lines[line_id - 1]}"
+        context += f"\n{comb_code_lines[line_id - 1]}"
 
     if relevant_line_ids[-1] != len(comb_code_lines):
-        snippet += "\n..."
+        context += "\n..."
 
-    snippet = snippet.strip('\n')
+    context = context.strip('\n')
 
-    return snippet
+    return context
 
 
 """MAIN ENTRY"""
 
 
-def analyse_modified_file(
+def analyse_deleted_py_file(ast_parser: PyASTParser, old_code: str, comb_code: str) -> PyDiffFileInfo:
+    ast_parser.reset()
+
+    ## (1) Initialization
+    diff_file_info = PyDiffFileInfo(old_code=old_code, new_code=None, merge_code=comb_code)
+
+    ## (2) Update
+    ast_parser.set(code=old_code)
+    ast_parser.parse_python_code()
+
+    # 1. Simple Nodes
+    diff_file_info.old_nodes = ast_parser.all_nodes
+    # 2. Mapping from line id to Simple Node id
+    diff_file_info.old_li2node = ast_parser.li2node_map
+    # 3. Structure indexes
+    diff_file_info.old_func_index = ast_parser.all_funcs
+    diff_file_info.old_class_index = ast_parser.all_classes
+    diff_file_info.old_inclass_method_index = ast_parser.all_inclass_methods
+    diff_file_info.old_imports = ast_parser.all_imports
+
+    return diff_file_info
+
+
+def analyse_added_py_file(ast_parser: PyASTParser, new_code: str, comb_code: str) -> PyDiffFileInfo:
+    ast_parser.reset()
+
+    ## (1) Initialization
+    diff_file_info = PyDiffFileInfo(old_code=None, new_code=new_code, merge_code=comb_code)
+
+    ## (2) Update
+    ast_parser.set(code=new_code)
+    ast_parser.parse_python_code()
+
+    # 1. Simple Nodes
+    diff_file_info.new_nodes = ast_parser.all_nodes
+    # 2. Mapping from line id to Simple Node id
+    diff_file_info.new_li2node = ast_parser.li2node_map
+    # 3. Structure indexes
+    diff_file_info.new_func_index = ast_parser.all_funcs
+    diff_file_info.new_class_index = ast_parser.all_classes
+    diff_file_info.new_inclass_method_index = ast_parser.all_inclass_methods
+    diff_file_info.old_imports = ast_parser.all_imports
+
+    return diff_file_info
+
+
+def analyse_modified_py_file(
+        ast_parser: PyASTParser,
         old_ori_code: str,
         new_ori_code: str,
         diff_file_info: Dict
-) -> Tuple[CombineInfo, str] | None:
+) -> Tuple[PyDiffFileInfo, str] | None:
+    """Analyse the modified Python file."""
+    ## Step 1: Reset the parser
+    ast_parser.reset()
 
-    # --------------------------- Step I: Get complete diff lines info --------------------------- #
-    ori_diff_lines = combine_diff_code_info_within_file(diff_file_info)
+    ## Step 2: Get all diff lines within a file
+    ori_file_diff_lines = extract_all_diff_lines_within_file(diff_file_info)
 
-    # --------------------------- Step II: Filter out blank and comment lines --------------------------- #
-    ## (1) Filter code file
-    old_nb_code, old_nb_li_lookup = filter_blank_and_comment_in_code(old_ori_code)
-    new_nb_code, new_nb_li_lookup = filter_blank_and_comment_in_code(new_ori_code)
+    ## Step 3: Filter out blank and comment lines
+    # Filtering reason:
+    # - 1. AST in python does not analyse the comments.
+    # - 2. We do not consider the code files with only changed comments.
+    # (1) Filter for code file
+    old_filtered_code, old_line_id_map = filter_py_code_content(old_ori_code)
+    new_filtered_code, new_line_id_map = filter_py_code_content(new_ori_code)
+    # (2) Filter for commit info
+    filtered_file_diff_lines = filter_file_diff_content(ori_file_diff_lines, old_line_id_map, new_line_id_map)
 
-    ## (2) Filter commit Info
-    nb_diff_lines = filter_blank_lines_in_commit(ori_diff_lines, old_nb_li_lookup, new_nb_li_lookup)
+    ## Step 4: Parse the old and new filtered code
+    if filtered_file_diff_lines:
+        ## NOTE: The code analyzed below are all FILTERED code.
+        # Step 4.1 Initialize the DiffFileInfo
+        diff_file_info = PyDiffFileInfo(old_code=old_filtered_code, new_code=new_filtered_code)
 
-    if nb_diff_lines:
-        # NOTE: All we analyse after is the FILTERED code!
-        # --------------------------- Step III: Parse file --------------------------- #
-        old_locations, old_li2loc, old_structs_info = parse_python_file_locations(old_nb_code)
-        new_locations, new_li2loc, new_structs_info = parse_python_file_locations(new_nb_code)
-
-        # --------------------------- Step IV: Initialize comb_info --------------------------- #
-        comb_info = CombineInfo(
-            old_code=old_nb_code, new_code=new_nb_code,
-            old_locations=old_locations, new_locations=new_locations,
-            old_li2loc=old_li2loc, new_li2loc=new_li2loc
+        # Step 4.2 Combine the old and new code
+        comb_code, line_id_old2new, line_id_old2comb, line_id_new2comb = combine_code_old_and_new(
+            diff_file_info.old_code, diff_file_info.new_code, filtered_file_diff_lines
         )
 
-        # --------------------------- Step V: Combine code --------------------------- #
-        nb_comb_info = combine_code_old_and_new(comb_info, nb_diff_lines)
+        diff_file_info.merge_code = comb_code
+        diff_file_info.line_id_old2new = line_id_old2new
+        diff_file_info.line_id_old2merge = line_id_old2comb
+        diff_file_info.line_id_new2merge = line_id_new2comb
 
-        # --------------------------- Step VI: Build struct indexes  --------------------------- #
-        nb_comb_info = update_comb_info_with_struct_index(nb_comb_info, old_structs_info, new_structs_info)
+        # Step 4.3 Parse the old and new code respectively
+        # (1) Parse the old code and update
+        ast_parser.set(code=old_filtered_code)
+        ast_parser.parse_python_code()
 
-        # --------------------------- Step VII: Build DiffCodeSnippet  --------------------------- #
-        # diff_code_snips = diff_lines_to_str(nb_diff_lines)
-        diff_context = extract_diff_context_in_file(nb_diff_lines, comb_info)
+        diff_file_info.old_func_index = ast_parser.all_funcs
+        diff_file_info.old_class_index = ast_parser.all_classes
+        diff_file_info.old_inclass_method_index = ast_parser.all_inclass_methods
+        diff_file_info.old_imports = ast_parser.all_imports
 
-        return nb_comb_info, diff_context
+        # (2) Parse the new code and update
+        ast_parser.set(code=new_filtered_code)
+        ast_parser.parse_python_code()
+
+        diff_file_info.new_func_index = ast_parser.all_funcs
+        diff_file_info.new_class_index = ast_parser.all_classes
+        diff_file_info.new_inclass_method_index = ast_parser.all_inclass_methods
+        diff_file_info.new_imports = ast_parser.all_imports
+
+        # Step 4.4 Build diff content of file
+        if globals_opt.opt_to_file_diff_context == 1:
+            diff_context = diff_lines_to_str(filtered_file_diff_lines)
+        elif globals_opt.opt_to_file_diff_context == 2:
+            diff_context = build_file_diff_context(filtered_file_diff_lines, diff_file_info)
+        else:
+            raise NotImplementedError(f"Strategy {globals_opt.opt_to_file_diff_context} for building file diff context "
+                                      f"is not supported yet.")
+
+        return diff_file_info, diff_context
+    else:
+        return None
+
+
+def analyse_deleted_java_file(ast_parser: JavaASTParser, old_code: str, comb_code: str) -> JavaDiffFileInfo:
+    ast_parser.reset()
+
+    ## (1) Initialization
+    diff_file_info = JavaDiffFileInfo(old_code=old_code, new_code=None, merge_code=comb_code)
+
+    ## (2) Update
+    ast_parser.set(code=old_code)
+    ast_parser.parse_java_code()
+
+    # 1. Simple Nodes
+    diff_file_info.old_nodes = ast_parser.all_nodes
+    # 2. Mapping from line id to Simple Node id
+    diff_file_info.old_li2node = ast_parser.li2node_map
+    # 3. Structure indexes
+    diff_file_info.old_iface_index = ast_parser.all_interfaces
+    diff_file_info.old_class_index = ast_parser.all_classes
+    diff_file_info.old_inclass_iface_index = ast_parser.all_inclass_interfaces
+    diff_file_info.old_inclass_class_index = ast_parser.all_inclass_classes
+    diff_file_info.old_inclass_method_index = ast_parser.all_inclass_methods
+    diff_file_info.old_imports = ast_parser.all_imports
+
+    return diff_file_info
+
+
+def analyse_added_java_file(ast_parser: JavaASTParser, new_code: str, comb_code: str) -> JavaDiffFileInfo:
+    ast_parser.reset()
+
+    ## (1) Initialization
+    diff_file_info = JavaDiffFileInfo(old_code=None, new_code=new_code, merge_code=comb_code)
+
+    ## (2) Update
+    ast_parser.set(code=new_code)
+    ast_parser.parse_java_code()
+
+    # 1. Simple Nodes
+    diff_file_info.new_nodes = ast_parser.all_nodes
+    # 2. Mapping from line id to Simple Node id
+    diff_file_info.new_li2node = ast_parser.li2node_map
+    # 3. Structure indexes
+    diff_file_info.new_iface_index = ast_parser.all_interfaces
+    diff_file_info.new_class_index = ast_parser.all_classes
+    diff_file_info.new_inclass_iface_index = ast_parser.all_inclass_interfaces
+    diff_file_info.new_inclass_class_index = ast_parser.all_inclass_classes
+    diff_file_info.new_inclass_method_index = ast_parser.all_inclass_methods
+    diff_file_info.old_imports = ast_parser.all_imports
+
+    return diff_file_info
+
+
+def analyse_modified_java_file(
+        ast_parser: JavaASTParser,
+        old_ori_code: str,
+        new_ori_code: str,
+        diff_file_info: Dict
+) -> Tuple[JavaDiffFileInfo, str] | None:
+    """Analyse the modified Java file."""
+    ## Step 1: Reset the parser
+    ast_parser.reset()
+
+    ## Step 2: Get all diff lines within a file
+    ori_file_diff_lines = extract_all_diff_lines_within_file(diff_file_info)
+
+    ## Step 3: Filter out blank and comment lines
+    # Filtering reason: follow the setting of analysing the Python file
+    # (1) Filter for code file
+    old_filter_res = filter_java_code_content(old_ori_code)
+    assert old_filter_res is not None
+    old_filtered_code, old_line_id_map = old_filter_res
+
+    new_filter_res = filter_java_code_content(new_ori_code)
+    assert new_filter_res is not None
+    new_filtered_code, new_line_id_map = new_filter_res
+    # (2) Filter for commit info
+    filtered_file_diff_lines = filter_file_diff_content(ori_file_diff_lines, old_line_id_map, new_line_id_map)
+
+    ## Step 4: Parse the old and new filtered code
+    if filtered_file_diff_lines:
+        ## NOTE: The code analyzed below are all FILTERED code.
+        # Step 4.1 Initialize the DiffFileInfo
+        diff_file_info = JavaDiffFileInfo(old_code=old_filtered_code, new_code=new_filtered_code)
+
+        # Step 4.2 Combine the old and new code
+        comb_code, line_id_old2new, line_id_old2comb, line_id_new2comb = combine_code_old_and_new(
+            diff_file_info.old_code, diff_file_info.new_code, filtered_file_diff_lines
+        )
+
+        diff_file_info.merge_code = comb_code
+        diff_file_info.line_id_old2new = line_id_old2new
+        diff_file_info.line_id_old2merge = line_id_old2comb
+        diff_file_info.line_id_new2merge = line_id_new2comb
+
+        # Step 4.3 Parse the old and new code respectively
+        # (1) Parse the old code and update
+        ast_parser.set(code=old_filtered_code)
+        ast_parser.parse_java_code()
+
+        diff_file_info.old_iface_index = ast_parser.all_interfaces
+        diff_file_info.old_class_index = ast_parser.all_classes
+        diff_file_info.old_inclass_iface_index = ast_parser.all_inclass_interfaces
+        diff_file_info.old_inclass_class_index = ast_parser.all_inclass_classes
+        diff_file_info.old_inclass_method_index = ast_parser.all_inclass_methods
+        diff_file_info.old_imports = ast_parser.all_imports
+
+        # (2) Parse the new code and update
+        ast_parser.set(code=new_filtered_code)
+        ast_parser.parse_java_code()
+
+        diff_file_info.new_iface_index = ast_parser.all_interfaces
+        diff_file_info.new_class_index = ast_parser.all_classes
+        diff_file_info.new_inclass_iface_index = ast_parser.all_inclass_interfaces
+        diff_file_info.new_inclass_class_index = ast_parser.all_inclass_classes
+        diff_file_info.new_inclass_method_index = ast_parser.all_inclass_methods
+        diff_file_info.new_imports = ast_parser.all_imports
+
+        # Step 4.4 Build diff content of file
+        if globals_opt.opt_to_file_diff_context == 1:
+            diff_context = diff_lines_to_str(filtered_file_diff_lines)
+        elif globals_opt.opt_to_file_diff_context == 2:
+            diff_context = build_file_diff_context(filtered_file_diff_lines, diff_file_info)
+        else:
+            raise NotImplementedError(f"Strategy {globals_opt.opt_to_file_diff_context} for building file diff context "
+                                      f"is not supported yet.")
+
+        return diff_file_info, diff_context
     else:
         return None

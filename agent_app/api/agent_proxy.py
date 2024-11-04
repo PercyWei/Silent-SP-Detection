@@ -13,7 +13,7 @@ from enum import Enum
 from loguru import logger
 
 from agent_app.model import common
-from agent_app.search.search_manage import SearchManager
+from agent_app.search.search_manage import PySearchManager
 from agent_app.data_structures import MessageThread
 from agent_app.util import parse_function_invocation
 
@@ -41,7 +41,8 @@ class ProxyTask(str, Enum):
             return "ranking"
 
 
-HYP_PROPOSAL_PROMPT = """You are a helpful assistant to convert text containing the following information into json format.
+def _get_hyp_proposal_prompt() -> str:
+    return """You are a helpful assistant to convert text containing the following information into json format.
 1. Are new hypotheses being proposed?
 
 Extract new hypothesis from question 1, leave an empty list if you do not find any valid hypothesis.
@@ -68,7 +69,8 @@ Now based on the given context, write a hypothesis_list section that conforms to
 """
 
 
-HYP_CHECK_PROMPT = """You are a helpful assistant to convert text containing the following information into json format.
+def _get_hyp_check_prompt() -> str:
+    return """You are a helpful assistant to convert text containing the following information into json format.
 1. What is the modified CWE type?
 
 Extract the CWE type from question 1.
@@ -81,7 +83,8 @@ Now based on the given context, write a cwe_type section that conforms to the CW
 """
 
 
-PATCH_EXTRACTION_PROMPT = """You are a helpful assistant to convert text containing the following information into json format.
+def _get_patch_extraction_prompt() -> str:
+    return """You are a helpful assistant to convert text containing the following information into json format.
 1. Where is the patch located?
 
 Extract the locations of patch code snippet from question 1, and for each location, it at least contains a "file" and a "code".
@@ -101,7 +104,9 @@ Now based on the given context, write a patch_locations section that conforms to
 """
 
 
-CONTEXT_RETRIEVAL_PROMPT = """You are a helpful assistant to convert text containing the following information into json format.
+def _get_context_retrieval_prompt(lang: Literal['Python', 'Java']) -> str:
+    if lang == 'Python':
+        return """You are a helpful assistant to convert text containing the following information into json format.
 1. How to construct search API calls to get more context of the project?
 
 Extract API calls from question 1, leave an empty list if you do not find any valid API calls or the text content indicates that no further context is needed.
@@ -131,9 +136,47 @@ interface ApiCalls {
 
 Now based on the given context, write a api_calls section that conforms to the ApiCalls schema.
 """
+    elif lang == 'Java':
+        return """You are a helpful assistant to convert text containing the following information into json format.
+1. How to construct search API calls to get more context of the project?
+
+Extract API calls from question 1, leave an empty list if you do not find any valid API calls or the text content indicates that no further context is needed.
+
+The API calls include:
+- search_interface(iface_name: str)
+- search_class(class_name: str)
+- search_interface_in_file(iface_name: str, file_name: str)
+- search_class_in_file(class_name: str, file_name: str)
+- search_type_in_class(ttype: ['interface', 'class', 'method'], type_name: str, class_name: str)
+- search_type_in_class_in_file(ttype: ['interface', 'class', 'method'], type_name: str, class_name: str, file_name: str)
+
+Provide your answer in JSON structure like this, you should ignore the argument placeholders in api calls.
+For example, search_interface(iface_name="str") should be search_interface("str"), search_class_in_file("class_name", "path.to.file") should be search_class_in_file("class_name", "path/to/file")
+Make sure each API call is written as a valid python expression.
+Provide your answer in JSON structure and consider the following TypeScript Interface for the JSON schema:
+
+type SearchType = 'interface' | 'class' | 'method';
+
+type ApiCall = 
+  | `search_interface(${string})`
+  | `search_class(${string})`
+  | `search_interface_in_file(${string}, ${string})`
+  | `search_class_in_file(${string}, ${string})`
+  | `search_type_in_class(${SearchType}, ${string}, ${string})`
+  | `search_type_in_class_in_file(${SearchType}, ${string}, ${string}, ${string})`;
+
+interface ApiCalls {
+    api_calls: ApiCall[];
+};
+
+Now based on the given context, write a api_calls section that conforms to the ApiCalls schema.
+"""
+    else:
+        raise RuntimeError(f"Language {lang} is not supported yet.")
 
 
-SCORE_PROMPT = """You are a helpful assistant to convert text containing the following information into json format.
+def _get_score_prompt() -> str:
+    return """You are a helpful assistant to convert text containing the following information into json format.
 1. What confidence score is set for the current hypothesis?
 
 Extract the confidence score from question 1.
@@ -148,7 +191,8 @@ Now based on the given context, write a confidence_score section that conforms t
 """
 
 
-RANK_PROMPT = """You are a helpful assistant to convert text containing the following information into json format.
+def _get_rank_prompt() -> str:
+    return """You are a helpful assistant to convert text containing the following information into json format.
 1. What is the ranking of the hypothesis?
 
 Extract the ranking from question 1.
@@ -163,14 +207,23 @@ Now based on the given context, write a ranking section that conforms to the Ran
 """
 
 
-def get_task_prompt(task: ProxyTask) -> str:
-    variable_name = f"{task}_PROMPT"
-    system_prompt = globals().get(variable_name, '')
-    assert system_prompt != '', KeyError(variable_name)
-    return system_prompt
+def get_task_prompt(task: ProxyTask, lang: Literal['Python', 'Java']) -> str:
+    if task == ProxyTask.HYP_PROPOSAL:
+        return _get_hyp_proposal_prompt()
+    elif task == ProxyTask.HYP_CHECK:
+        return _get_hyp_check_prompt()
+    elif task == ProxyTask.PATCH_EXTRACTION:
+        return _get_patch_extraction_prompt()
+    elif task == ProxyTask.CONTEXT_RETRIEVAL:
+        return _get_context_retrieval_prompt(lang)
+    elif task == ProxyTask.SCORE:
+        return _get_score_prompt()
+    elif task == ProxyTask.RANK:
+        return _get_rank_prompt()
 
 
 def run_with_retries(
+        lang: Literal['Python', 'Java'],
         text: str,
         task: ProxyTask,
         retries: int = 3,
@@ -179,6 +232,7 @@ def run_with_retries(
     """Main method to ask the LLM Agent to extract JSON answer from the given text with retries.
 
     Args:
+        lang (str): Programming language. Only choose from 'Python' and 'Java'.
         text (str): Text to be extracted.
         task (ProxyTask): Task of Proxy Agent.
         retries (int): Number of retries for Proxy Agent.
@@ -209,7 +263,7 @@ def run_with_retries(
             prev_summary += "\n\nPlease avoid making the same mistake in your next answer."
 
         # Ask the LLM
-        proxy_response, new_thread = run(task, text, prev_summary)
+        proxy_response, new_thread = run(task, lang, text, prev_summary)
         msg_threads.append(new_thread)
 
         # Check the format
@@ -251,12 +305,18 @@ def run_with_retries(
     return None, failure_summary, msg_threads
 
 
-def run(task: ProxyTask, text: str, prev_summary: str | None = None) -> Tuple[str, MessageThread]:
+def run(
+        task: ProxyTask,
+        lang: Literal['Python', 'Java'],
+        text: str,
+        prev_summary: str | None = None
+) -> Tuple[str, MessageThread]:
     """
     Run the agent to extract useful information in json format.
 
     Args:
         task (ProxyTask): Task of Proxy Agent.
+        lang (str): Programming language. Only choose from 'Python' and 'Java'.
         text (str): Text to be extracted.
         prev_summary (str): The summary of the previous failed retries.
     Returns:
@@ -264,7 +324,7 @@ def run(task: ProxyTask, text: str, prev_summary: str | None = None) -> Tuple[st
         msg_threads (MessageThread): MessageThread instance containing current conversation with Proxy Agent.
     """
     msg_thread = MessageThread()
-    task_prompt = get_task_prompt(task)
+    task_prompt = get_task_prompt(task, lang)
     msg_thread.add_system(task_prompt)
     msg_thread.add_user(text)
     if prev_summary is not None:
@@ -442,7 +502,7 @@ def is_valid_response(data: List | Dict, task: ProxyTask) -> Tuple[bool, str, st
                 return False, simp_reason, verb_reason
 
             # NOTE: Generally speaking, the name of the api called by LLM is not wrong
-            function = getattr(SearchManager, func_name, None)
+            function = getattr(PySearchManager, func_name, None)
             if function is None:
                 simp_reason = verb_reason = "An API call invokes a non-existent function"
                 verb_reason += f" and the API call is: {api_call}"

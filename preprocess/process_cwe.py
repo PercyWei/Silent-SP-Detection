@@ -306,7 +306,7 @@ def compare_cwe_collected_with_treevul():
     for cwe_id, cwe_path in treevul_cwe_paths.items():
         coll_paths = coll_cwe_paths[cwe_id]
         if cwe_path not in coll_paths:
-            print(f"CWE-{cwe_id}:"
+            print(f"CWE-{cwe_id}:" 
                   f"\n - Collected: {json.dumps([' '.join(path) for path in coll_paths], indent=4)}"
                   f"\n - In TreeVul: {cwe_path}"
                   f"\n\n")

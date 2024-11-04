@@ -11,53 +11,93 @@ from dataclasses import dataclass, field
 from openai.types.chat import ChatCompletionMessageToolCall
 from openai.types.chat.chat_completion_message_tool_call import Function as OpenaiFunction
 
+from agent_app import globals
+
 
 LineRange = NamedTuple("LineRange", [("start", int), ("end", int)])
 
 
-CodeRange = NamedTuple('CommonCodeRange', [('file_path', str), ('range', LineRange)])
+CodeRange = NamedTuple('CodeRange', [('file_path', str), ('range', LineRange)])
 
 
 """STATIC ANALYSIS"""
 
 
-class LocationType(str, Enum):
+class SimNodeType(str, Enum):
     # Root
     MODULE = "module"
-    # Top level items
+
+
+class PySimNodeType(str, Enum):
+    """Types of SimNode for Python code."""
+    # Root
+    ROOT = "root"
+    # Top level structs
     UNIT = "unit"
     FUNCTION = "function"
     CLASS = "class"
     MAIN = "main"
     # Class children
     CLASS_UNIT = "class_unit"
-    CLASS_FUNCTION = "class_function"
+    CLASS_METHOD = "class_method"
     # Main children
     MAIN_UNIT = "main_unit"
 
     @staticmethod
-    def attributes():
-        return [k.value for k in LocationType]
+    def top_level_node_types():
+        return [PySimNodeType.UNIT, PySimNodeType.FUNCTION, PySimNodeType.CLASS, PySimNodeType.MAIN]
+
+    @staticmethod
+    def class_child_node_types():
+        return [PySimNodeType.CLASS_UNIT, PySimNodeType.CLASS_METHOD]
+
+    @staticmethod
+    def main_child_node_types():
+        return [PySimNodeType.MAIN_UNIT]
+
+    @staticmethod
+    def line_node_types():
+        return [PySimNodeType.UNIT, PySimNodeType.FUNCTION,
+                PySimNodeType.CLASS_UNIT, PySimNodeType.CLASS_METHOD,
+                PySimNodeType.MAIN_UNIT]
 
 
-line_loc_types = [LocationType.UNIT, LocationType.FUNCTION,
-                  LocationType.CLASS_UNIT, LocationType.CLASS_FUNCTION,
-                  LocationType.MAIN_UNIT]
-top_level_loc_types = [LocationType.UNIT, LocationType.FUNCTION, LocationType.CLASS, LocationType.MAIN]
-no_children_loc_types = [LocationType.UNIT, LocationType.FUNCTION,
-                         LocationType.CLASS_UNIT, LocationType.CLASS_FUNCTION,
-                         LocationType.MAIN_UNIT]
-children_loc_types = [LocationType.CLASS, LocationType.MAIN]
-class_child_loc_types = [LocationType.CLASS_UNIT, LocationType.CLASS_FUNCTION]
-main_child_loc_types = [LocationType.MAIN_UNIT]
+class JavaSimNodeType(str, Enum):
+    """Types of SimNode for Java code."""
+    # Root
+    ROOT = "root"
+    # Top level structs
+    UNIT = "unit"
+    INTERFACE = "interface"
+    CLASS = "class"
+    # Class children
+    CLASS_UNIT = "class_unit"
+    CLASS_INTERFACE = "class_interface"
+    CLASS_CLASS = "class_class"
+    CLASS_METHOD = "class_method"
+
+    @staticmethod
+    def top_level_node_types():
+        return [JavaSimNodeType.UNIT, JavaSimNodeType.INTERFACE, PySimNodeType.CLASS]
+
+    @staticmethod
+    def class_child_node_types():
+        return [JavaSimNodeType.CLASS_UNIT, JavaSimNodeType.CLASS_INTERFACE,
+                JavaSimNodeType.CLASS_CLASS, JavaSimNodeType.CLASS_METHOD]
+
+    @staticmethod
+    def line_node_types():
+        return [JavaSimNodeType.UNIT, JavaSimNodeType.INTERFACE,
+                JavaSimNodeType.CLASS_UNIT, JavaSimNodeType.CLASS_INTERFACE,
+                JavaSimNodeType.CLASS_CLASS, JavaSimNodeType.CLASS_METHOD]
 
 
 @dataclass
-class Location:
-    """For recording different structs in Python code."""
+class SimNode:
+    """Simple AST node."""
     id: int
     father: int | None
-    type: LocationType
+    type: SimNodeType
     ast: str
     name: str
     range: LineRange
@@ -66,15 +106,25 @@ class Location:
         return list(range(self.range.start, self.range.end + 1))
 
 
+@dataclass
+class PySimNode(SimNode):
+    """Simple AST node for Python code."""
+    type: PySimNodeType
+
+
+@dataclass
+class JavaSimNode(SimNode):
+    """Simple AST node for Java code."""
+    type: JavaSimNodeType
+
+
 """CODE"""
 
 
 @dataclass
-class CodeSnippetLocation:
+class BaseCodeSnippetLocation:
     """Dataclass to hold the location of code snippet."""
     file_path: str  # This is RELATIVE path
-    class_name: str | None
-    func_name: str | None
     code: str
 
     def to_tagged_upto_file(self) -> str:
@@ -82,29 +132,31 @@ class CodeSnippetLocation:
         file_part = f"<file>{self.file_path}</file>"
         return file_part
 
-    def to_tagged_upto_class(self) -> str:
-        """Convert the code snippet location to a tagged string, upto class."""
-        prefix = self.to_tagged_upto_file()
-        class_part = f"<class>{self.class_name}</class> " if self.class_name is not None else ""
-        return f"{prefix}\n{class_part}"
-
-    def to_tagged_upto_func(self) -> str:
-        """Convert the code snippet location to a tagged string, upto function."""
-        prefix = self.to_tagged_upto_class()
-        func_part = f"<func>{self.func_name}</func>" if self.func_name is not None else ""
-        return f"{prefix}{func_part}"
-
     def to_tagged_str(self) -> str:
         """Convert the code snippet location to a tagged string."""
-        prefix = self.to_tagged_upto_func()
+        prefix = self.to_tagged_upto_file()
         code_part = f"<code>\n{self.code}\n</code>"
         return f"{prefix}\n{code_part}"
+
+    @staticmethod
+    def collapse_to_file_level(lst) -> str:
+        """Collapse search results to file level."""
+        res = dict()  # file -> count
+        for r in lst:
+            if r.file_path not in res:
+                res[r.file_path] = 1
+            else:
+                res[r.file_path] += 1
+        res_str = ""
+        for file_path, count in res.items():
+            file_part = f"<file>{file_path}</file>"
+            res_str += f"- {file_part} ({count} matches)\n"
+        res_str.rstrip()
+        return res_str
 
     def to_dict(self) -> Dict:
         return {
             "file_path": self.file_path,
-            "class_name": self.class_name,
-            "func_name": self.func_name,
             "code": self.code
         }
 
@@ -122,32 +174,96 @@ class CommitType(str, Enum):
 
 
 @dataclass
-class CombineInfo:
-    """Dataclass to hold info of combined file."""
+class DiffFileInfo:
+    """Dataclass to hold info of diff file in the commit.
+    Here 'diff' indicates deleted, added and modified.
+    """
+    _lang: str = field(init=False, repr=False)
     # -------------------- Code -------------------- #
-    old_code: str | None
-    new_code: str | None
-    comb_code: str = ""
-    # -------------------- Location -------------------- #
-    old_locations: Dict[int, Location] = field(default_factory=dict)  # loc id -> Location
-    new_locations: Dict[int, Location] = field(default_factory=dict)  # loc id -> Location
-    # -------------------- Look-up dict -------------------- #
-    # (1) line id to location id
-    old_li2loc: Dict[int, int] = field(default_factory=dict)          # line id -> loc id
-    new_li2loc: Dict[int, int] = field(default_factory=dict)          # line id -> loc id
-    # (2) line id to line id
-    line_id_old2new: Dict[int, int] = field(default_factory=dict)   # line id: old_code -> new_code
-    line_id_old2comb: Dict[int, int] = field(default_factory=dict)  # line id: old_code -> comb_code
-    line_id_new2comb: Dict[int, int] = field(default_factory=dict)  # line id: new_code -> comb_code
-    # -------------------- Structures -------------------- #
-    # (1) Old struct index
+    old_code: str | None  # Need setup while initializing
+    new_code: str | None  # Need setup while initializing
+    merge_code: str = ""
+    # -------------------- Simple Node -------------------- #
+    old_nodes: Dict[int, SimNode] = field(default_factory=dict)  # Simple Node id -> Simple Node
+    new_nodes: Dict[int, SimNode] = field(default_factory=dict)  # Simple Node id -> Simple Node
+    # -------------------- Mapping -------------------- #
+    # (1) Mapping of line id to Simple Node id
+    old_li2node: Dict[int, int] = field(default_factory=dict)
+    new_li2node: Dict[int, int] = field(default_factory=dict)
+    # (2) Line id mapping
+    line_id_old2new: Dict[int, int] = field(default_factory=dict)
+    line_id_old2merge: Dict[int, int] = field(default_factory=dict)
+    line_id_new2merge: Dict[int, int] = field(default_factory=dict)
+
+    def __post_init__(self):
+        self._lang = self._get_lang()
+
+    @property
+    def lang(self) -> str:
+        return self._lang
+
+    def _get_lang(self) -> str:
+        raise NotImplementedError("Subclasses must implement this method.")
+
+
+@dataclass
+class PyDiffFileInfo(DiffFileInfo):
+    """Dataclass to hold info of diff Python file in the commit."""
+    # -------------------- Simple Node -------------------- #
+    old_nodes: Dict[int, PySimNode] = field(default_factory=dict)  # Simple Node id -> Simple Node
+    new_nodes: Dict[int, PySimNode] = field(default_factory=dict)  # Simple Node id -> Simple Node
+    # ----------------------- Old Struct Index ----------------------- #
+    # 1.1 Top-level class / function:   [name, line range]
     old_func_index: List[Tuple[str, LineRange]] = field(default_factory=list)
     old_class_index: List[Tuple[str, LineRange]] = field(default_factory=list)
-    old_classFunc_index: List[Tuple[str, List[Tuple[str, LineRange]]]] = field(default_factory=list)
-    # (2) New struct index
+    # 1.2 Inclass method:               [class name, [name, line range]]
+    old_inclass_method_index: List[Tuple[str, List[Tuple[str, LineRange]]]] = field(default_factory=list)
+    # 1.3 Import:                       [(pkg path, attr name, alias name)]
+    old_imports: List[Tuple[str, str, str]] = field(default_factory=list)
+    # ----------------------- New Struct Index ----------------------- #
+    # 2.1 Top-level class / function:   [name, line range]
     new_func_index: List[Tuple[str, LineRange]] = field(default_factory=list)
     new_class_index: List[Tuple[str, LineRange]] = field(default_factory=list)
-    new_classFunc_index: List[Tuple[str, List[Tuple[str, LineRange]]]] = field(default_factory=list)
+    # 2.2 Inclass method:               [class name, [name, line range]]
+    new_inclass_method_index: List[Tuple[str, List[Tuple[str, LineRange]]]] = field(default_factory=list)
+    # 2.3 Import:                       [(pkg path, attr name, alias name)]
+    new_imports: List[Tuple[str, str, str]] = field(default_factory=list)
+
+    def _get_lang(self) -> str:
+        return "Python"
+
+
+@dataclass
+class JavaDiffFileInfo(DiffFileInfo):
+    """Dataclass to hold info of diff Java file in the commit."""
+    # -------------------- Package -------------------- #
+    package_name: str | None = None
+    # -------------------- Simple Node -------------------- #
+    old_nodes: Dict[int, JavaSimNode] = field(default_factory=dict)  # Simple Node id -> Simple Node
+    new_nodes: Dict[int, JavaSimNode] = field(default_factory=dict)  # Simple Node id -> Simple Node
+    # ----------------------- Old Struct Index ----------------------- #
+    # 1.1 Top-level interface / class:        [name, line range]
+    old_iface_index: List[Tuple[str, LineRange]] = field(default_factory=list)
+    old_class_index: List[Tuple[str, LineRange]] = field(default_factory=list)
+    # 1.2 Inclass interface / class / method: [class name, [name, line range]]
+    old_inclass_iface_index: List[Tuple[str, List[Tuple[str, LineRange]]]] = field(default_factory=list)
+    old_inclass_class_index: List[Tuple[str, List[Tuple[str, LineRange]]]] = field(default_factory=list)
+    old_inclass_method_index: List[Tuple[str, List[Tuple[str, LineRange]]]] = field(default_factory=list)
+    # 1.3 Import:                             [full import statement]
+    old_imports: List[str] = field(default_factory=list)
+    # ----------------------- New Struct Index ----------------------- #
+    # 2.1 Top-level interface / class:        [name, line range]
+    new_iface_index: List[Tuple[str, LineRange]] = field(default_factory=list)
+    new_class_index: List[Tuple[str, LineRange]] = field(default_factory=list)
+    # 2.2 Inclass interface / class / method: [class name, [name, line range]]
+    new_inclass_iface_index: List[Tuple[str, List[Tuple[str, LineRange]]]] = field(default_factory=list)
+    new_inclass_class_index: List[Tuple[str, List[Tuple[str, LineRange]]]] = field(default_factory=list)
+    new_inclass_method_index: List[Tuple[str, List[Tuple[str, LineRange]]]] = field(default_factory=list)
+    # 2.3 Import:                             [full import statement]
+    new_imports: List[str] = field(default_factory=list)
+
+    def _get_lang(self) -> str:
+        return "Java"
 
 
 """SEARCH MANAGE"""

@@ -2,6 +2,7 @@
 # Original file: agent_app/old_utils.py
 
 import os
+import tempfile
 import ast
 import contextlib
 import re
@@ -12,9 +13,32 @@ import subprocess
 from typing import *
 from pathlib import Path
 
-from agent_app.log import print_stdout, log_and_print, log_and_cprint, print_with_time, always_cprint
+from agent_app import globals
+from agent_app.log import print_stdout, log_and_print
 from utils import run_command as base_run_command
 
+
+"""TEMPORARY FILE"""
+
+
+def make_tmp_file(content: str, suffix: str = ".java") -> str:
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix, mode='w', dir=globals.temp_dpath) as tmp_file:
+        tmp_file.write(content)
+        return tmp_file.name
+
+
+def remove_tmp_file(code_fpath: str):
+    try:
+        os.remove(code_fpath)
+    except FileNotFoundError:
+        log_and_print(f"File not found while deleting '{code_fpath}'")
+    except PermissionError:
+        log_and_print(f"Permission denied while deleting '{code_fpath}'")
+    except Exception as e:
+        log_and_print(f"Exception {str(e)} while deleting '{code_fpath}'")
+
+
+""""""
 
 @contextlib.contextmanager
 def cd(new_dpath: str):

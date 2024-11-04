@@ -7,6 +7,9 @@ from typing import *
 
 """BASIC CONFIG"""
 
+# Project language (Python / Java)
+lang: str = ""
+
 # Overall output directory for results
 output_dpath: str = ""
 
@@ -15,6 +18,9 @@ expr_dpath: str = ""
 
 # Root directory for local repos (cloned from GitHub)
 local_repos_dpath: str = ""
+
+# Directory for temp files
+temp_dpath: str = ""
 
 # Current experiment for security commit (vul) or other commit (novul)
 expr_type: str = ""
@@ -56,4 +62,4 @@ test_exec_timeout: int = 300
 """OTHER CONFIG"""
 
 # Task
-task_limit: int = 10
+task_limit: int = 5

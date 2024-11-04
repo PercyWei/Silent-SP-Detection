@@ -9,7 +9,6 @@ import math
 import inspect
 
 from typing import *
-from pathlib import Path
 from collections import defaultdict
 from dataclasses import dataclass, field
 
@@ -19,10 +18,10 @@ from agent_app import globals
 from agent_app.api.manage import ProcessManager
 from agent_app.api.agent_proxy import ProxyTask
 from agent_app.model import common
-from agent_app.search.search_manage import SearchManager
+from agent_app.search.search_manage import PySearchManager, JavaSearchManager
 from agent_app.data_structures import (
     CommitType,
-    CodeSnippetLocation,
+    BaseCodeSnippetLocation,
     FunctionCallIntent,
     MessageThread,
     State, ProcessStatus,
@@ -31,7 +30,7 @@ from agent_app.log import (
     print_banner,
     print_system, print_user, print_actor, print_proxy,
     print_commit_content,
-    log_and_print, log_and_cprint
+    log_and_print
 )
 from agent_app.util import parse_function_invocation
 from utils import make_hie_dirs
@@ -56,21 +55,33 @@ def get_hyp_def() -> str:
             f"\n\nNOTE: The predicted CWE-ID should be limited to the range of weaknesses included in View-{globals.view_id}.")
 
 
-def get_api_calls_des() -> str:
-    return ("You can use the following search APIs to get more context."
-            "\n- search_class(class_name: str): Search for a class in the repo"
-            "\n- search_class_in_file(class_name: str, file_name: str): Search for a class in the given file"
-            "\n- search_method_in_file(method_name: str, file_name: str): Search for a method in the given file, including regular functions and class methods"
-            "\n- search_method_in_class(method_name: str, class_name: str): Search for a method in the given class, i,e. class methods only"
-            "\n- search_method_in_class_in_file(method_name: str, class_name: str, file_name: str): Search for a method in the given class of the given file, i,e. class methods only"
-            "\n\nNOTE: You can use MULTIPLE search APIs in one round.")
+def get_api_calls_des(lang: Literal['Python', 'Java']) -> str:
+    if lang == 'Python':
+        return ("You can use the following search APIs to get more context."
+                "\n- search_class(class_name: str): Search for a class in the repo"
+                "\n- search_class_in_file(class_name: str, file_name: str): Search for a class in the given file"
+                "\n- search_method_in_file(method_name: str, file_name: str): Search for a method in the given file, including regular functions and class methods"
+                "\n- search_method_in_class(method_name: str, class_name: str): Search for a method in the given class, i,e. class methods only"
+                "\n- search_method_in_class_in_file(method_name: str, class_name: str, file_name: str): Search for a method in the given class of the given file, i,e. class methods only"
+                "\n\nNOTE: You can use MULTIPLE search APIs in one round.")
+    elif lang == 'Java':
+        return ("You can use the following search APIs to get more context."
+                "\n- search_interface(iface_name: str): Search for an interface in the repo"
+                "\n- search_class(class_name: str): Search for a class in the repo"
+                "\n- search_interface_in_file(iface_name: str, file_name: str): Search for an interface in the given file"
+                "\n- search_class_in_file(class_name: str, file_name: str): Search for a class in the given file"
+                "\n- search_type_in_class(ttype: ['interface', 'class', 'method'], type_name: str, class_name: str): Search for a type in the given class, while type indicates interface, class or method."
+                "\n- search_type_in_class_in_file(ttype: ['interface', 'class', 'method'], type_name: str, class_name: str, file_name: str): Search for a type in the given class of the given file, while type indicates interface, class or method."
+                "\n\nNOTE: You can use MULTIPLE search APIs in one round.")
+    else:
+        raise RuntimeError(f"Language {lang} is not supported yet.")
 
 
 """HYPOTHESIS"""
 
 
 @dataclass
-class CodeContext(CodeSnippetLocation):
+class CodeContext(BaseCodeSnippetLocation):
     """Dataclass to hold the locations of searched code snippet."""
 
     def to_str(self) -> str:
@@ -225,7 +236,7 @@ def _ask_proxy_agent_and_print(
 ) -> Tuple[str | None, str | None, List[MessageThread]]:
     # TODO: Consider whether to add the Proxy Agent extraction failure summary while
     #       asking the Actor Agent in the new retry.
-    json_text, failure_summary, proxy_msg_threads = manager.call_proxy_apis(text, task)
+    json_text, failure_summary, proxy_msg_threads = manager.call_proxy_llm(text, task)
     print_proxy(msg=json_text, desc=print_desc, print_callback=print_callback)
     return json_text, failure_summary, proxy_msg_threads
 
@@ -873,7 +884,7 @@ def run_in_context_retrieval_state(
         for api_call in raw_apis:
             func_name, func_arg_values = parse_function_invocation(api_call)
 
-            func_arg_spec = inspect.getfullargspec(getattr(SearchManager, func_name))
+            func_arg_spec = inspect.getfullargspec(getattr(PySearchManager, func_name))
             func_arg_names = func_arg_spec.args[1:]  # first parameter is self
 
             func_arg_kwargs = dict(zip(func_arg_names, func_arg_values))
@@ -1415,7 +1426,7 @@ def run_one_task(
     Args:
         raw_commit_content (str): The original commit content submitted to the task.
         output_dpath (str): Path to the output directory.
-        manager (ProcessManager): The already-initialized API manager.
+        manager (ProcessManager): The already-initialized process manager.
         print_callback:
     """
     print_banner("Starting Silent Patch Identification on the following commit")

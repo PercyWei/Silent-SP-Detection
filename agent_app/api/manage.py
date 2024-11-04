@@ -8,13 +8,17 @@ import inspect
 from typing import *
 from copy import deepcopy
 from docstring_parser import parse
+from abc import abstractmethod
 
 from loguru import logger
 
 from agent_app.api.agent_proxy import ProxyTask, run_with_retries as run_proxy_with_retries
 from agent_app.CWE.cwe_manage import CWEManager
-from agent_app.commit.commit_manage import CommitManager
-from agent_app.search.search_manage import SearchResult, SearchManager
+from agent_app.commit.commit_manage import PyCommitManager, JavaCommitManager
+from agent_app.search.search_manage import (
+    PySearchManager, JavaSearchManager,
+    PySearchResult, JavaSearchResult
+)
 from agent_app.data_structures import (
     SearchStatus, FunctionCallIntent, MessageThread,
     ProcessActionStatus, ProcessSearchStatus
@@ -24,18 +28,16 @@ from agent_app.log import log_exception
 from agent_app import globals
 
 
+"""BASE MANAGER"""
+
+
 class ProcessManager:
 
-    search_api_functions = [
-        "search_class",
-        "search_class_in_file",
-        "search_method_in_file",
-        "search_method_in_class",
-        "search_method_in_class_in_file"
-    ]
-
     def __init__(self, task: Task, output_dpath: str):
-        # For logging of this task instance
+        # All valid search APIs
+        self.search_api_functions: List[str] = []
+
+        # Current task instance
         self.task = task
 
         # Where to write our output
@@ -43,27 +45,6 @@ class ProcessManager:
 
         # Prepare the repo environment
         self.task.setup_project()
-
-        # Process recording
-        # (1) Special action count
-        self.action_status_count: ProcessActionStatus = ProcessActionStatus()
-        # (2) Search status count
-        self.search_status_count: ProcessSearchStatus = ProcessSearchStatus()
-
-        # Manage commit info
-        self.commit_manager = CommitManager(self.task.project_path, self.task.commit_hash, self.task.commit_content)
-
-        # Manage CWE info
-        self.cwe_manager = CWEManager(
-            globals.view_id,
-            globals.cwe_entry_file,
-            globals.cwe_tree_file,
-            globals.all_weakness_entry_file,
-            globals.view_cwe_tree_files
-        )
-
-        # Manage context retrieval
-        self.search_manager = self.init_search_manager()
 
         # Keep track which tools is currently being used
         self.curr_tool: Optional[str] = None
@@ -79,16 +60,40 @@ class ProcessManager:
         self.input_tokens: int = 0
         self.output_tokens: int = 0
 
+        # Process recording
+        # (1) Special action count
+        self.action_status_count: ProcessActionStatus = ProcessActionStatus()
+        # (2) Search status count
+        self.search_status_count: ProcessSearchStatus = ProcessSearchStatus()
 
-    def init_search_manager(self) -> SearchManager:
-        commit_files = {
-            "del_files": self.commit_manager.del_files,
-            "add_files": self.commit_manager.add_files,
-            "mod_files": self.commit_manager.mod_files
-        }
+        # Need initialization
+        self.commit_manager = None
+        self.search_manager = None
+        self.cwe_manager = None
 
-        return SearchManager(self.task.project_path, commit_files, self.commit_manager.file_comb_info)
+    """ABSTRACT METHODs"""
 
+    @abstractmethod
+    def init_search_api_functions(self, *args, **kwargs):
+        method_name = inspect.currentframe().f_code.co_name
+        raise NotImplementedError(f"Method '{method_name}' not implemented yet")
+
+    @abstractmethod
+    def init_commit_manager(self , *args, **kwargs):
+        method_name = inspect.currentframe().f_code.co_name
+        raise NotImplementedError(f"Method '{method_name}' not implemented yet")
+
+    @abstractmethod
+    def init_search_manager(self, *args, **kwargs):
+        method_name = inspect.currentframe().f_code.co_name
+        raise NotImplementedError(f"Method '{method_name}' not implemented yet")
+
+    @abstractmethod
+    def init_cwe_manager(self, *args, **kwargs):
+        method_name = inspect.currentframe().f_code.co_name
+        raise NotImplementedError(f"Method '{method_name}' not implemented yet")
+
+    """UTILs"""
 
     @classmethod
     def get_full_funcs_for_openai(cls, tool_list: List[str]) -> List[Dict]:
@@ -154,8 +159,10 @@ class ProcessManager:
 
         return all_tool_objs
 
-
-    def dispatch_intent(self, intent: FunctionCallIntent) -> Tuple[str, SearchStatus, List[SearchResult]]:
+    def dispatch_intent(
+            self,
+            intent: FunctionCallIntent
+    ) -> Tuple[str, SearchStatus, List[PySearchResult | JavaSearchResult]]:
         """Dispatch a function call intent to actually perform its action.
 
         Args:
@@ -163,9 +170,9 @@ class ProcessManager:
         Returns:
             str: Detailed output of the current search API call.
             SearchStatus: Status of the search.
-            List[SearchResult]: All search results.
+            List[PySearchResult | JavaSearchResult]: All search results.
         """
-        if intent.func_name not in self.search_api_functions and intent.func_name != "get_class_full_snippet":
+        if intent.func_name not in self.search_api_functions:
             error = f"Unknown function name {intent.func_name}. You called a tool that does not exist."
             return error, SearchStatus.UNKNOWN_SEARCH_API, []
 
@@ -199,26 +206,20 @@ class ProcessManager:
 
         return call_res
 
-
     """PROCESS STATUS COUNT"""
-
 
     def reset_status_count(self):
         self.action_status_count = ProcessActionStatus()
         self.search_status_count = ProcessSearchStatus()
 
-
     """TOOL CALLs"""
-
 
     def start_new_tool_call_layer(self):
         self.tool_call_layers.append([])
 
-
     def reset_too_call_recordings(self):
         self.tool_call_sequence = []
         self.tool_call_layers = []
-
 
     def dump_tool_call_sequence_to_file(self, tool_call_output_dpath: str, prefix_fname: str = ""):
         """Dump the sequence of tool calls to a file."""
@@ -227,7 +228,6 @@ class ProcessManager:
         with open(tool_call_file, "w") as f:
             json.dump(self.tool_call_sequence, f, indent=4)
 
-
     def dump_tool_call_layers_to_file(self, tool_call_output_dpath: str, prefix_fname: str = ""):
         """Dump the layers of tool calls to a file."""
         fname = f"{prefix_fname}_tool_call_layers.json" if prefix_fname != "" else "tool_call_layers.json"
@@ -235,108 +235,18 @@ class ProcessManager:
         with open(tool_call_file, "w") as f:
             json.dump(self.tool_call_layers, f, indent=4)
 
-
-    """SEARCH APIs"""
-
-
-    # Not a search API - just to get full class definition when only the class is specified
-    def get_class_full_snippet(self, class_name: str):
-        return self.search_manager.get_class_full_snippet(class_name)
-
-
-    def search_class(self, class_name: str) -> Tuple[str, SearchStatus, List[SearchResult]]:
-        """Search for a class in the codebase.
-
-        Only the signature of the class is returned. The class signature
-        includes class name, base classes, and signatures for all of its methods/properties.
-
-        Args:
-            class_name (str): Name of the class to search for.
-
-        Returns:
-            str: The searched class signature if success, an error message otherwise.
-            SearchStatus: Status of the search.
-            List[SearchResult]: All search results.
-        """
-        return self.search_manager.search_class(class_name)
-
-
-    def search_class_in_file(self, class_name: str, file_name: str) -> Tuple[str, SearchStatus, List[SearchResult]]:
-        """Search for a class in a given file.
-
-        Returns the actual code of the entire class definition.
-
-        Args:
-            class_name (str): Name of the class to search for.
-            file_name (str): The file to search in. Must be a valid python file name.
-
-        Returns:
-            str: The searched class signature if success, an error message otherwise.
-            SearchStatus: Status of the search.
-            List[SearchResult]: All search results.
-        """
-        return self.search_manager.search_class_in_file(class_name, file_name)
-
-
-    def search_method_in_file(self, method_name: str, file_name: str) -> Tuple[str, SearchStatus, List[SearchResult]]:
-        """Search for a method in a given file.
-
-        Returns the actual code of the method.
-
-        Args:
-            method_name (str): Name of the method to search for.
-            file_name (str): The file to search in. Must be a valid python file name.
-
-        Returns:
-            str: The searched method code if success, an error message otherwise.
-            SearchStatus: Status of the search.
-            List[SearchResult]: All search results.
-        """
-        return self.search_manager.search_method_in_file(method_name, file_name)
-
-
-    def search_method_in_class(self, method_name: str, class_name: str) -> Tuple[str, SearchStatus, List[SearchResult]]:
-        """Search for a method in a given class.
-
-        Returns the actual code of the method.
-
-        Args:
-            method_name (str): Name of the method to search for.
-            class_name (str): Consider only methods in this class.
-
-        Returns:
-            str: The searched method code if success, an error message otherwise.
-            SearchStatus: Status of the search.
-            List[SearchResult]: All search results.
-        """
-        return self.search_manager.search_method_in_class(method_name, class_name)
-
-
-    def search_method_in_class_in_file(self, method_name: str, class_name: str, file_name: str) -> Tuple[str, SearchStatus, List[SearchResult]]:
-        """Search for a method in a given class which is in a given file.
-
-        Returns the actual code of the method.
-
-        Args:
-            method_name (str): Name of the method to search for.
-            class_name (str): Consider only methods in this class.
-            file_name (str): The file to search in. Must be a valid python file name.
-
-        Returns:
-            str: The searched method code if success, an error message otherwise.
-            SearchStatus: Status of the search.
-            List[SearchResult]: All search results.
-        """
-        return self.search_manager.search_method_in_class_in_file(method_name, class_name, file_name)
-
-
     """PROXY AGENT"""
 
-
-    def call_proxy_apis(self, text: str, task: ProxyTask) -> Tuple[str | None, str | None, List[MessageThread]]:
+    @staticmethod
+    def call_proxy_llm(
+            lang: Literal['Python', 'Java'],
+            text: str,
+            task: ProxyTask
+    ) -> Tuple[str | None, str | None, List[MessageThread]]:
         """Call the Proxy Agent to do some tasks.
 
         Args:
+            lang (str): Programming language. Only choose from 'Python' and 'Java'.
             text (str): Text to be extracted.
             task (ProxyTask): Task of Proxy Agent.
         Returns:
@@ -344,4 +254,331 @@ class ProcessManager:
             str | None: Failure summary if the extraction failed, otherwise None.
             List[MessageThread]: List of all MessageThread instances.
         """
-        return run_proxy_with_retries(text, task)
+        return run_proxy_with_retries(lang, text, task)
+
+
+"""PYTHON MANAGER"""
+
+
+class PyProcessManager(ProcessManager):
+
+    def __init__(self, task: Task, output_dpath: str):
+        super().__init__(task, output_dpath)
+
+        # Initialize commit manager
+        self.init_commit_manager()
+
+        # Initialize search manager
+        self.init_search_manager()
+
+        # Initialize cwe manager
+        self.init_cwe_manager()
+
+    def init_search_api_functions(self):
+        self.search_api_functions = [
+            "search_class",
+            "search_class_in_file",
+            "search_method_in_file",
+            "search_method_in_class",
+            "search_method_in_class_in_file"
+        ]
+
+    def init_commit_manager(self):
+        self.commit_manager: PyCommitManager = PyCommitManager(
+            local_repo_dpath=self.task.project_path,
+            commit_hash=self.task.commit_hash,
+            raw_commit_content=self.task.commit_content
+        )
+
+    def init_search_manager(self):
+        assert isinstance(self.commit_manager, PyCommitManager)
+        self.search_manager: PySearchManager = PySearchManager(
+            local_repo_dpath=self.task.project_path,
+            del_files=self.commit_manager.del_files,
+            add_files=self.commit_manager.add_files,
+            mod_files=self.commit_manager.mod_files,
+            file_diff_info=self.commit_manager.file_diff_info
+        )
+
+    def init_cwe_manager(self):
+        self.cwe_manager = CWEManager(
+            globals.view_id,
+            globals.cwe_entry_file,
+            globals.cwe_tree_file,
+            globals.all_weakness_entry_file,
+            globals.view_cwe_tree_files
+        )
+
+    """SEARCH APIs"""
+
+    def search_class(
+            self,
+            class_name: str
+    ) -> Tuple[str, SearchStatus, List[PySearchResult]]:
+        """Search for a class in the codebase.
+
+        Return only the signature of the class. The class signature
+        includes class name, attributes, and signatures for all of its properties and inner methods.
+        Args:
+            class_name (str): Name of the class to search for.
+        Returns:
+            str: The searched class signature if success, an error message otherwise.
+            SearchStatus: Status of the search.
+            List[PySearchResult]: All search results.
+        """
+        return self.search_manager.search_class(class_name)
+
+    def search_class_in_file(
+            self,
+            class_name: str,
+            file_name: str
+    ) -> Tuple[str, SearchStatus, List[PySearchResult]]:
+        """Search for a class in a given file.
+
+        Return only the signature of the class. The class signature
+        includes class name, attributes, and signatures for all of its properties and inner methods.
+        Args:
+            class_name (str): Name of the class to search for.
+            file_name (str): Name of the file to search in. Must be a valid Python file name.
+        Returns:
+            str: The searched class signature if success, an error message otherwise.
+            SearchStatus: Status of the search.
+            List[PySearchResult]: All search results.
+        """
+        return self.search_manager.search_class_in_file(class_name, file_name)
+
+    def search_method_in_file(
+            self,
+            method_name: str,
+            file_name: str
+    ) -> Tuple[str, SearchStatus, List[PySearchResult]]:
+        """Search for a method in a given file, including top-level function and inclass method.
+
+        Return the entire snippet of the top-level function / inclass method.
+        Args:
+            method_name (str): Name of the method to search for.
+            file_name (str): Name of the file to search in. Must be a valid Python file name.
+        Returns:
+            str: The searched method snippet if success, an error message otherwise.
+            SearchStatus: Status of the search.
+            List[PySearchResult]: All search results.
+        """
+        return self.search_manager.search_method_in_file(method_name, file_name)
+
+    def search_method_in_class(
+            self,
+            method_name: str,
+            class_name: str
+    ) -> Tuple[str, SearchStatus, List[PySearchResult]]:
+        """Search for a method in a given class.
+
+        Return the entire snippet of the inclass method.
+        Args:
+            method_name (str): Name of the method to search for.
+            class_name (str): Name of the class to search in.
+        Returns:
+            str: The searched method snippet if success, an error message otherwise.
+            SearchStatus: Status of the search.
+            List[PySearchResult]: All search results.
+        """
+        return self.search_manager.search_method_in_class(method_name, class_name)
+
+    def search_method_in_class_in_file(
+            self,
+            method_name: str,
+            class_name: str,
+            file_name: str
+    ) -> Tuple[str, SearchStatus, List[PySearchResult]]:
+        """Search for a method in a given class which is in a given file.
+
+        Return the entire snippet of the inclass method.
+        Args:
+            method_name (str): Name of the method to search for.
+            class_name (str): Name of the class to search in.
+            file_name (str): Name of the file to search in. Must be a valid Python file name.
+        Returns:
+            str: The searched method snippet if success, an error message otherwise.
+            SearchStatus: Status of the search.
+            List[PySearchResult]: All search results.
+        """
+        return self.search_manager.search_method_in_class_in_file(method_name, class_name, file_name)
+
+
+"""JAVA MANAGER"""
+
+
+class JavaProcessManager(ProcessManager):
+
+    def __init__(self, task: Task, output_dpath: str):
+        super().__init__(task, output_dpath)
+
+        # Initialize commit manager
+        self.init_commit_manager()
+
+        # Initialize search manager
+        self.init_search_manager()
+
+        # Initialize cwe manager
+        self.init_cwe_manager()
+
+    def init_search_api_functions(self):
+        self.search_api_functions = [
+            "search_interface"
+            "search_class",
+            "search_interface_in_file"
+            "search_class_in_file",
+            "search_type_in_class",
+            "search_type_in_class_in_file"
+        ]
+
+    def init_commit_manager(self):
+        self.commit_manager: JavaCommitManager = JavaCommitManager(
+            local_repo_dpath=self.task.project_path,
+            commit_hash=self.task.commit_hash,
+            raw_commit_content=self.task.commit_content
+        )
+
+    def init_search_manager(self):
+        assert isinstance(self.commit_manager, JavaCommitManager)
+        self.search_manager: JavaSearchManager = JavaSearchManager(
+            local_repo_dpath=self.task.project_path,
+            del_files=self.commit_manager.del_files,
+            add_files=self.commit_manager.add_files,
+            mod_files=self.commit_manager.mod_files,
+            file_diff_info=self.commit_manager.file_diff_info
+        )
+
+    def init_cwe_manager(self):
+        self.cwe_manager = CWEManager(
+            globals.view_id,
+            globals.cwe_entry_file,
+            globals.cwe_tree_file,
+            globals.all_weakness_entry_file,
+            globals.view_cwe_tree_files
+        )
+
+    """SEARCH APIs"""
+
+    def search_interface(
+            self,
+            iface_name: str
+    ) -> Tuple[str, SearchStatus, List[JavaSearchResult]]:
+        """Search for an interface in the codebase.
+
+        Return the entire snippet of the interface.
+        Args:
+            iface_name (str): Name of the interface to search for.
+        Returns:
+            str: The searched interface snippet if success, an error message otherwise.
+            SearchStatus: Status of the search.
+            List[JavaSearchResult]: All search results.
+        """
+        return self.search_manager.search_top_level_iface(iface_name)
+
+    def search_class(
+            self,
+            class_name: str
+    ) -> Tuple[str, SearchStatus, List[JavaSearchResult]]:
+        """Search for a class in the codebase.
+
+        Return only the signature of the class. The class signature
+        includes class name, attributes, and signatures for all of its fields and inner types.
+        Args:
+            class_name (str): Name of the class to search for.
+        Returns:
+            str: The searched class signature if success, an error message otherwise.
+            SearchStatus: Status of the search.
+            List[JavaSearchResult]: All search results.
+        """
+        return self.search_manager.search_top_level_class(class_name)
+
+    def search_interface_in_file(
+            self,
+            iface_name: str,
+            file_name: str
+    ) -> Tuple[str, SearchStatus, List[JavaSearchResult]]:
+        """Search for an interface in a given file.
+
+        Return the entire snippet of the interface.
+        Args:
+            iface_name (str): Name of the interface to search for.
+            file_name (str): Name of the file to search in. Must be a valid Java file name.
+        Returns:
+            str: The searched interface snippet if success, an error message otherwise.
+            SearchStatus: Status of the search.
+            List[JavaSearchResult]: All search results.
+        """
+        return self.search_manager.search_top_level_iface_in_file(iface_name, file_name)
+
+    def search_class_in_file(
+            self,
+            class_name: str,
+            file_name: str
+    ) -> Tuple[str, SearchStatus, List[JavaSearchResult]]:
+        """Search for a class in a given file.
+
+        Return only the signature of the class. The class signature
+        includes class name, attributes, and signatures for all of its fields and inner types.
+        Args:
+            class_name (str): Name of the class to search for.
+            file_name (str): Name of the file to search in. Must be a valid Java file name.
+        Returns:
+            str: The searched class signature if success, an error message otherwise.
+            SearchStatus: Status of the search.
+            List[JavaSearchResult]: All search results.
+        """
+        return self.search_manager.search_top_level_class_in_file(class_name, file_name)
+
+    def search_type_in_class(
+            self,
+            ttype: Literal['interface', 'class', 'method'],
+            type_name: str,
+            class_name: str
+    ) -> Tuple[str, SearchStatus, List[JavaSearchResult]]:
+        """Search for a type in a given class. 'Type' indicate interface or class or method.
+
+        Return the entire snippet of the inclass interface / class / method.
+        Args:
+            ttype (str): Type of the type to search for. Can only choose from 'interface', 'class', 'method'.
+            type_name (str): Name of the type to search for.
+            class_name (str): Name of the class to search in.
+        Returns:
+            str: The searched type snippet if success, an error message otherwise.
+            SearchStatus: Status of the search.
+            List[JavaSearchResult]: All search results.
+        """
+        if ttype == 'interface':
+            return self.search_manager.search_iface_in_class(type_name, class_name)
+        elif ttype == 'class':
+            return self.search_manager.search_class_in_class(type_name, class_name)
+        else:
+            assert ttype == 'method'
+            return self.search_manager.search_method_in_class(type_name, class_name)
+
+    def search_type_in_class_in_file(
+            self,
+            ttype: Literal['interface', 'class', 'method'],
+            type_name: str,
+            class_name: str,
+            file_name: str
+    ) -> Tuple[str, SearchStatus, List[JavaSearchResult]]:
+        """Search for a type in a given class which is in a given file. 'Type' indicate interface or class or method.
+
+        Return the entire snippet of the inclass interface / class / method.
+        Args:
+            ttype (str): Type of the type to search for. Can only choose from 'interface', 'class', 'method'.
+            type_name (str): Name of the type to search for.
+            class_name (str): Name of the class to search in.
+            file_name (str): Name of the file to search in. Must be a valid Java file name.
+        Returns:
+            str: The searched type snippet if success, an error message otherwise.
+            SearchStatus: Status of the search.
+            List[JavaSearchResult]: All search results.
+        """
+        if ttype == 'interface':
+            return self.search_manager.search_iface_in_class_in_file(type_name, class_name, file_name)
+        elif ttype == 'class':
+            return self.search_manager.search_class_in_class_in_file(type_name, class_name, file_name)
+        else:
+            assert ttype == 'method'
+            return self.search_manager.search_method_in_class_in_file(type_name, class_name, file_name)

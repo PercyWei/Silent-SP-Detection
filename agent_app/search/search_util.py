@@ -2,68 +2,148 @@
 # Original file: agent_app/search/search_utils.py
 
 import os
-import sys
-import re
 import ast
 import glob
 
 from typing import *
 from dataclasses import dataclass
 
-from agent_app.data_structures import LineRange, CodeSnippetLocation
-from agent_app.static_analysis.ast_parse import cal_class_or_func_def_range, extract_class_sig_lines_from_ast
+from agent_app.data_structures import LineRange, BaseCodeSnippetLocation
+from agent_app.static_analysis.py_ast_parse import (
+    cal_class_or_func_def_range,
+    extract_class_sig_lines_from_file as extract_class_sig_lines_from_py_file
+)
+from agent_app.static_analysis.java_ast_parse import (
+    extract_class_sig_lines_from_file as extract_class_sig_lines_from_java_file
+)
+
+
+"""SEARCH RESULT DATACLASS"""
 
 
 @dataclass
-class SearchResult(CodeSnippetLocation):
-    """Dataclass to hold the search result containing the location of code snippet."""
+class PySearchResult(BaseCodeSnippetLocation):
+    """Dataclass to hold the search result containing the location of Python code snippet."""
+    func_name: str | None
+    class_name: str | None
+    inclass_method_name: str | None
 
-    @staticmethod
-    def collapse_to_file_level(lst) -> str:
-        """Collapse search results to file level."""
-        res = dict()  # file -> count
-        for r in lst:
-            if r.file_path not in res:
-                res[r.file_path] = 1
-            else:
-                res[r.file_path] += 1
-        res_str = ""
-        for file_path, count in res.items():
-            file_part = f"<file>{file_path}</file>"
-            res_str += f"- {file_part} ({count} matches)\n"
-        res_str.rstrip()
-        return res_str
+    def to_tagged_upto_func(self) -> str:
+        """Convert the code snippet location to a tagged string, upto function."""
+        prefix = self.to_tagged_upto_file()
+        func_part = f"<func>{self.func_name}</func>" if self.func_name is not None else ""
+        return f"{prefix}{func_part}"
 
-    @staticmethod
-    def collapse_to_method_level(lst) -> str:
-        """Collapse search results to method level."""
-        res = dict()  # file -> dict(method -> count)
-        for r in lst:
-            if r.file_path not in res:
-                res[r.file_path] = dict()
-            func_str = r.func_name if r.func_name is not None else "Not in a function"
-            if func_str not in res[r.file_path]:
-                res[r.file_path][func_str] = 1
-            else:
-                res[r.file_path][func_str] += 1
-        res_str = ""
-        for file_path, funcs in res.items():
-            file_part = f"<file>{file_path}</file>"
-            for func, count in funcs.items():
-                if func == "Not in a function":
-                    func_part = func
-                else:
-                    func_part = f" <func>{func}</func>"
-                res_str += f"- {file_part}{func_part} ({count} matches)\n"
-        res_str.rstrip()
-        return res_str
+    def to_tagged_upto_class(self) -> str:
+        """Convert the code snippet location to a tagged string, upto class."""
+        prefix = self.to_tagged_upto_file()
+        class_part = f"<class>{self.class_name}</class> " if self.class_name is not None else ""
+        return f"{prefix}\n{class_part}"
+
+    def to_tagged_upto_inclass_func(self) -> str:
+        """Convert the code snippet location to a tagged string, upto inclass method."""
+        prefix = self.to_tagged_upto_class()
+        inclass_func_part = f"<func>{self.inclass_method_name}</func>" if self.inclass_method_name is not None else ""
+        return f"{prefix}{inclass_func_part}"
+
+    def to_tagged_str(self) -> str:
+        """Convert the code snippet location to a tagged string."""
+        # Cannot in top-level function / class at the same time.
+        assert (self.func_name is not None) + (self.class_name is not None) <= 1
+
+        if self.func_name is not None:
+            prefix = self.to_tagged_upto_func()
+        elif self.class_name is not None:
+            prefix = self.to_tagged_upto_inclass_func()
+        else:
+            prefix = self.to_tagged_upto_file()
+        code_part = f"<code>\n{self.code}\n</code>"
+        return f"{prefix}\n{code_part}"
+
+    def to_dict(self) -> Dict:
+        return {
+            "file_path": self.file_path,
+            "func_name": self.func_name,
+            "class_name": self.class_name,
+            "inclass_func_name": self.inclass_method_name,
+            "code": self.code
+        }
+
+
+@dataclass
+class JavaSearchResult(BaseCodeSnippetLocation):
+    """Dataclass to hold the search result containing the location of Java code snippet."""
+    package_name: str | None = None
+    iface_name: str | None = None
+    class_name: str | None = None
+    inclass_func_name: str | None = None
+    inclass_iface_name: str | None = None
+    inclass_class_name: str | None = None
+
+    def to_tagged_upto_iface(self) -> str:
+        """Convert the code snippet location to a tagged string, upto interface."""
+        prefix = self.to_tagged_upto_file()
+        iface_part = f"<iface>{self.iface_name}</iface>" if self.iface_name is not None else ""
+        return f"{prefix}{iface_part}"
+
+    def to_tagged_upto_class(self) -> str:
+        """Convert the code snippet location to a tagged string, upto class."""
+        prefix = self.to_tagged_upto_file()
+        class_part = f"<class>{self.class_name}</class> " if self.class_name is not None else ""
+        return f"{prefix}\n{class_part}"
+
+    def to_tagged_upto_inclass_type(self) -> str:
+        """Convert the code snippet location to a tagged string, upto inclass method / interface / class."""
+        # Cannot in inclass method / interface / class at the same time.
+        assert (self.inclass_func_name is not None) + \
+               (self.inclass_iface_name is not None) + \
+               (self.inclass_class_name is not None) <= 1
+
+        prefix = self.to_tagged_upto_class()
+        if self.inclass_func_name is not None:
+            inclass_type_part = f"<func>{self.inclass_func_name}</func>"
+        elif self.inclass_iface_name is not None:
+            inclass_type_part = f"<iface>{self.inclass_iface_name}</iface>"
+        elif self.inclass_class_name is not None:
+            inclass_type_part = f"<class>{self.inclass_class_name}</class>"
+        else:
+            inclass_type_part = ""
+        return f"{prefix}{inclass_type_part}"
+
+    def to_tagged_str(self) -> str:
+        """Convert the code snippet location to a tagged string."""
+        # Cannot in interface / class at the same time.
+        assert (self.iface_name is not None) + (self.class_name is not None) <= 1
+
+        if self.iface_name is not None:
+            prefix = self.to_tagged_upto_iface()
+        elif self.class_name is not None:
+            prefix = self.to_tagged_upto_inclass_type()
+        else:
+            prefix = self.to_tagged_upto_file()
+        code_part = f"<code>\n{self.code}\n</code>"
+        return f"{prefix}\n{code_part}"
+
+    def to_dict(self) -> Dict:
+        return {
+            "file_path": self.file_path,
+            "package_name": self.package_name,
+            "interface_name": self.iface_name,
+            "class_name": self.class_name,
+            "inclass_func_name": self.inclass_func_name,
+            "inclass_iface_name": self.inclass_iface_name,
+            "inclass_class_name": self.inclass_class_name,
+            "code": self.code
+        }
+
+
+"""REPO FILES"""
 
 
 def find_python_files(dir_path: str) -> List[str]:
     """Get all .py files recursively from a directory.
 
     Skips files that are obviously not from the source code, such third-party library code.
-
     Args:
         dir_path (str): Path to the directory.
     Returns:
@@ -79,63 +159,16 @@ def find_python_files(dir_path: str) -> List[str]:
     return res
 
 
-"""BUILD STRUCT INDEX"""
+def find_java_files(dir_path: str) -> List[str]:
+    """Get all .java files recursively from a directory.
 
-
-def parse_python_code(file_content: str) -> Tuple[List, List, List, Dict] | None:
-    """Main method to parse AST and build search index."""
-    try:
-        tree = ast.parse(file_content)
-    except Exception:
-        # Failed to read/parse one file, we should ignore it
-        return None
-
-    import_libs: List[Tuple[str, str, str]] = []                # [(pkg path, attr name, alias name)]
-    ## NOTE: The following 'start' and 'end' are both 1-based.
-    funcs: List[Tuple[str, int, int]] = []                      # [(func name, start, end)]
-    classes: List[Tuple[str, int, int]] = []                    # [(class name, start, end)]
-    class_to_funcs: Dict[str, List[Tuple[str, int, int]]] = {}  # {class name -> [(class func name, start, end)]}
-
-    for child in ast.iter_child_nodes(tree):
-        ###### (1) Import libraries ######
-        if isinstance(child, ast.Import):
-            for alias in child.names:
-                pkg_path = alias.name if alias.name is not None else ""
-                attr_name = ""
-                alias_name = alias.asname if alias.asname is not None else ""
-                # ori_stmt = get_code_snippet_in_file(file_content, child.lineno, child.end_lineno)
-
-                import_libs.append((pkg_path, attr_name, alias_name))
-
-        if isinstance(child, ast.ImportFrom):
-            module_path = child.level * "." + child.module if child.module is not None else child.level * "."
-            # ori_stmt = get_code_snippet_in_file(file_content, child.lineno, child.end_lineno)
-
-            for alias in child.names:
-                attr_name = alias.name if alias.name is not None else ""
-                alias_name = alias.asname if alias.asname is not None else ""
-
-                import_libs.append((module_path, attr_name, alias_name))
-
-        ###### (2) Function ######
-        if isinstance(child, ast.FunctionDef) or isinstance(child, ast.AsyncFunctionDef):
-            start_lineno, end_lineno = cal_class_or_func_def_range(child)
-            funcs.append((child.name, start_lineno, end_lineno))
-
-        if isinstance(child, ast.ClassDef):
-            ###### (3) Class ######
-            start_lineno, end_lineno = cal_class_or_func_def_range(child)
-            classes.append((child.name, start_lineno, end_lineno))
-
-            ###### (4) Class function ######
-            class_funcs = []
-            for node in ast.walk(child):
-                if isinstance(node, ast.FunctionDef) or isinstance(node, ast.AsyncFunctionDef):
-                    start_lineno, end_lineno = cal_class_or_func_def_range(node)
-                    class_funcs.append((node.name, start_lineno, end_lineno))
-            class_to_funcs[child.name] = class_funcs
-
-    return import_libs, funcs, classes, class_to_funcs
+    Args:
+        dir_path (str): Path to the directory.
+    Returns:
+        List[str]: List of .java file paths. These paths are ABSOLUTE path!
+    """
+    abs_java_fpaths = glob.glob(os.path.join(dir_path, "**/*.java"), recursive=True)
+    return abs_java_fpaths
 
 
 """EXTRACT IMPORTED LIB"""
@@ -152,514 +185,294 @@ def lib_info_to_seq(pkg_path: str, attr_name: str, alias_name: str) -> str:
     return import_seq
 
 
-def _path_in_repo(abs_pkg_path: str, attr_name: str, local_repo_dpath: str) -> Tuple[str, str] | None:
-    """Determine whether a path points to a package or module in the repo, and get its relative path to repo root.
-
-    NOTE 1: `abs_pkg_path` could be path to package / module.
-    NOTE 2: `attr_name` could be the name of package / module / class / function ....
-    Args:
-        abs_pkg_path (str): ABSOLUTE path to PACKAGE or MODULE.
-        attr_name (str): Name of the package / module / class / function ....
-        local_repo_dpath (str): Local repo path.
-    Returns:
-        Tuple[str, str] | None:
-            - str: RELATIVE path to PACKAGE or MODULE, i.e. DIR path or FILE path.
-            - str: Name of imported code element (class / func / ...), '' if no code element is imported.
-    """
-    if not abs_pkg_path.startswith(local_repo_dpath):
-        return None
-
-    ## Case 1: abs_pkg_path` is a MODULE, `attr_name` is a code element (class / function ...)
-    elif os.path.isfile(abs_pkg_path + ".py"):
-        abs_pkg_path = abs_pkg_path + ".py"
-        attr_name = attr_name
-
-    ## Case 2: `abs_pkg_path` is a PACKAGE, `attr_name` is a PACKAGE
-    elif os.path.isdir(os.path.join(abs_pkg_path, attr_name)):
-        abs_pkg_path = os.path.join(abs_pkg_path, attr_name)
-        attr_name = ''
-
-    ## Case 3: `abs_pkg_path` is a PACKAGE, `attr_name` is a MODULE
-    elif os.path.isfile(os.path.join(abs_pkg_path, attr_name + ".py")):
-        abs_pkg_path = os.path.join(abs_pkg_path, attr_name + ".py")
-        attr_name = ''
-
-    ## Case 4: `abs_pkg_path` is a PACKAGE, `attr_name` is a code element (class / function ...)
-    # NOTE: In this case, these imported code elements are usually written in __init__.py
-    elif os.path.isdir(abs_pkg_path):
-        abs_pkg_path = abs_pkg_path
-        attr_name = attr_name
-
-    ## Case 5: Other special cases, for example, dynamic import
-    # ex: /urllib3_urllib3/src/urllib3/request.py
-    else:
-        rel_pkg_path = os.path.relpath(abs_pkg_path, local_repo_dpath)
-        path_parts = rel_pkg_path.split("/")
-        pkg_path = os.path.join(local_repo_dpath, path_parts[0])
-
-        if not os.path.isdir(pkg_path):
-            return None
-
-        abs_pkg_path = abs_pkg_path
-        attr_name = attr_name
-
-    rel_pkg_path = os.path.relpath(abs_pkg_path, local_repo_dpath)
-
-    return rel_pkg_path, attr_name
+"""MERGED LINES"""
 
 
-def is_custom_lib(
-        import_lib: Tuple[str, str, str],
-        abs_cur_fpath: str,
-        local_repo_dpath: str
-) -> Tuple[bool, Tuple[str, str] | None]:
-    """Determine whether an import is a custom library.
-
-    NOTE 1: `local_cur_py_file` is ABSOLUTE path.
-    NOTE 2: File paths in `repo_py_files` are all ABSOLUTE paths, i.e. root/projects/....
-    Args:
-        import_lib (Tuple[str, str, str]):
-            - str: pkg path (I. 'xx' in 'import xx'; II. 'xx.xx' in 'from xx.xx import xxx')
-            - str: attr name (pkg / module / class / function ...)
-            - str: alias name
-        abs_cur_fpath (str): Current Python file path.
-        local_repo_dpath (str): Local repo root path.
-    Returns:
-        bool: True if the import is a custom library, False otherwise.
-        Tuple[str, str, str] | None:
-            - str: Repo pacakge / module RELATIVE path, i.e. DIR path or FILE path.
-            - str: Name of imported code element (class / function ...), '' if no code element is imported.
-    """
-    assert abs_cur_fpath.startswith(local_repo_dpath)
-
-    pkg_path, attr_name, _ = import_lib
-
-    ###########################################################
-    ########### Case 1: Form "from ..xx import xxx" ###########
-    ###########################################################
-
-    def _count_path_levels(path: str) -> int:
-        l = 0
-        for char in path:
-            if char == '.':
-                l += 1
-            else:
-                break
-        return l
-
-    if pkg_path.startswith("."):
-        # cur_fpath: /root/...project/.../A/B/x.py
-        # target (pkg_path): ..C.D -> levels: 2
-        levels = _count_path_levels(pkg_path)
-
-        # prefix -> /root/...project/.../A
-        prefix = "/".join(abs_cur_fpath.split("/")[:-levels])
-        # rest -> C/D
-        rest = pkg_path[levels:].replace(".", "/")
-        # abs_pkg_path: /root/...project/.../A/C/D <- /root/...project/.../A + C/D
-        abs_pkg_path = os.path.join(prefix, rest)
-
-        rel_pkg_path, attr_name = _path_in_repo(abs_pkg_path, attr_name, local_repo_dpath)
-
-        return True, (rel_pkg_path, attr_name)
-
-    ############################################################
-    ########### Case 2: Form "from xx.xx import xxx" ###########
-    ############################################################
-
-    ## Option 1: Since the code may dynamically change the paths where Python looks for modules and packages,
-    #       while importing custom packages or modules in the project, the search paths may be more than:
-    #       1) the project root dir, and 2) the current dir, so here we search for all the possible paths for a match.
-    # Adv: Comprehensive consideration
-    # Dis: 1) Time consuming; 2) Possible false-classification
-
-    pkg_path_regex = re.compile(re.escape(pkg_path.replace(".", "/")))
-    abs_repo_fpaths = glob.glob(os.path.join(local_repo_dpath, "**/*.py"), recursive=True)
-
-    for abs_py_fpath in abs_repo_fpaths:
-        rel_py_path = os.path.relpath(abs_py_fpath, local_repo_dpath)
-
-        match = pkg_path_regex.search(rel_py_path)
-
-        if match:
-            # repo_dpath: /root/.../project
-            # abs_fpath:  /root/.../project/A/B/C/D/.../x.py
-            # rel_fpath:  A/B/C/D/.../x.py
-            # target (pkg_path): C.D <-> C/D
-
-            # prefix -> A/B
-            prefix = rel_py_path[:match.start()]
-            # abs_pkg_path: /root/.../project/A/B/C/D <- /root/.../project + A/B + C/D
-            abs_pkg_path = os.path.join(local_repo_dpath, prefix, pkg_path.replace(".", "/"))
-
-            res = _path_in_repo(abs_pkg_path, attr_name, local_repo_dpath)
-            if not res:
-                continue
-
-            rel_pkg_path, attr_name = res
-
-            return True, (rel_pkg_path, attr_name)
-
-    ## Option 2: While importing custom packages or modules in the project, we only consider two paths for
-    #       Python to find modules and packages: 1) the repo root dir, and 2) the current dir.
-    # Adv: Simple logic and fast speed
-    # Dis: Possible mis-classification
-
-    # 1) Relative to REPO ROOT to import
-    # abs_pkg_path = os.path.join(local_repo_dpath, pkg_path.replace(".", "/"))
-    # res = _path_in_repo(abs_pkg_path, attr_name, local_repo_dpath)
-    # if res:
-    #     rel_pkg_path, attr_name = res
-    #     return True, (rel_pkg_path, attr_name)
-    #
-    # # 2) Relative to CURRENT DIR
-    # prefix = "/" + "/".join(abs_cur_fpath.split("/")[:-1])
-    # abs_pkg_path = os.path.join(prefix, pkg_path.replace(".", "/"))
-    # res = _path_in_repo(abs_pkg_path, attr_name, local_repo_dpath)
-    # if res:
-    #     rel_pkg_path, attr_name = res
-    #     return True, (rel_pkg_path, attr_name)
-
-    return False, None
-
-
-def is_standard_lib(import_lib: Tuple[str, str, str]) -> Tuple[bool, Tuple[str, str] | None]:
-    """Determine whether an import is a standard library.
-
-    Args:
-        import_lib (Tuple[str, str, str]):
-            - str: pkg path (I. 'xx' in 'import xx'; II. 'xx.xx' in 'from xx.xx import xxx').
-            - str: attr name (pkg / module / class / function ...).
-            - str: alias name.
-    Returns:
-        bool: True if the import is a standard library, False otherwise.
-        Tuple[str, str, str] | None:
-            - str: Lib name, like 'os', 'sys'.
-            - str: Complete import path of package / module / ... , like 'os.path', 'os.path.join'.
-    """
-    pkg_path, attr_name, alias_name = import_lib
-
-    if pkg_path.startswith("."):
-        return False, None
-
-    try:
-        local_pkg = __import__(pkg_path)
-        local_pkg_path = getattr(local_pkg, '__file__', None)
-        res = local_pkg_path is None or any(local_pkg_path.startswith(p) for p in sys.path if 'site-packages' not in p)
-    except ModuleNotFoundError:
-        return False, None
-    except Exception:
-        raise RuntimeError(f"Unsupported import path: {pkg_path}, {attr_name}, {alias_name}")
-
-    if not res:
-        return False, None
-
-    lib_name = pkg_path.split(".")[0]
-    if attr_name == "":
-        # Import form is "import xxx" or "import xx.xxx"
-        comp_import_path = pkg_path
-    else:
-        # Import form is "from xx.xx import xxx"
-        comp_import_path = pkg_path + "." + attr_name
-
-    return True, (lib_name, comp_import_path)
-
-
-def judge_lib_source(
-        import_lib: Tuple[str, str, str],
-        abs_cur_fpath: str,
-        local_repo_dpath: str
-) -> Tuple[str, str]:
-    """Judge the source of the library imported.
-
-    Three types of sources: standard, third-party, custom
-    Args:
-        import_lib (Tuple[str, str, str]):
-            - str: pkg path (I. 'xx' in 'import xx'; II. 'xx.xx' in 'from xx.xx import xxx')
-            - str: attr name (pkg / module / class / function ...)
-            - str: alias name
-        abs_cur_fpath (str): Current Python file path.
-        local_repo_dpath (str): Local repo root path.
-    Returns:
-        str: Source of lib imported.
-        str:
-            - For standard lib or third-party lib: lib name.
-            - For custom lib: package / module RELATIVE path.
-    """
-    ######## (1) Standard library ########
-    res, stand_lib = is_standard_lib(import_lib)
-    if res:
-        lib_name, _ = stand_lib
-        return "standard library", lib_name
-
-    ######## (2) Custom library ########
-    res, custom_lib = is_custom_lib(import_lib, abs_cur_fpath, local_repo_dpath)
-    if res:
-        rel_pkg_path, attr_name = custom_lib
-        return "custom library", rel_pkg_path
-
-    ######## (3) Third-party library ########
-    pkg_path, *_ = import_lib
-    lib_name = pkg_path.split(".")[0]
-
-    return "third-party library", lib_name
-
-
-"""COMBINE LINES"""
-
-
-def is_overlap_in_comb_file(
-        old_range: LineRange, line_id_old2comb: Dict[int, int],
-        new_range: LineRange, line_id_new2comb: Dict[int, int]
+def is_overlap_in_merged_file(
+        old_range: LineRange,
+        new_range: LineRange,
+        line_id_old2merge: Dict[int, int],
+        line_id_new2merge: Dict[int, int]
 ) -> bool:
-    old_comb_range = (line_id_old2comb[old_range.start], line_id_old2comb[old_range.end])
-    new_comb_range = (line_id_new2comb[new_range.start], line_id_new2comb[new_range.end])
-    return old_comb_range[0] <= new_comb_range[1] and new_comb_range[0] <= old_comb_range[1]
+    old_merge_range = (line_id_old2merge[old_range.start], line_id_old2merge[old_range.end])
+    new_merge_range = (line_id_new2merge[new_range.start], line_id_new2merge[new_range.end])
+    return old_merge_range[0] <= new_merge_range[1] and new_merge_range[0] <= old_merge_range[1]
 
 
-def match_overlap_structs(
-        old_ranges: List[LineRange], line_id_old2comb: Dict[int, int],
-        new_ranges: List[LineRange], line_id_new2comb: Dict[int, int]
-) -> List[Tuple[LineRange | None, LineRange | None]]:
-    """Find the corresponding snippets for several code snippets before and after modification.
+def group_overlap_struct_line_range(
+        old_lranges: List[LineRange],
+        new_lranges: List[LineRange],
+        line_id_old2merge: Dict[int, int],
+        line_id_new2merge: Dict[int, int]
+) -> List[Tuple[List[LineRange], List[LineRange]]]:
+    """Group line ranges that belongs to the same structure before and after the modification.
 
-    NOTE 1: All inputs are for the same file.
-    NOTE 2: Here 'line range' is used to refer to the code snippet.
-    NOTE 3: We only check whether there are unmodified lines in both code snippets, i.e. whether there is overlap.
+    NOTE 1: All input line ranges are from the same file, including before and after modification.
+    NOTE 2: All input line ranges are line ranges of structures.
+    NOTE 3: Here structure indicates function, interface, class, methods and so on.
+    NOTE 4: We only check if there is any overlap between the old and new line ranges after they are mapped into the merged file.
     TODO: If a code snippet A is copied, deleted, and pasted to a new location B, although their functions are
-          exactly the same, since they have no overlapping code lines in the combined code, they are considered
+          exactly the same, since they have no overlapping code lines in the merged code, they are considered
           as two independent code snippets, i.e. A is a deleted snippet and B is an added code snippet.
+    NOTE 5: It may happen that OLD_i and NEW_j overlap, OLD_k and NEW_j overlap, but OLD_i and OLD_k do not overlap,
+            but we still put OLD_i, OLD_k and NEW_j into the same group.
     """
-    # [(old struct range, new struct range)]
-    struct_pairs: List[Tuple[LineRange | None, LineRange | None]] = []
+    overlap_lrange_groups: List[Tuple[List[LineRange], List[LineRange]]] = []  # [([old line range], [new line range])]
 
-    # (1) Extract one item from 'old_ranges' at a time and search for the matching item in 'new_ranges'
-    for i in range(len(old_ranges)):
-        old_range = old_ranges[i]
+    old_lrange_group_id_map: Dict[int, int] = {}  # old line range id -> group id
+    new_lrange_group_id_map: Dict[int, int] = {}  # new line range id -> group id
 
-        match_idx = None
-        for j in range(len(new_ranges)):
-            new_range = new_ranges[j]
-            if is_overlap_in_comb_file(old_range, line_id_old2comb, new_range, line_id_new2comb):
-                match_idx = j
-                break
+    # (1) Find overlapping new line ranges for each old line range
+    for i, old_lrange in enumerate(old_lranges):
+        cur_group_id = len(overlap_lrange_groups)
+        cur_group: Tuple[List[LineRange], List[LineRange]] = ([], [])
 
-        if match_idx is not None:
-            struct_pairs.append((old_range, new_ranges[match_idx]))
-            new_ranges.pop(match_idx)
+        cur_old_lrange_ids: List[int] = []
+        cur_new_lrange_ids: List[int] = []
+
+        # 1. Update current group
+        cur_group[0].append(old_lrange)
+        cur_old_lrange_ids.append(i)
+
+        for j, new_lrange in enumerate(new_lranges):
+            if is_overlap_in_merged_file(old_lrange, new_lrange, line_id_old2merge, line_id_new2merge):
+                # Determine if the current group can be merged into the collected group
+                if j in new_lrange_group_id_map:
+                    cur_group_id = new_lrange_group_id_map[j]
+                    cur_group = overlap_lrange_groups[cur_group_id]
+
+                cur_group[1].append(new_lrange)
+                cur_new_lrange_ids.append(j)
+
+        if cur_group_id < len(overlap_lrange_groups):
+            overlap_lrange_groups[cur_group_id] = cur_group
         else:
-            struct_pairs.append((old_range, None))
+            overlap_lrange_groups.append(cur_group)
 
-    # (2) If there are any remaining items in ‘new_ranges’, it means that they are added structs
-    for new_range in new_ranges:
-        struct_pairs.append((None, new_range))
+        # 2. Update mapping from lrange id to group id
+        for lrange_id in cur_old_lrange_ids:
+            old_lrange_group_id_map[lrange_id] = cur_group_id
 
-    return struct_pairs
+        for lrange_id in cur_new_lrange_ids:
+            new_lrange_group_id_map[lrange_id] = cur_group_id
+
+    # (2) Add new line ranges with no overlapping old line range
+    left_new_lrange_ids = list(set(list(range(len(new_lranges)))) - set(list(new_lrange_group_id_map.keys())))
+
+    for lrange_id in left_new_lrange_ids:
+        new_lrange = new_lranges[lrange_id]
+        overlap_lrange_groups.append(([], [new_lrange]))
+
+    return overlap_lrange_groups
 
 
 """EXTRACT CODE SNIPPET"""
 
 
-def get_code_snippet_in_file(file_content: str, start: int, end: int) -> str:
-    """Get the code snippet in the file according to the line ids, without line numbers.
+def get_code_snippet_from_file_content(file_content: str, line_ids: List[int]) -> str:
+    """Get the code snippet from the file content according to the line ids.
 
     Args:
         file_content (str): File content.
-        start (int): Start line number. (1-based)
-        end (int): End line number. (1-based)
+        line_ids (List[int]): Code snippet line ids. (1-based)
     """
     file_lines = file_content.splitlines(keepends=True)
     snippet = ""
-    for i in range(start - 1, end):
-        snippet += file_lines[i]
+    for line_id in line_ids:
+        snippet += file_lines[line_id - 1]
     return snippet
 
 
-def get_code_snippet_in_diff_file(
-        comb_file_content: str,
-        old_line_range: LineRange | None, line_id_old2comb: Dict[int, int],
-        new_line_range: LineRange | None, line_id_new2comb: Dict[int, int],
+def get_code_snippet_from_diff_file(
+        merged_file_content: str,
+        old_line_ranges: List[LineRange],
+        new_line_ranges: List[LineRange],
+        line_id_old2merge: Dict[int, int],
+        line_id_new2merge: Dict[int, int]
 ) -> str:
-    """Get the code snippet in the range in the file, without line numbers.
+    """Get code snippet in the range from the file content.
 
-    NOTE: For diff files, since we have stored them with the modifications in the search_manager,
-          so we get their contents from there instead of the local repo.
-    Args:
-        comb_file_content (str): Content of combined file.
-        old_line_range (LineRange | None): Line range in old file.
-        line_id_old2comb (Dict[int, int] | None): Line id lookup dict, code before -> code comb.
-        new_line_range (LineRange | None): Line range in new file.
-        line_id_new2comb (Dict[int, int] | None): Line id lookup dict, code after -> code comb.
+    NOTE 1: Valid for Python file and Java file.
+    NOTE 2: For diff files, since we have stored their merged version in the SearchManager,
+            so we get their contents from the storage instead of the local repo.
     """
-    if old_line_range is None or new_line_range is None:
-        # Deleted / added code snippet
-        if old_line_range is not None:
-            comb_start = line_id_old2comb[old_line_range.start]
-            comb_end = line_id_old2comb[old_line_range.end]
-        elif new_line_range is not None:
-            comb_start = line_id_new2comb[new_line_range.start]
-            comb_end = line_id_new2comb[new_line_range.end]
-        else:
-            raise RuntimeError("Input 'old_line_range' and 'new_line_range' cannot be None at the same time")
+    # (1) Map line ranges in the old file and new file to the merged file
+    merge_lranges_for_old: List[LineRange] = [LineRange(line_id_old2merge[lrange.start], line_id_old2merge[lrange.end])
+                                              for lrange in old_line_ranges]
+    merge_lranges_for_new: List[LineRange] = [LineRange(line_id_new2merge[lrange.start], line_id_new2merge[lrange.end])
+                                              for lrange in new_line_ranges]
 
-    else:
-        # Modified code snippet
-        assert line_id_old2comb is not None and line_id_new2comb is not None
-        assert is_overlap_in_comb_file(old_line_range, line_id_old2comb, new_line_range, line_id_new2comb)
+    # (2) Find the smallest line range that contains these line ranges
+    try:
+        range_start = min(
+            [lrange.start for lrange in merge_lranges_for_old] +
+            [lrange.start for lrange in merge_lranges_for_new]
+        )
+    except ValueError:
+        range_start = None
+    try:
+        range_end = max(
+            [lrange.end for lrange in merge_lranges_for_old] +
+            [lrange.end for lrange in merge_lranges_for_new]
+        )
+    except ValueError:
+        range_end = None
 
-        comb_start = min(line_id_old2comb[old_line_range.start], line_id_new2comb[new_line_range.start])
-        comb_end = max(line_id_old2comb[old_line_range.end], line_id_new2comb[new_line_range.end])
+    assert range_start is not None and range_end is not None
 
-    comb_file_lines = comb_file_content.splitlines(keepends=True)
-    snippet = ""
-    for i in range(comb_start - 1, comb_end):
-        snippet += comb_file_lines[i]
+    # (3) Extract the code snippet within this line range
+    snippet_line_ids = list(range(range_start, range_end + 1))
+    snippet = get_code_snippet_from_file_content(merged_file_content, snippet_line_ids)
 
     return snippet
 
 
-def get_code_snippets_in_nodiff_file(abs_fpath: str, start: int, end: int) -> str:
-    """Get the code snippet in the range in the file, without line numbers.
+def get_code_snippet_from_nodiff_file(abs_fpath: str, line_start: int, line_end: int) -> str:
+    """Get the code snippet in the range from the file content.
 
-    NOTE: For nodiff files, we get their contents from the local repo.
+    NOTE 1: Valid for Python file and Java file.
+    NOTE 2: For nodiff files, we get their contents from the local repo.
     Args:
         abs_fpath (str): Absolute path to the file.
-        start (int): Start line number. (1-based)
-        end (int): End line number. (1-based)
+        line_start (int): Start line id. (1-based)
+        line_end (int): End line id. (1-based)
     """
     with open(abs_fpath, 'r') as f:
-        file_content = f.readlines()
-    snippet = ""
-    for i in range(start - 1, end):
-        snippet += file_content[i]
+        file_content = f.read()
+
+    snippet_line_ids = list(range(line_start, line_end + 1))
+    snippet = get_code_snippet_from_file_content(file_content, snippet_line_ids)
+
     return snippet
 
 
-def extract_class_sig_lines_from_file(file_content: str, class_name: str, class_range: LineRange) -> List[int]:
-    tree = ast.parse(file_content)
-    relevant_line_ids: List[int] = []
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ClassDef):
-            ## Determine whether the node is the required class
-            # 1. Check name
-            if node.name != class_name:
-                continue
-            # 2. Check range
-            start, end = cal_class_or_func_def_range(node)
-            if start != class_range.start or end != class_range.end:
-                continue
+def get_class_signature_from_nodiff_file(
+        abs_fpath: str,
+        class_name: str,
+        class_range: LineRange,
+        lang: Literal['Python', 'Java']
+) -> str:
+    """Get the signature of the specified class from the file.
 
-            ## Extract relevant lines
-            relevant_line_ids = extract_class_sig_lines_from_ast(node)  # 1-based
-            break
-
-    # Normally, the class signature related lines should not be empty.
-    assert relevant_line_ids
-
-    return relevant_line_ids
-
-
-def get_class_sig_lines_content(file_content: str, line_ids: List[int]) -> str:
-    if not line_ids:
-        return ""
-
-    file_lines = file_content.splitlines(keepends=True)
-    result = ""
-    for line_id in line_ids:
-        line_content: str = file_lines[line_id - 1]
-        if line_content.strip().startswith("#"):
-            # This kind of comment could be left until this stage.
-            # Reason: # comments are not part of func body if they appear at beginning of func
-            continue
-        result += line_content
-
-    return result
-
-
-def get_class_signature_in_nodiff_file(abs_fpath: str, class_name: str, class_range: LineRange) -> str:
-    """Get the class signature.
-
-    NOTE: For nodiff files, we get their contents from the local repo.
+    NOTE 1: Valid for Python or Java file.
+    NOTE 2: Only for nodiff file.
+    NOTE 3: Input is file path. We get the file content by reading it from the local repo.
     Args:
-        abs_fpath (str): Absolute path to the file.
-        class_name (str): Name of the class.
-        class_range (LineRange): Line range of the class.
+        abs_fpath (str): Absolute path to the code file.
+        class_name (str): Class name.
+        class_range (LineRange): Class line range.
+        lang (str): Programming language. ['Python', 'Java']
     """
     with open(abs_fpath, "r") as f:
         file_content = f.read()
 
-    relevant_line_ids = extract_class_sig_lines_from_file(file_content, class_name, class_range)
+    if lang == 'Python':
+        sig_line_ids = extract_class_sig_lines_from_py_file(file_content, class_name, class_range)
+    elif lang == 'Java':
+        sig_line_ids = extract_class_sig_lines_from_java_file(
+            code=None, code_fpath=abs_fpath, class_name=class_name, class_range=class_range
+        )
+    else:
+        raise RuntimeError(f"Language '{lang}' is not supported yet.")
 
-    result = get_class_sig_lines_content(file_content, relevant_line_ids)
+    assert len(sig_line_ids) > 0
 
-    return result
+    sig_snippet = get_code_snippet_from_file_content(file_content, sig_line_ids)
+
+    return sig_snippet
 
 
-def get_class_signature_in_diff_file(
-        comb_file_content: str, old_file_content: str | None, new_file_content: str | None,
-        line_id_old2comb: Dict[int, int] | None, line_id_new2comb: Dict[int, int] | None,
-        class_name: str, old_class_range: LineRange | None, new_class_range: LineRange | None
+def get_class_signature_from_diff_file(
+        merge_file_content: str,
+        old_file_content: str | None,
+        new_file_content: str | None,
+        line_id_old2merge: Dict[int, int] | None,
+        line_id_new2merge: Dict[int, int] | None,
+        class_name: str,
+        old_class_range: LineRange | None,
+        new_class_range: LineRange | None,
+        lang: Literal['Python', 'Java']
 ) -> str:
-    """Get the class signature.
+    """Get the signature of the specified class from the file.
 
-    Step 1: Find the signature lines of the specific class from the code before and after commit.
-    Step 2: Query the line id lookup dict to find corresponding signature lines in combined code,
-            and merge them to get the final signature lines.
-
-    NOTE: For diff files, since we have stored them with the modifications in the search_manager,
-          so we get their contents from there instead of the local repo.
+    NOTE 1: Valid for Python or Java file.
+    NOTE 2: Only for diff file.
+    NOTE 3: Input is file content. Since we have stored the merged version of diff files in the SearchManager,
+            so we get their contents from the storage instead of the local repo.
     Args:
-        comb_file_content (str): Content of combined file.
+        merge_file_content (str): Content of merged file.
         old_file_content (str | None): Content of the old file.
         new_file_content (str | None): Content of the new file.
-        line_id_old2comb (Dict[int, int] | None): Line id lookup dict, old code -> comb code.
-        line_id_new2comb (Dict[int, int] | None): Line id lookup dict, new code -> comb code.
+        line_id_old2merge (Dict[int, int] | None): Line id mapping from old code to merged code.
+        line_id_new2merge (Dict[int, int] | None): Line id mapping from new code to merged code.
         class_name (str): Name of the class.
         old_class_range (LineRange | None): Line range of the class in the old file.
         new_class_range (LineRange | None): Line range of the class in the new file.
+        lang (str): Programming language. ['Python', 'Java']
     """
     if old_file_content is None or new_file_content is None:
         # Deleted / added file
         if old_file_content is not None:
-            assert line_id_old2comb is not None and old_class_range is not None
+            assert line_id_old2merge is not None and old_class_range is not None
             ori_content = old_file_content
             class_range = old_class_range
-            line_id_ori2comb = line_id_old2comb
+            line_id_ori2merge = line_id_old2merge
         else:
-            assert line_id_new2comb is not None and new_class_range is not None
+            assert line_id_new2merge is not None and new_class_range is not None
             ori_content = new_file_content
             class_range = new_class_range
-            line_id_ori2comb = line_id_new2comb
+            line_id_ori2merge = line_id_new2merge
 
-        relevant_line_ids = extract_class_sig_lines_from_file(ori_content, class_name, class_range)
+        if lang == 'Python':
+            sig_line_ids = extract_class_sig_lines_from_py_file(ori_content, class_name, class_range)
+        elif lang == 'Java':
+            sig_line_ids = extract_class_sig_lines_from_java_file(
+                code=ori_content, code_fpath=None, class_name=class_name, class_range=class_range
+            )
+        else:
+            raise RuntimeError(f"Language '{lang}' is not supported yet.")
 
-        comb_relevant_line_ids = [line_id_ori2comb[li] for li in relevant_line_ids]
+        merge_sig_line_ids = [line_id_ori2merge[li] for li in sig_line_ids]
 
-        result = get_class_sig_lines_content(comb_file_content, comb_relevant_line_ids)
+        sig_snippet = get_code_snippet_from_file_content(merge_file_content, merge_sig_line_ids)
 
     else:
         # Modified file
-        assert line_id_old2comb is not None and line_id_new2comb is not None
+        assert line_id_old2merge is not None and line_id_new2merge is not None
 
-        if old_class_range is not None and line_id_old2comb is not None:
-            assert is_overlap_in_comb_file(old_class_range, line_id_old2comb, new_class_range, line_id_new2comb)
+        if old_class_range is not None and line_id_old2merge is not None:
+            assert is_overlap_in_merged_file(old_class_range, line_id_old2merge, new_class_range, line_id_new2merge)
         else:
-            assert old_class_range is not None or line_id_old2comb is not None
+            assert old_class_range is not None or line_id_old2merge is not None
 
-        old_relevant_line_ids = extract_class_sig_lines_from_file(old_file_content, class_name, old_class_range) \
-                                if old_class_range is not None else []
-        new_relevant_line_ids = extract_class_sig_lines_from_file(new_file_content, class_name, new_class_range) \
-                                if new_class_range is not None else []
+        old_sig_line_ids: List[int] = []
+        new_sig_line_ids: List[int] = []
+        if lang == 'Python':
+            if old_class_range is not None:
+                old_sig_line_ids = extract_class_sig_lines_from_py_file(old_file_content, class_name, old_class_range)
+            if new_class_range is not None:
+                new_sig_line_ids = extract_class_sig_lines_from_py_file(new_file_content, class_name, new_class_range)
+        elif lang == 'Java':
+            if old_class_range is not None:
+                old_sig_line_ids = extract_class_sig_lines_from_java_file(
+                    code=old_file_content, code_fpath=None, class_name=class_name, class_range=old_class_range
+                )
+            if new_class_range is not None:
+                new_sig_line_ids = extract_class_sig_lines_from_java_file(
+                    code=new_file_content, code_fpath=None, class_name=class_name, class_range=new_class_range
+                )
+        else:
+            raise RuntimeError(f"Language '{lang}' is not supported yet.")
 
-        comb_relevant_line_ids = []
-        for old_line_id in old_relevant_line_ids:
-            comb_relevant_line_ids.append(line_id_old2comb[old_line_id])
+        merge_sig_line_ids = []
+        for old_line_id in old_sig_line_ids:
+            merge_sig_line_ids.append(line_id_old2merge[old_line_id])
 
-        for new_line_id in new_relevant_line_ids:
-            comb_relevant_line_ids.append(line_id_new2comb[new_line_id])
+        for new_line_id in new_sig_line_ids:
+            merge_sig_line_ids.append(line_id_new2merge[new_line_id])
 
-        comb_relevant_line_ids = sorted(list(set(comb_relevant_line_ids)))
+        merge_sig_line_ids = sorted(list(set(merge_sig_line_ids)))
 
-        result = get_class_sig_lines_content(comb_file_content, comb_relevant_line_ids)
+        sig_snippet = get_code_snippet_from_file_content(merge_file_content, merge_sig_line_ids)
 
-    return result
+    return sig_snippet

@@ -17,12 +17,12 @@ from loguru import logger
 
 from agent_app import globals, globals_mut, inference, log
 from agent_app.data_structures import ProcessStatus
-from agent_app.api.manage import ProcessManager
+from agent_app.api.manage import PyProcessManager, JavaProcessManager
 from agent_app.model import common
 from agent_app.model.register import register_all_models
 from agent_app.raw_tasks import RawTask, RawLocalTask
 from agent_app.task import Task
-from agent_app.log import get_timestamp, print_with_time, log_and_always_print, log_and_cprint, always_cprint
+from agent_app.log import get_timestamp, log_and_always_print, log_and_cprint, always_cprint
 from agent_app.util import create_dir_if_not_exists
 
 
@@ -53,6 +53,12 @@ def get_args():
         choices=['vul', 'novul'],
         required=True,
         help="Experiment name.",
+    )
+    parser.add_argument(
+        "--lang",
+        choices=['Python', 'Java'],
+        required=True,
+        help="Programming language.",
     )
 
     ## CWE settings
@@ -289,7 +295,12 @@ def do_inference(
 
     start_time = datetime.now()
 
-    manager = ProcessManager(task, task_output_dir)
+    if globals.lang == 'Python':
+        manager = PyProcessManager(task, task_output_dir)
+    elif globals.lang == 'Java':
+        manager = JavaProcessManager(task, task_output_dir)
+    else:
+        raise RuntimeError(f"Language {globals.lang} not supported yet.")
 
     log_and_cprint(f"Manager preparation: {time.time() - start_time.timestamp()}")
 
@@ -332,6 +343,7 @@ def construct_tasks(tasks_map_file: str, local_repos_dpath: str) -> List[RawLoca
     invalid_tasks = []
 
     #########################################################################################
+    #########################################################################################
     # TODO: Only in test
     checked_task_ids: List[str] = []
     checked_task_dirs = [
@@ -343,6 +355,7 @@ def construct_tasks(tasks_map_file: str, local_repos_dpath: str) -> List[RawLoca
         for task_full_name in task_full_names:
             task_id = task_full_name.split("_")[0]
             checked_task_ids.append(task_id)
+    #########################################################################################
     #########################################################################################
 
     with open(tasks_map_file) as f:
@@ -403,21 +416,26 @@ def group_local_tasks_by_repo(tasks: List[RawLocalTask]) -> Dict[str, List[RawLo
 
 def main(args):
     # ------------------------- Set options ------------------------- #
-    ## Required
+    ## Required path
+    # 1. dir to root output
     globals.output_dpath = os.path.abspath(args.output_dir)
     assert os.path.exists(globals.output_dpath)
 
+    # 2. dir to local repos
     globals.local_repos_dpath = os.path.abspath(args.local_repos_dir)
     assert os.path.exists(globals.local_repos_dpath)
 
-    # current expr dpath
+    # 3. dir to current experiment
     globals.expr_type = args.expr_type
     expr_name = args.expr_type + "_" + get_timestamp()
     expr_dpath = os.path.join(globals.output_dpath, expr_name)
     globals.expr_dpath = os.path.abspath(expr_dpath)
     create_dir_if_not_exists(globals.expr_dpath)
 
-    # CWE
+    ## language
+    globals.lang = args.lang
+
+    ## CWE
     globals.view_id = args.view_id
     globals.all_weakness_entry_file = args.all_weakness_entry_file
     globals.cwe_entry_file = args.cwe_entry_file
@@ -433,6 +451,7 @@ def main(args):
         view_cwe_tree_files = []
     globals.view_cwe_tree_files = view_cwe_tree_files
 
+    ## Other
     # number of processes
     num_processes: int = int(args.num_processes)
     # brief or verbose log
