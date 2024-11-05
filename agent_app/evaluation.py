@@ -15,19 +15,6 @@ from agent_app.CWE.cwe_util import get_cwe_depth
 from utils import insert_key_value
 
 
-def filter_process():
-    pass
-
-
-def find_run_failure_tasks(exp_root):
-    exps = os.listdir(exp_root)
-    exps = [exp for exp in exps if exp[0].isdigit()]
-    exps = sorted(exps, key=lambda x: int(x.split("-")[0]))
-    for exp in exps:
-        if not os.path.exists(os.path.join(exps_root, exp, 'cost.json')):
-            print(exp)
-
-
 """F1 CALCULATION"""
 
 
@@ -972,12 +959,11 @@ def collect_tasks_with_process_abnormal_actions(exps_root: str):
 
 
 if __name__ == '__main__':
-    exps_root = "/root/projects/VDTest/output/agent/vul_2024-09-22T23:04:50_SAVE"
+    exps_root = "/root/projects/VDTest/output/agent/py_vul_nvdvul_view1000_results_v1"
 
-    find_run_failure_tasks(exps_root)
+    evaluate_vul_tasks_final_hyps_with_view_1000(exps_root, init=True)
+    print("\n" + "#" * 100 + "\n")
+    evaluate_vul_tasks_final_hyps_with_view_1000(exps_root)
+    print("\n" + "#" * 100 + "\n")
 
-    # evaluate_vul_tasks_final_hyps_with_view_1000(exps_root, init=True)
-    # print("\n" + "#" * 100 + "\n")
-    # evaluate_vul_tasks_final_hyps_with_view_1000(exps_root)
-    # print("\n" + "#" * 100 + "\n")
-    # collect_tasks_with_process_abnormal_actions(exps_root)
+    collect_tasks_with_process_abnormal_actions(exps_root)
