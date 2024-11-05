@@ -52,10 +52,10 @@ class CFGVisitor:
             init_ast_node_id:
         Returns:
         """
-        if self.ast.nodes[init_ast_node_id]['type'] == "translation_unit":
+        if self.ast.all_nodes[init_ast_node_id]['type'] == "translation_unit":
             pass
 
-        elif self.ast.nodes[init_ast_node_id]['type'] == "function_definition":
+        elif self.ast.all_nodes[init_ast_node_id]['type'] == "function_definition":
            pass
         else:
             logger.error()
@@ -66,7 +66,7 @@ class CFGVisitor:
         """
         # pass through dummy nodes
         nodes_to_remove = []
-        for n, attr in self.cfg.nodes(data=True):
+        for n, attr in self.cfg.all_nodes(data=True):
             if attr.get("dummy", False):
                 preds = list(self.cfg.predecessors(n))
                 succs = list(self.cfg.successors(n))
@@ -85,7 +85,7 @@ class CFGVisitor:
     """VISIT"""
 
     def visit(self, ast_node_id: int, **kwargs) -> bool:
-        ast_node: Dict = self.ast.nodes[ast_node_id]
+        ast_node: Dict = self.ast.all_nodes[ast_node_id]
         visit_result = getattr(
             self, "visit_" + ast_node["node_type"], self.visit_default
         )(ast_node_id=ast_node_id, **kwargs)
@@ -166,7 +166,7 @@ class CFGVisitor:
         # Add AST attributes
         cfg_node_attr = {}
         if ast_node_id is not None:
-            ast_node: Dict = self.ast.nodes[ast_node_id]
+            ast_node: Dict = self.ast.all_nodes[ast_node_id]
 
             conflict_keys = check_key_conflict(ast_node, updt_cfg_node_attr)
             if len(conflict_keys) != 0:
@@ -225,7 +225,7 @@ class CFGVisitor:
             except KeyError:
                 warnings.warn("missing goto target. Skipping.", f"label={label}", f"gotos={self.gotos}")
         for n in nx.descendants(self.cfg, entry_cfg_node_id):
-            attr = self.cfg.nodes[n]
+            attr = self.cfg.all_nodes[n]
             if attr.get("n", None) is not None and attr["n"].type == "return_statement":
                 self.cfg.add_edge(n, exit_id, label="return")
         self.fringes.append(exit_id)
@@ -253,7 +253,7 @@ class CFGVisitor:
         alt_ast_node_id = None
 
         for child_ast_node_id in self.get_node_ast_children(ast_node_id):
-            child_ast_node = self.ast.nodes[child_ast_node_id]
+            child_ast_node = self.ast.all_nodes[child_ast_node_id]
             if 'field' in child_ast_node and child_ast_node['field'] == 'condition':
                 cond_ast_node_id = child_ast_node['ast_node_id']
             elif 'field' in child_ast_node and child_ast_node['field'] == 'consequence':
@@ -289,7 +289,7 @@ class CFGVisitor:
         body_ast_node_id = None
 
         for child_ast_node_id in self.get_node_ast_children(ast_node_id):
-            child_ast_node = self.ast.nodes[child_ast_node_id]
+            child_ast_node = self.ast.all_nodes[child_ast_node_id]
             if child_ast_node['node_type'] == 'for':
                 for_ast_node_id = child_ast_node['ast_node_id']
             elif 'field' in child_ast_node and child_ast_node['field'] == 'initializer':
@@ -306,7 +306,7 @@ class CFGVisitor:
         if cond_ast_node_id is not None:
             cond_cfg_node_id = self.add_cfg_node(cond_ast_node_id)
         else:
-            for_ast_node = self.ast.nodes[for_ast_node_id]
+            for_ast_node = self.ast.all_nodes[for_ast_node_id]
             cond_cfg_node_id = self.add_cfg_node(ast_node_id=None, label="<TRUE>",
                                                  start=for_ast_node['start'], end=for_ast_node['end'])
 
@@ -350,7 +350,7 @@ class CFGVisitor:
         body_ast_node_id = None
 
         for child_ast_node_id in self.get_node_ast_children(ast_node_id):
-            child_ast_node = self.ast.nodes[child_ast_node_id]
+            child_ast_node = self.ast.all_nodes[child_ast_node_id]
             if 'field' in child_ast_node and child_ast_node['field'] == 'condition':
                 cond_ast_node_id = child_ast_node['ast_node_id']
             elif 'field' in child_ast_node and child_ast_node['field'] == 'body':
@@ -381,7 +381,7 @@ class CFGVisitor:
         body_ast_node_id = None
 
         for child_ast_node_id in self.get_node_ast_children(ast_node_id):
-            child_ast_node = self.ast.nodes[child_ast_node_id]
+            child_ast_node = self.ast.all_nodes[child_ast_node_id]
             if 'field' in child_ast_node and child_ast_node['field'] == 'condition':
                 cond_ast_node_id = child_ast_node['ast_node_id']
             elif 'field' in child_ast_node and child_ast_node['field'] == 'body':
@@ -418,24 +418,24 @@ class CFGVisitor:
         cases = self.get_node_ast_children(self.get_node_ast_children(n)[1])
         default_was_hit = False
         for case in cases:
-            while self.ast.nodes[case]["node_type"] != "case_statement":
-                if self.ast.nodes[case]["node_type"] == "labeled_statement":
+            while self.ast.all_nodes[case]["node_type"] != "case_statement":
+                if self.ast.all_nodes[case]["node_type"] == "labeled_statement":
                     self.add_label_node(case)
                     case = self.get_node_ast_children(case)[1]
                 else:
-                    raise NotImplementedError(self.ast.nodes[case]["node_type"])
+                    raise NotImplementedError(self.ast.all_nodes[case]["node_type"])
             case_children = self.get_node_ast_children(case)
-            case_attr = self.ast.nodes[case]
+            case_attr = self.ast.all_nodes[case]
             if len(self.get_node_ast_children(case)) == 0:
                 continue
             body_nodes = [
                 c
                 for c in case_children
-                if case_attr["body_begin"] <= self.ast.nodes[c]["child_idx"]
+                if case_attr["body_begin"] <= self.ast.all_nodes[c]["child_idx"]
             ]
             if case_attr["is_default"]:
                 default_was_hit = True
-            case_text = self.ast.nodes[case]["code"]
+            case_text = self.ast.all_nodes[case]["code"]
             case_text = case_text[: case_text.find(":") + 1]
             # TODO: append previous cases with no body
             self.fringes.append((cond_id, case_text))
@@ -475,7 +475,7 @@ class CFGVisitor:
         label_ast_node_id = None
 
         for child_ast_node_id in self.get_node_ast_children(ast_node_id):
-            child_ast_node = self.ast.nodes[child_ast_node_id]
+            child_ast_node = self.ast.all_nodes[child_ast_node_id]
             if 'field' in child_ast_node and child_ast_node['field'] == 'label':
                 label_ast_node_id = child_ast_node['ast_node_id']
                 break
@@ -485,7 +485,7 @@ class CFGVisitor:
         cfg_node_id = self.add_cfg_node(ast_node_id)
         self.add_edge_from_fringe_to(cfg_node_id)
 
-        goto_label_node = self.ast.nodes[label_ast_node_id]
+        goto_label_node = self.ast.all_nodes[label_ast_node_id]
         assert goto_label_node["node_type"] == "statement_identifier"
         self.gotos[goto_label_node["code"]] = cfg_node_id
 
@@ -496,7 +496,7 @@ class CFGVisitor:
         label_ast_node_id = None
 
         for child_ast_node_id in self.get_node_ast_children(ast_node_id):
-            child_ast_node = self.ast.nodes[child_ast_node_id]
+            child_ast_node = self.ast.all_nodes[child_ast_node_id]
             if 'field' in child_ast_node and child_ast_node['field'] == 'label':
                 label_ast_node_id = child_ast_node['ast_node_id']
                 break
@@ -509,7 +509,7 @@ class CFGVisitor:
         cfg_node_id = self.add_cfg_node(ast_node_id)
         self.add_edge_from_fringe_to(cfg_node_id)
 
-        label_child = self.ast.nodes[label_ast_node_id]
+        label_child = self.ast.all_nodes[label_ast_node_id]
         assert label_child["node_type"] == "statement_identifier"
         self.labels[label_child["code"]] = cfg_node_id
         self.fringes.append(cfg_node_id)

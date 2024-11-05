@@ -57,7 +57,7 @@ class CFGParser(BaseVisitor, BaseParser):
         """
         # pass through dummy nodes
         nodes_to_remove = []
-        for n, attr in self.cfg.nodes(data=True):
+        for n, attr in self.cfg.all_nodes(data=True):
             if attr.get("dummy", False):
                 preds = list(self.cfg.predecessors(n))
                 succs = list(self.cfg.successors(n))
@@ -77,7 +77,7 @@ class CFGParser(BaseVisitor, BaseParser):
 
     def visit(self, n, **kwargs):
         return getattr(
-            self, "visit_" + self.ast.nodes[n]["node_type"], self.visit_default
+            self, "visit_" + self.ast.all_nodes[n]["node_type"], self.visit_default
         )(n=n, **kwargs)
 
     def visit_children(self, n, **kwargs):
@@ -99,7 +99,7 @@ class CFGParser(BaseVisitor, BaseParser):
         """Add CFG node to the graph, inheriting properties from the progenitor AST node if any."""
         existing_kwargs = {}
         if ast_node is not None:
-            attr = self.ast.nodes[ast_node]
+            attr = self.ast.all_nodes[ast_node]
             existing_kwargs.update(attr)
             existing_kwargs["ast_node"] = ast_node
         if label is not None:
@@ -145,7 +145,7 @@ class CFGParser(BaseVisitor, BaseParser):
             except KeyError:
                 warnings.warn("missing goto target. Skipping.", f"label={label}", f"gotos={self.gotos}")
         for n in nx.descendants(self.cfg, entry_id):
-            attr = self.cfg.nodes[n]
+            attr = self.cfg.all_nodes[n]
             if attr.get("n", None) is not None and attr["n"].type == "return_statement":
                 self.cfg.add_edge(n, exit_id, label="return")
         self.fringe.append(exit_id)
@@ -192,7 +192,7 @@ class CFGParser(BaseVisitor, BaseParser):
             self.fringe.append((condition_id, False))
 
     def visit_for_statement(self, n, **kwargs):
-        n_attr = self.ast.nodes[n]
+        n_attr = self.ast.all_nodes[n]
         # print(n, n_attr["node_type"], kwargs, n_attr)
         i = 0
         if n_attr.get("has_init", False):
@@ -298,24 +298,24 @@ class CFGParser(BaseVisitor, BaseParser):
         cases = self.get_children(self.get_children(n)[1])
         default_was_hit = False
         for case in cases:
-            while self.ast.nodes[case]["node_type"] != "case_statement":
-                if self.ast.nodes[case]["node_type"] == "labeled_statement":
+            while self.ast.all_nodes[case]["node_type"] != "case_statement":
+                if self.ast.all_nodes[case]["node_type"] == "labeled_statement":
                     self.add_label_node(case)
                     case = self.get_children(case)[1]
                 else:
-                    raise NotImplementedError(self.ast.nodes[case]["node_type"])
+                    raise NotImplementedError(self.ast.all_nodes[case]["node_type"])
             case_children = self.get_children(case)
-            case_attr = self.ast.nodes[case]
+            case_attr = self.ast.all_nodes[case]
             if len(self.get_children(case)) == 0:
                 continue
             body_nodes = [
                 c
                 for c in case_children
-                if case_attr["body_begin"] <= self.ast.nodes[c]["child_idx"]
+                if case_attr["body_begin"] <= self.ast.all_nodes[c]["child_idx"]
             ]
             if case_attr["is_default"]:
                 default_was_hit = True
-            case_text = self.ast.nodes[case]["code"]
+            case_text = self.ast.all_nodes[case]["code"]
             case_text = case_text[: case_text.find(":") + 1]
             # TODO: append previous cases with no body
             self.fringe.append((cond_id, case_text))
@@ -353,17 +353,17 @@ class CFGParser(BaseVisitor, BaseParser):
     def visit_goto_statement(self, n, **kwargs):
         node_id = self.add_cfg_node(n)
         self.add_edge_from_fringe_to(node_id)
-        statement_identifier_attr = self.ast.nodes[self.get_children(n)[0]]
+        statement_identifier_attr = self.ast.all_nodes[self.get_children(n)[0]]
         assert statement_identifier_attr["node_type"] == "statement_identifier"
         self.gotos[statement_identifier_attr["code"]] = node_id
         self.visit_default(n, **kwargs)
 
     def add_label_node(self, n):
-        code = self.ast.nodes[n]["code"]
+        code = self.ast.all_nodes[n]["code"]
         code = code[:code.find(":") + 1]
         node_id = self.add_cfg_node(n, code=code)
         self.add_edge_from_fringe_to(node_id)
-        statement_identifier_attr = self.ast.nodes[self.get_children(n)[0]]
+        statement_identifier_attr = self.ast.all_nodes[self.get_children(n)[0]]
         assert statement_identifier_attr["node_type"] == "statement_identifier"
         self.labels[statement_identifier_attr["code"]] = node_id
         self.fringe.append(node_id)
@@ -420,7 +420,7 @@ struct foo;
     nx.draw(
         ast,
         pos=pos,
-        labels={n: attr["label"] for n, attr in ast.nodes(data=True)},
+        labels={n: attr["label"] for n, attr in ast.all_nodes(data=True)},
         with_labels=True,
         ax=ax[0],
     )
@@ -429,7 +429,7 @@ struct foo;
     nx.draw(
         cfg,
         pos=pos,
-        labels={n: attr["label"] for n, attr in cfg.nodes(data=True)},
+        labels={n: attr["label"] for n, attr in cfg.all_nodes(data=True)},
         with_labels=True,
         ax=ax[1],
     )
