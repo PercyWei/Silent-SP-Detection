@@ -1,7 +1,6 @@
 import re
 import os
 import json
-import time
 import shutil
 import requests
 
@@ -9,14 +8,9 @@ from typing import *
 from collections import defaultdict
 from tqdm import tqdm
 
-from loguru import logger
-
-from preprocess.log import default_add_logger
-from preprocess.util import (
-    clone_repo,
-    calculate_date_range, is_commit_exist, is_commit_reproducible, is_commit_exist_in_repo
-)
-from utils import make_hie_dirs
+from preprocess.repo_manage import format_size
+from preprocess.process_all import update_dataset_with_commit_file_count
+from preprocess.util import clone_repo, is_commit_exist, is_commit_exist_in_repo
 
 
 """DATASET SIMPLIFICATION"""
@@ -50,7 +44,7 @@ def build_simplified_dataset(dataset_fpath: str, output_root: str) -> str:
 """DATASET CLEANING"""
 
 
-def group_items_by_commit(dataset_fpath: str) -> None:
+def group_items_by_commit(dataset_fpath: str, output_fpath: str) -> None:
     """Group dataset items by commit"""
     with open(dataset_fpath, 'r') as f:
         dataset = json.load(f)
@@ -69,7 +63,7 @@ def group_items_by_commit(dataset_fpath: str) -> None:
             if pl not in updt_dataset[commit_hash]["PL_list"]:
                 updt_dataset[commit_hash]["PL_list"].append(pl)
 
-    with open(dataset_fpath, 'w') as f:
+    with open(output_fpath, 'w') as f:
         json.dump(list(updt_dataset.values()), f, indent=4)
 
 
@@ -159,7 +153,7 @@ def delete_duplicate_cves(dataset_fpath: str, output_root: str) -> str:
 """COMMITS CHECKING"""
 
 
-def check_commits_existence_by_fetching(dataset_fpath: str) -> None:
+def check_commits_existence_by_fetching(lang: Literal['Python', 'Java'], dataset_fpath: str) -> None:
     """Check the commits existence through fetching."""
     token = os.getenv("TOKEN", "")
 
@@ -170,13 +164,16 @@ def check_commits_existence_by_fetching(dataset_fpath: str) -> None:
 
     with (tqdm(total=len(dataset)) as pb):
         for cve_data in dataset:
-            # TODO: For now, we only care about commits related to Python.
-            if cve_data['PL_list'] == ["Python"]:
+            if cve_data['PL_list'] == [lang]:
                 for i, commit in enumerate(cve_data['commits']):
                     is_exist = commit.get('existence', None)
                     if is_exist is None:
-                        is_exist, response = is_commit_exist(commit["repo"], commit["commit_hash"], token)
+                        is_exist, _ = is_commit_exist(commit["repo"], commit["commit_hash"], token)
                         # Update current cve data
+                        # is_exist:
+                        # - True: commit exists
+                        # - False: commit does not exist
+                        # - Null: check failed
                         cve_data['commits'][i]['existence'] = is_exist
 
             updt_dataset.append(cve_data)
@@ -187,7 +184,30 @@ def check_commits_existence_by_fetching(dataset_fpath: str) -> None:
         json.dump(updt_dataset, f, indent=4)
 
 
-def check_local_repos_and_clone(dataset_fpath: str, repos_root: str = '/root/projects/clone_projects') -> None:
+def get_repo_size(auth_repo) -> int:
+    token = os.getenv("TOKEN", "")
+    headers = {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+
+    url = f"https://api.github.com/repos/{auth_repo}"
+    try:
+        response = requests.get(url, headers=headers, timeout=5)
+        if response.status_code == 200:
+            repo_data = response.json()
+            kb_size = repo_data['size']
+            return kb_size * 1024
+    except requests.exceptions.RequestException as e:
+        pass
+    return 0
+
+
+def check_local_repos_and_clone(
+        lang: Literal['Python', 'Java'],
+        dataset_fpath: str,
+        repos_root: str = '/root/projects/clone_projects'
+) -> None:
     token = os.getenv("TOKEN", "")
 
     with open(dataset_fpath, 'r') as f:
@@ -195,8 +215,7 @@ def check_local_repos_and_clone(dataset_fpath: str, repos_root: str = '/root/pro
 
     noexist_local_repos = []
     for cve_data in dataset:
-        # TODO: For now, we only care about commits related to Python.
-        if cve_data["PL_list"] == ["Python"]:
+        if cve_data["PL_list"] == [lang]:
             for commit in cve_data['commits']:
                 auth_repo = commit["repo"]
                 repo_dpath = os.path.join(repos_root, auth_repo.replace('/', '_'))
@@ -204,23 +223,70 @@ def check_local_repos_and_clone(dataset_fpath: str, repos_root: str = '/root/pro
                     noexist_local_repos.append(auth_repo)
 
     noexist_local_repos = list(set(noexist_local_repos))
-    print(json.dumps(noexist_local_repos, indent=4))
+    print(f"No exist local repo number: {len(noexist_local_repos)}")
+    # print(json.dumps(noexist_local_repos, indent=4))
 
+    # (2) Calculate the total size of all repos which need to be cloned
+    # total_size = 0
+    # success_num = 0
+    # noexist_local_repo2size = {}
+    # for auth_repo in noexist_local_repos:
+    #     size = get_repo_size(auth_repo)
+    #     total_size += size
+    #     if size > 0:
+    #         success_num += 1
+    #     noexist_local_repo2size[auth_repo] = size
+    # noexist_local_repo2size = dict(sorted(noexist_local_repo2size.items(), key=lambda x: x[1], reverse=True))
+    # noexist_local_repo2size = {repo: format_size(size) for repo, size in noexist_local_repo2size.items()}
+    # print(f"Total size: {format_size(total_size)} ({success_num} / {len(noexist_local_repos)})")
+    # print(json.dumps(noexist_local_repo2size, indent=4))
+
+    # (3) Clone repos
     for repo in noexist_local_repos:
+        if repo in [
+            "OpenNMS/opennms",
+            "OpenOLAT/OpenOLAT",
+            "apache/ofbiz-framework",
+            "wuyouzhuguli/FEBS-Shiro",
+            "keycloak/keycloak",
+            "facebook/buck",
+            "luchua-bc/GreenBrowser",
+            "gradle/gradle",
+            "dotCMS/core",
+            "igniterealtime/Openfire",
+            "shopizer-ecommerce/shopizer",
+            "jamesagnew/hapi-fhir",
+            "eclipse/rdf4j",
+            "xwiki/xwiki-platform",
+            "OpenAPITools/openapi-generator",
+            "bigbluebutton/bigbluebutton",
+            "brianchandotcom/liferay-portal",
+            "elastic/elasticsearch",
+            "restlet/restlet-framework-java",
+            "siacs/Conversations",
+            "ballerina-platform/ballerina-lang",
+            "hapifhir/hapi-fhir",
+            "intranda/goobi-viewer-core"
+        ]:
+            continue
+
         print("=" * 100 + "\n\n")
         repo_dpath = os.path.join(repos_root, repo.replace('/', '_'))
-        clone_repo(repo, repo_dpath, token=token)
+        clone_repo(repo, repo_dpath, token=token, timeout=60)
 
 
-def check_commits_reproducibility_by_cloning(dataset_fpath: str, repos_root: str = '/root/projects/clone_projects') -> None:
+def check_commits_reproducibility_by_cloning(
+        lang: Literal['Python', 'Java'],
+        dataset_fpath: str,
+        repos_root: str = '/root/projects/clone_projects'
+) -> None:
     """Check the commits reproducibility through cloning."""
     with open(dataset_fpath, 'r') as f:
         dataset = json.load(f)
 
     updt_dataset: List[Dict] = []
     for cve_data in dataset:
-        # TODO: For now, we only care about commits related to Python.
-        if cve_data['PL_list'] == ["Python"]:
+        if cve_data['PL_list'] == [lang]:
             for i, commit in enumerate(cve_data['commits']):
                 is_exist = commit['existence']
                 is_repro = commit.get('reproducibility', None)
@@ -241,151 +307,74 @@ def check_commits_reproducibility_by_cloning(dataset_fpath: str, repos_root: str
         json.dump(updt_dataset, f, indent=4)
 
 
-"""Select Valid Commits to Construct Dataset"""
-
-
-def build_dataset_from_validity_check_results(dataset_fpath: str, check_results_fpath: str, output_root: str) -> None:
-    """
-    Select valid commits to build a new TreeVul dataset from validity check results.
-
-    Args:
-        dataset_fpath (str): Path to the TreeVul dataset file in JSON format.
-            Note: Need to reconstruct the TreeVul dataset before calling this function.
-                  Use 'group_TreeVul_items_by_commit' and get 'TreeVul_rec.json'.
-        check_results_fpath (str): Path to the validity check results file in JSON format.
-        output_root (str): Path to the root for overall output.
-    """
+def final_check(lang: Literal['Python', 'Java'], dataset_fpath: str) -> None:
     with open(dataset_fpath, 'r') as f:
         dataset = json.load(f)
 
-    with open(check_results_fpath, 'r') as f:
-        check_results = json.load(f)
+    updt_dataset: List[Dict] = []
+    for cve_data in dataset:
+        if cve_data['PL_list'] == [lang]:
+            for i, commit in enumerate(cve_data['commits']):
+                is_exist = commit['existence']
+                is_repro = commit.get('reproducibility', None)
 
-    if len(check_results["Failed Commits"]) != 0:
-        return
+                # 1. Commit with null existence
+                if is_exist is None:
+                    if is_repro:
+                        cve_data['commits'][i]['existence'] = True
+                    else:
+                        print(f"Commit with null existence: {commit['commit_hash']}")
 
-    all_commits_check_results = check_results["All Commits"]
-    not_found_check_results = check_results["Not Found Commits"]
+                # 2. Commit with null reproducibility
+                if is_repro is None:
+                    print(f"Commit with null reproducibility: {commit['commit_hash']}")
 
-    # Obtained manually
-    old_2_new_repos = {
-        "rcook/rgpg": "eahanson/rgpg",
-        "embedthis/goahead": "zoushipeng/goahead",
-        "embedthis/appweb": "whoerau/appweb",
-        "wuyouzhuguli/FEBS-Shiro": "XIOGit/https-github.com-wuyouzhuguli-FEBS-Shiro",
-        "vintagedaddyo/MyBB_Plugin-Upcoming_Events": "MangaD/MyBB_Plugin-Upcoming_Events"
-    }
+                # 3. Commit with false existence
+                if is_exist is False:
+                    print(f"Commit with false existence: {commit['commit_hash']}")
 
-    # Build new dataset
-    new_dataset: Dict[str, List[Dict]] = {}
+        updt_dataset.append(cve_data)
 
-    for commit_id, commit_items in dataset.items():
-        repo = commit_items[0]["repo"]
-        if repo in old_2_new_repos:
-            # After manually checking, all commits belonging to the renamed repository are valid
-            for commit_item in commit_items:
-                commit_item["repo"] = old_2_new_repos[repo]
-            new_dataset[commit_id] = commit_items
-        else:
-            if all_commits_check_results[repo][commit_id] == "Valid":
-                new_dataset[commit_id] = commit_items
-            elif all_commits_check_results[repo][commit_id] == "Invalid":
-                pass
-            else:
-                assert repo in not_found_check_results and commit_id in not_found_check_results[repo], \
-                    f"Commit is unchecked - repo: {repo}, commit_id: {commit_id}"
-
-    # Save dataset
-    save_dpath = make_hie_dirs(output_root, "TreeVul")
-    new_dataset_fpath = os.path.join(save_dpath, "TreeVul_valid.json")
-    with open(new_dataset_fpath, 'w') as f:
-        json.dump(new_dataset, f, indent=4)
+    with open(dataset_fpath, 'w') as f:
+        json.dump(updt_dataset, f, indent=4)
 
 
-"""Select CVEs with Single Commit (scCVE)"""
+"""DATASET FILTER"""
 
 
-def _get_cve2commit_and_commit2cve(dataset: Dict[str, List[Dict]]) -> Tuple[Dict, Dict]:
-    """
-    Get a Dict from CVE-ID to commit_id and a Dict from commit_id to CVE-ID.
-
-    Args:
-        dataset (Dict): Dataset with valid commit.
-            Note: Form like
-                {
-                    commit_id_1:
-                        [
-                            changed_file_1_info (Dict),
-                            changed_file_2_info (Dict),
-                            ...
-                        ]
-                    commit_id_2: ...
-                    ...
-                }
-
-    Returns:
-        Dict: key is CVE-ID, value is the list of commit_id.
-        Dict: key is commit_id, value is the list of CVE-ID.
-    """
-    cve2commit: Dict[str, List[str]] = {}
-    commit2cve: Dict[str, List[str]] = {}
-
-    def _update_cve2commit(_cve_id, _commit_id):
-        if _cve_id not in cve2commit:
-            cve2commit[_cve_id] = [_commit_id]
-        else:
-            cve2commit[_cve_id].append(_commit_id)
-            cve2commit[_cve_id] = list(set(cve2commit[_cve_id]))
-
-    def _update_commit2cve(_cve_id, _commit_id):
-        if _commit_id not in commit2cve:
-            commit2cve[_commit_id] = [_cve_id]
-        else:
-            commit2cve[_commit_id].append(_cve_id)
-            commit2cve[_commit_id] = list(set(commit2cve[_commit_id]))
-
-    for commit_id, items in dataset.items():
-        for item in items:
-            cves_str = item["cve_list"]
-            if len(cves_str.split(',')) > 1:
-                cves = cves_str.split(',')
-                for cve_id in cves:
-                    _update_cve2commit(cve_id, commit_id)
-                    _update_commit2cve(cve_id, commit_id)
-            else:
-                cve_id = cves_str
-                _update_cve2commit(cve_id, commit_id)
-                _update_commit2cve(cve_id, commit_id)
-
-    return cve2commit, commit2cve
-
-
-"""Select CVEs with Single Commit Single File (scsfCVE)"""
-
-
-def select_scsfCVEs(dataset_fpath: str, output_root: str) -> None:
-    """
-    After selecting CVEs containing single valid commit,
-    this method select CVEs containing single valid commit which changes single file and build new dataset.
-
-    Args:
-        dataset_fpath (str): 'TreeVul_valid_scCVE.json'
-        output_root (str): Path to overall output root directory.
-    """
+def build_dataset_containing_cves_with_valid_single_commit(
+        lang: Literal['Python', 'Java'],
+        dataset_fpath: str,
+        output_root: str
+) -> str:
     with open(dataset_fpath, 'r') as f:
         dataset = json.load(f)
 
-    # Select
-    new_dataset: Dict[str, Dict] = {}
-    for commit_id, items in dataset.items():
-        if len(items) == 1:
-            new_dataset[commit_id] = items
+    filtered_dataset: List[Dict] = []
 
-    # Save
-    save_dpath = make_hie_dirs(output_root, "TreeVul")
-    new_dataset_fpath = os.path.join(save_dpath, "TreeVul_valid_scsfCVE.json")
-    with open(new_dataset_fpath, 'w') as f:
-        json.dump(new_dataset, f, indent=4)
+    for data in dataset:
+        commits = data["commits"]
+
+        if data['PL_list'] == [lang] and len(commits) == 1 and \
+                commits[0]['existence'] is True and commits[0]['reproducibility'] is True:
+            new_data = {
+                "source": "treevul",
+                "task_id": f"{len(filtered_dataset)}-treevul",
+                "cve_id": data["cve_id"],
+                "commit_type": data["commit_type"],
+                "cwe_id": data["cwe_id"],
+                "cwe_depth": None,
+                "repo": commits[0]['repo'],
+                "commit_hash": commits[0]['commit_hash'],
+                "file_count": None
+            }
+            filtered_dataset.append(new_data)
+
+    output_fpath = os.path.join(output_root, f"{lang.lower()}_vul_tasks_treevul.json")
+    with open(output_fpath, 'w') as f:
+        json.dump(filtered_dataset, f, indent=4)
+
+    return output_fpath
 
 
 """OTHER"""
@@ -418,7 +407,7 @@ def count_dataset_file_language(dataset_fpath: str) -> None:
                     language_count[lang] += 1
 
 
-def count_repro_cve_commits(dataset_fpath: str) -> None:
+def count_repo_cve_commits(lang: Literal['Python', 'Java'], dataset_fpath: str) -> None:
     with open(dataset_fpath, 'r') as f:
         dataset = json.load(f)
 
@@ -429,15 +418,17 @@ def count_repro_cve_commits(dataset_fpath: str) -> None:
     invalid_commit_num = 0
     valid_commit_num = 0
 
+    valid_single_commit_cve_repos = []
+
     for cve_data in dataset:
-        # TODO: For now, we only care about commits related to Python.
-        if cve_data['PL_list'] == ["Python"]:
+        if cve_data['PL_list'] == [lang]:
 
             valid_flag = True
             curr_invalid_commit_num = 0
 
             for commit in cve_data['commits']:
                 if not commit["reproducibility"]:
+                    # As long as one of the commits involved in the CVE cannot be reproduced, we consider it invalid!
                     valid_flag = False
                     curr_invalid_commit_num += 1
 
@@ -449,19 +440,36 @@ def count_repro_cve_commits(dataset_fpath: str) -> None:
                     commit_num2cve_num[curr_commit_num] = 1
                 else:
                     commit_num2cve_num[curr_commit_num] += 1
+
+                if curr_commit_num == 1:
+                    repo = cve_data['commits'][0]['repo']
+                    if repo not in valid_single_commit_cve_repos:
+                        valid_single_commit_cve_repos.append(repo)
             else:
                 invalid_cves.append(cve_data['cve_id'])
                 valid_commit_num += curr_commit_num - curr_invalid_commit_num
                 invalid_commit_num += curr_invalid_commit_num
 
     print(f"Valid CVE number: {valid_cve_num}")
+    print(f"Repo of valid single commit CVE number: {len(valid_single_commit_cve_repos)}")
 
     commit_num2cve_num = dict(sorted(commit_num2cve_num.items(), key=lambda x: x[1], reverse=True))
-    print(json.dumps(commit_num2cve_num, indent=4))
+    print("Mapping from commit number to cve number: \n" + json.dumps(commit_num2cve_num, indent=4))
+
+    print("\n" + "-" * 100 + "\n")
 
     print(f"Invalid CVE number: {len(invalid_cves)}")
-    print(valid_commit_num, invalid_commit_num)
-    print(json.dumps(invalid_cves, indent=4))
+    print(f"Valid / Invalid commit number (in invalid CVEs): {valid_commit_num} / {invalid_commit_num}")
+    print("Invalid CVEs: \n" + json.dumps(invalid_cves, indent=4))
+
+
+def remove_local_repos(repos_root: str = '/root/projects/clone_projects') -> None:
+    repos = []
+    for repo in repos:
+        repo_dpath = os.path.join(repos_root, repo.replace('/', '_'))
+        if os.path.exists(repo_dpath):
+            print(f"Removing dir {repo_dpath} ...")
+            shutil.rmtree(repo_dpath)
 
 
 if __name__ == '__main__':
@@ -473,7 +481,7 @@ if __name__ == '__main__':
     simp_treevul_file = "/root/projects/VDTest/dataset/Intermediate/TreeVul/treevul.json"
 
     ## Step 2: Group dataset items by commit
-    # group_items_by_commit(simp_treevul_file)
+    # group_items_by_commit(simp_treevul_file, )
 
     ## Step 3: Handle special items in dataset
     # process_item_with_multiple_cves(simp_treevul_file)
@@ -487,11 +495,21 @@ if __name__ == '__main__':
     pass
 
     ## Step 4: Check commits validity
-    # check_commits_existence_by_fetching(simp_treevul_cleaned_file)
-    # check_local_repos_and_clone(simp_treevul_cleaned_file)
-    # check_commits_reproducibility_by_cloning(simp_treevul_cleaned_file)
+    # check_commits_existence_by_fetching(lang='Java', simp_treevul_cleaned_file)
+    # check_local_repos_and_clone(lang='Java', dataset_fpath=simp_treevul_cleaned_file)
+    # check_commits_reproducibility_by_cloning(lang='Java', dataset_fpath=simp_treevul_cleaned_file)
+    # final_check(lang='Java', dataset_fpath=simp_treevul_cleaned_file)
+    # count_repo_cve_commits(lang='Java', dataset_fpath=simp_treevul_cleaned_file)
 
-    count_repro_cve_commits(simp_treevul_cleaned_file)
+    ## Step 5: Build filtered dataset
+    # vul_tasks_fpath = build_dataset_containing_cves_with_valid_single_commit(
+    #     lang='Java',
+    #     dataset_fpath=simp_treevul_cleaned_file,
+    #     output_root="/root/projects/VDTest/dataset/Final/VIEW_1000"
+    # )
+    vul_tasks_fpath = "/root/projects/VDTest/dataset/Final/VIEW_1000/java_vul_tasks_treevul.json"
+
+    update_dataset_with_commit_file_count(vul_tasks_fpath, suffix=['.java'])
 
 
     # another_v = "/root/projects/VDTest/dataset/Intermediate/TreeVul/sim_treevul.json"

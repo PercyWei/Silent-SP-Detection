@@ -390,7 +390,7 @@ def complete_vul_tasks_with_cwe_with_path_list():
 """OTHER"""
 
 
-def count_commit_file(dataset_fpath: str, suffix: List[str] | None = None):
+def update_dataset_with_commit_file_count(dataset_fpath: str, suffix: List[str] | None = None):
     if suffix is None:
         suffix = ['.py']
 
@@ -404,62 +404,67 @@ def count_commit_file(dataset_fpath: str, suffix: List[str] | None = None):
 
     updt_flag = True
     for i, cve_item in enumerate(dataset):
-        repo_dpath = os.path.join(repos_root, cve_item["repo"].replace('/', "_"))
-        commit_hash = cve_item["commit_hash"]
 
-        res = show_commit_file_names(repo_dpath, commit_hash)
+        file_count = cve_item["file_count"]
 
-        # (1) Filter out invalid commit hashes
-        if res is None:
-            updt_flag = False
-            failure_items[cve_item['cve_id']] = [
-                cve_item['repo'],
-                commit_hash,
-                f"https://github.com/{cve_item['repo']}/commit/{commit_hash}"
-            ]
-            continue
+        if file_count is None:
+            repo_dpath = os.path.join(repos_root, cve_item["repo"].replace('/', "_"))
+            commit_hash = cve_item["commit_hash"]
 
-        flag, commit_files = parse_commit_name_status(res)
+            res = show_commit_file_names(repo_dpath, commit_hash)
 
-        # (2) Filter out unresolvable commit hashes
-        if not flag:
-            updt_flag = False
-            print(f"\n{res}\n")
-            continue
+            # (1) Filter out invalid commit hashes
+            if res is None:
+                updt_flag = False
+                failure_items[cve_item['cve_id']] = [
+                    cve_item['repo'],
+                    commit_hash,
+                    f"https://github.com/{cve_item['repo']}/commit/{commit_hash}"
+                ]
+                continue
 
-        # (3) Count commit files
-        file_count = 0
-        for file in commit_files["modified_files"]:
-            if any(file.endswith(sf) for sf in suffix):
-                file_count += 1
+            flag, commit_files = parse_commit_name_status(res)
 
-        for file in commit_files["added_files"]:
-            if any(file.endswith(sf) for sf in suffix):
-                file_count += 1
+            # (2) Filter out unresolvable commit hashes
+            if not flag:
+                updt_flag = False
+                print("\n" + "=" * 100 + "\n")
+                print(f"\nUnresolvable Commit: https://github.com/{cve_item['repo']}/commit/{commit_hash}\n")
+                print(f"{res}")
+                continue
 
-        for file in commit_files["deleted_files"]:
-            if any(file.endswith(sf) for sf in suffix):
-                file_count += 1
-
-        for _, new_file in commit_files["renamed_files"]:
-            if any(new_file.endswith(sf) for sf in suffix):
-                file_count += 1
-
-        # (4) Filter out empty commit hashes
-        if file_count == 0:
+            # (3) Count commit files
             commit_parents = show_commit_parents(repo_dpath, commit_hash)
             assert commit_parents is not None
             parent_hashes = parse_commit_parents(commit_parents)
 
-            # NOTE: When the commit is a merge commit, it is allowed to contain empty filenames.
-            if len(parent_hashes) <= 1:
-                updt_flag = False
-                print(f"\nhttps://github.com/{cve_item['repo']}/commit/{commit_hash}\n")
-                continue
-            else:
+            if len(parent_hashes) > 1:
+                # Merge commit
                 file_count = "NOT COUNT"
+            else:
+                file_count = 0
+                for file in commit_files["modified_files"]:
+                    if any(file.endswith(sf) for sf in suffix):
+                        file_count += 1
 
-        # (5) Update original dataset
+                for file in commit_files["added_files"]:
+                    if any(file.endswith(sf) for sf in suffix):
+                        file_count += 1
+
+                for file in commit_files["deleted_files"]:
+                    if any(file.endswith(sf) for sf in suffix):
+                        file_count += 1
+
+                for _, new_file in commit_files["renamed_files"]:
+                    if any(new_file.endswith(sf) for sf in suffix):
+                        file_count += 1
+
+                if file_count == 0:
+                    updt_flag = False
+                    print("\n" + "=" * 100 + "\n")
+                    print(f"\nEmpty Commit: https://github.com/{cve_item['repo']}/commit/{commit_hash}\n")
+                    continue
+
         cve_item["file_count"] = file_count
         updt_dataset.append(cve_item)
 
