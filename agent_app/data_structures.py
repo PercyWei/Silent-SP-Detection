@@ -216,16 +216,16 @@ class PyDiffFileInfo(DiffFileInfo):
     # 1.1 Top-level class / function:   [name, line range]
     old_func_index: List[Tuple[str, LineRange]] | None = None
     old_class_index: List[Tuple[str, LineRange]] | None = None
-    # 1.2 Inclass method:               [class name, [name, line range]]
-    old_inclass_method_index: List[Tuple[str, List[Tuple[str, LineRange]]]] | None = None
+    # 1.2 Inclass method:               [{class name -> [(name, line range)]}
+    old_inclass_method_index: Dict[str, List[Tuple[str, LineRange]]] | None = None
     # 1.3 Import:                       [(pkg path, attr name, alias name)]
     old_imports: List[Tuple[str, str, str]] | None = None
     # ----------------------- New Struct Index ----------------------- #
     # 2.1 Top-level class / function:   [name, line range]
     new_func_index: List[Tuple[str, LineRange]] | None = None
     new_class_index: List[Tuple[str, LineRange]] | None = None
-    # 2.2 Inclass method:               [class name, [name, line range]]
-    new_inclass_method_index: List[Tuple[str, List[Tuple[str, LineRange]]]] | None = None
+    # 2.2 Inclass method:               {class name -> [(name, line range)]}
+    new_inclass_method_index: Dict[str, List[Tuple[str, LineRange]]] | None = None
     # 2.3 Import:                       [(pkg path, attr name, alias name)]
     new_imports: List[Tuple[str, str, str]] | None = None
 
@@ -245,20 +245,20 @@ class JavaDiffFileInfo(DiffFileInfo):
     # 1.1 Top-level interface / class:        [name, line range]
     old_iface_index: List[Tuple[str, LineRange]] | None = None
     old_class_index: List[Tuple[str, LineRange]] | None = None
-    # 1.2 Inclass interface / class / method: [class name, [name, line range]]
-    old_inclass_iface_index: List[Tuple[str, List[Tuple[str, LineRange]]]] | None = None
-    old_inclass_class_index: List[Tuple[str, List[Tuple[str, LineRange]]]] | None = None
-    old_inclass_method_index: List[Tuple[str, List[Tuple[str, LineRange]]]] | None = None
+    # 1.2 Inclass interface / class / method: {class name -> [(name, line range)]}
+    old_inclass_iface_index: Dict[str, List[Tuple[str, LineRange]]] | None = None
+    old_inclass_class_index: Dict[str, List[Tuple[str, LineRange]]] | None = None
+    old_inclass_method_index: Dict[str, List[Tuple[str, LineRange]]] | None = None
     # 1.3 Import:                             [full import statement]
     old_imports: List[str] | None = None
     # ----------------------- New Struct Index ----------------------- #
     # 2.1 Top-level interface / class:        [name, line range]
     new_iface_index: List[Tuple[str, LineRange]] | None = None
     new_class_index: List[Tuple[str, LineRange]] | None = None
-    # 2.2 Inclass interface / class / method: [class name, [name, line range]]
-    new_inclass_iface_index: List[Tuple[str, List[Tuple[str, LineRange]]]] | None = None
-    new_inclass_class_index: List[Tuple[str, List[Tuple[str, LineRange]]]] | None = None
-    new_inclass_method_index: List[Tuple[str, List[Tuple[str, LineRange]]]] | None = None
+    # 2.2 Inclass interface / class / method: {class name -> [(name, line range)]}
+    new_inclass_iface_index: Dict[str, List[Tuple[str, LineRange]]] | None = None
+    new_inclass_class_index: Dict[str, List[Tuple[str, LineRange]]] | None = None
+    new_inclass_method_index: Dict[str, List[Tuple[str, LineRange]]] | None = None
     # 2.3 Import:                             [full import statement]
     new_imports: List[str] | None = None
 

@@ -158,12 +158,12 @@ class ASTParser:
 
         self.cur_node_id: int | None = None
         # (1) Simple Node data
-        self.all_nodes: Dict[int, PySimNode] = {}  # {Simple Node id -> Simple Node}
-        self.li2node_map: Dict[int, int] = {}      # {line id        -> Simple Node id}
+        self.all_nodes: Dict[int, PySimNode] = {}  # {node id -> Simple Node}
+        self.li2node_map: Dict[int, int] = {}      # {line id -> node id}
         # (2) Struct indexes (class, function, inclass method)
-        self.all_funcs: List[Tuple[str, LineRange]] = []                       # [(function name, line range)]
-        self.all_classes: List[Tuple[str, LineRange]] = []                     # [(class name, line range)]
-        self.all_inclass_methods: Dict[str, List[Tuple[str, LineRange]]] = {}  # {class name -> [(inclass method name, line range)]}
+        self.all_funcs: List[Tuple[str, LineRange]] = []                       # [(name, line range)]
+        self.all_classes: List[Tuple[str, LineRange]] = []                     # [(name, line range)]
+        self.all_inclass_methods: Dict[str, List[Tuple[str, LineRange]]] = {}  # {class name -> [(name, line range)]}
         # (3) Imports
         self.all_imports: List[Tuple[str, str, str]] = []  # [(pkg path, attr name, alias name)]
 
