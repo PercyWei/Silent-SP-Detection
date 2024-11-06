@@ -480,12 +480,11 @@ if __name__ == '__main__':
 
     # check_original_treevul_cwe_paths()
 
+
+    ## CWE Depth
     cwe_tree_file = "/root/projects/VDTest/data/CWE/VIEW_1000/CWE_tree.json"
     output_dir = "/root/projects/VDTest/data/CWE/VIEW_1000"
 
-    # group_cwe_by_depth(cwe_tree_file, output_dir)
-
-    ## CWE Depth
     # 1. Update CWE tree
     # update_cwe_tree_by_depth(cwe_tree_file, opt=2)
 
