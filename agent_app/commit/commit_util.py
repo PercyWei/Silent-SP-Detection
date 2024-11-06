@@ -730,15 +730,15 @@ def filter_file_diff_content(
     return filtered_file_diff_lines
 
 
-"""COMBINE"""
+"""MERGE"""
 
 
-def combine_code_old_and_new(
+def merge_code_old_and_new(
         old_code: str,
         new_code: str,
         file_diff_lines: List[DiffLine]
 ) -> Tuple[str, Dict[int, int], Dict[int, int], Dict[int, int]]:
-    """Combine old code and new code.
+    """Merge old code and new code.
 
     NOTE 1: Only for modified file.
     NOTE 2: The '+' / '-' at the beginning of the diff line will be retained in the combined code.
@@ -1452,7 +1452,7 @@ def build_file_diff_context(diff_lines: List[DiffLine], diff_file_info: DiffFile
     return context
 
 
-"""MAIN ENTRY"""
+"""ANALYSE PYTHON FILE"""
 
 
 def analyse_deleted_py_file(ast_parser: PyASTParser, old_code: str, comb_code: str) -> PyDiffFileInfo:
@@ -1501,6 +1501,50 @@ def analyse_added_py_file(ast_parser: PyASTParser, new_code: str, comb_code: str
     return diff_file_info
 
 
+def build_diff_info_for_py_modified_file(
+        ast_parser: PyASTParser,
+        old_code: str,
+        new_code: str,
+        file_diff_lines: List[DiffLine]
+) -> PyDiffFileInfo:
+    # (1) Initialize the DiffFileInfo
+    diff_file_info = PyDiffFileInfo(old_code=old_code, new_code=new_code)
+
+    # (2) Merge the old and new code
+    merge_code, line_id_old2new, line_id_old2merge, line_id_new2merge = \
+        merge_code_old_and_new(old_code, new_code, file_diff_lines)
+
+    diff_file_info.merge_code = merge_code
+    diff_file_info.line_id_old2new = line_id_old2new
+    diff_file_info.line_id_old2merge = line_id_old2merge
+    diff_file_info.line_id_new2merge = line_id_new2merge
+
+    # (3) Parse the old and new code respectively
+    # 1. Parse the old code and update
+    ast_parser.set(code=old_code, code_fpath=None)
+    ast_parser.parse_python_code()
+
+    diff_file_info.old_nodes = ast_parser.all_nodes
+    diff_file_info.old_li2node = ast_parser.li2node_map
+    diff_file_info.old_func_index = ast_parser.all_funcs
+    diff_file_info.old_class_index = ast_parser.all_classes
+    diff_file_info.old_inclass_method_index = ast_parser.all_inclass_methods
+    diff_file_info.old_imports = ast_parser.all_imports
+
+    # 2. Parse the new code and update
+    ast_parser.set(code=new_code, code_fpath=None)
+    ast_parser.parse_python_code()
+
+    diff_file_info.new_nodes = ast_parser.all_nodes
+    diff_file_info.new_li2node = ast_parser.li2node_map
+    diff_file_info.new_func_index = ast_parser.all_funcs
+    diff_file_info.new_class_index = ast_parser.all_classes
+    diff_file_info.new_inclass_method_index = ast_parser.all_inclass_methods
+    diff_file_info.new_imports = ast_parser.all_imports
+
+    return diff_file_info
+
+
 def analyse_modified_py_file(
         ast_parser: PyASTParser,
         old_ori_code: str,
@@ -1527,39 +1571,15 @@ def analyse_modified_py_file(
     ## Step 4: Parse the old and new filtered code
     if filtered_file_diff_lines:
         ## NOTE: The code analyzed below are all FILTERED code.
-        # Step 4.1 Initialize the DiffFileInfo
-        diff_file_info = PyDiffFileInfo(old_code=old_filtered_code, new_code=new_filtered_code)
-
-        # Step 4.2 Combine the old and new code
-        comb_code, line_id_old2new, line_id_old2comb, line_id_new2comb = combine_code_old_and_new(
-            diff_file_info.old_code, diff_file_info.new_code, filtered_file_diff_lines
+        # (1) Build file diff info
+        diff_file_info = build_diff_info_for_py_modified_file(
+            ast_parser=ast_parser,
+            old_code=old_filtered_code,
+            new_code=new_filtered_code,
+            file_diff_lines=filtered_file_diff_lines
         )
 
-        diff_file_info.merge_code = comb_code
-        diff_file_info.line_id_old2new = line_id_old2new
-        diff_file_info.line_id_old2merge = line_id_old2comb
-        diff_file_info.line_id_new2merge = line_id_new2comb
-
-        # Step 4.3 Parse the old and new code respectively
-        # (1) Parse the old code and update
-        ast_parser.set(code=old_filtered_code, code_fpath=None)
-        ast_parser.parse_python_code()
-
-        diff_file_info.old_func_index = ast_parser.all_funcs
-        diff_file_info.old_class_index = ast_parser.all_classes
-        diff_file_info.old_inclass_method_index = ast_parser.all_inclass_methods
-        diff_file_info.old_imports = ast_parser.all_imports
-
-        # (2) Parse the new code and update
-        ast_parser.set(code=new_filtered_code, code_fpath=None)
-        ast_parser.parse_python_code()
-
-        diff_file_info.new_func_index = ast_parser.all_funcs
-        diff_file_info.new_class_index = ast_parser.all_classes
-        diff_file_info.new_inclass_method_index = ast_parser.all_inclass_methods
-        diff_file_info.new_imports = ast_parser.all_imports
-
-        # Step 4.4 Build diff content of file
+        # (2) Build diff content of file
         if globals_opt.opt_to_file_diff_context == 1:
             diff_context = diff_lines_to_str(filtered_file_diff_lines)
         elif globals_opt.opt_to_file_diff_context == 2:
@@ -1573,11 +1593,14 @@ def analyse_modified_py_file(
         return None
 
 
-def analyse_deleted_java_file(ast_parser: JavaASTParser, old_code: str, comb_code: str) -> JavaDiffFileInfo:
+"""ANALYSE JAVA FILE"""
+
+
+def analyse_deleted_java_file(ast_parser: JavaASTParser, old_code: str, merge_code: str) -> JavaDiffFileInfo:
     ast_parser.reset()
 
     ## (1) Initialization
-    diff_file_info = JavaDiffFileInfo(old_code=old_code, new_code=None, merge_code=comb_code)
+    diff_file_info = JavaDiffFileInfo(old_code=old_code, new_code=None, merge_code=merge_code)
 
     ## (2) Update
     ast_parser.set(code=old_code, code_fpath=None)
@@ -1598,11 +1621,11 @@ def analyse_deleted_java_file(ast_parser: JavaASTParser, old_code: str, comb_cod
     return diff_file_info
 
 
-def analyse_added_java_file(ast_parser: JavaASTParser, new_code: str, comb_code: str) -> JavaDiffFileInfo:
+def analyse_added_java_file(ast_parser: JavaASTParser, new_code: str, merge_code: str) -> JavaDiffFileInfo:
     ast_parser.reset()
 
     ## (1) Initialization
-    diff_file_info = JavaDiffFileInfo(old_code=None, new_code=new_code, merge_code=comb_code)
+    diff_file_info = JavaDiffFileInfo(old_code=None, new_code=new_code, merge_code=merge_code)
 
     ## (2) Update
     ast_parser.set(code=new_code, code_fpath=None)
@@ -1619,6 +1642,56 @@ def analyse_added_java_file(ast_parser: JavaASTParser, new_code: str, comb_code:
     diff_file_info.new_inclass_class_index = ast_parser.all_inclass_classes
     diff_file_info.new_inclass_method_index = ast_parser.all_inclass_methods
     diff_file_info.old_imports = ast_parser.all_imports
+
+    return diff_file_info
+
+
+def build_diff_info_for_java_modified_file(
+        ast_parser: JavaASTParser,
+        old_code: str,
+        new_code: str,
+        file_diff_lines: List[DiffLine]
+) -> JavaDiffFileInfo:
+    # (1) Initialize the DiffFileInfo
+    diff_file_info = JavaDiffFileInfo(old_code=old_code, new_code=new_code)
+
+    # (2) Merge the old and new code
+    merge_code, line_id_old2new, line_id_old2merge, line_id_new2merge = \
+        merge_code_old_and_new(old_code, new_code, file_diff_lines)
+
+    diff_file_info.merge_code = merge_code
+    diff_file_info.line_id_old2new = line_id_old2new
+    diff_file_info.line_id_old2merge = line_id_old2merge
+    diff_file_info.line_id_new2merge = line_id_new2merge
+
+    # (3) Parse the old and new code respectively
+    # 1. Parse the old code and update
+    ast_parser.set(code=old_code, code_fpath=None)
+    ast_parser.parse_java_code()
+
+    diff_file_info.package_name = ast_parser.package_name
+    diff_file_info.old_nodes = ast_parser.all_nodes
+    diff_file_info.old_li2node = ast_parser.li2node_map
+    diff_file_info.old_iface_index = ast_parser.all_interfaces
+    diff_file_info.old_class_index = ast_parser.all_classes
+    diff_file_info.old_inclass_iface_index = ast_parser.all_inclass_interfaces
+    diff_file_info.old_inclass_class_index = ast_parser.all_inclass_classes
+    diff_file_info.old_inclass_method_index = ast_parser.all_inclass_methods
+    diff_file_info.old_imports = ast_parser.all_imports
+
+    # 2. Parse the new code and update
+    ast_parser.set(code=new_code, code_fpath=None)
+    ast_parser.parse_java_code()
+
+    assert diff_file_info.package_name == ast_parser.package_name
+    diff_file_info.new_nodes = ast_parser.all_nodes
+    diff_file_info.new_li2node = ast_parser.li2node_map
+    diff_file_info.new_iface_index = ast_parser.all_interfaces
+    diff_file_info.new_class_index = ast_parser.all_classes
+    diff_file_info.new_inclass_iface_index = ast_parser.all_inclass_interfaces
+    diff_file_info.new_inclass_class_index = ast_parser.all_inclass_classes
+    diff_file_info.new_inclass_method_index = ast_parser.all_inclass_methods
+    diff_file_info.new_imports = ast_parser.all_imports
 
     return diff_file_info
 
@@ -1646,56 +1719,28 @@ def analyse_modified_java_file(
     new_filter_res = filter_java_code_content(new_ori_code)
     assert new_filter_res is not None
     new_filtered_code, new_line_id_map = new_filter_res
+
     # (2) Filter for commit info
     filtered_file_diff_lines = filter_file_diff_content(ori_file_diff_lines, old_line_id_map, new_line_id_map)
 
     ## Step 4: Parse the old and new filtered code
     if filtered_file_diff_lines:
         ## NOTE: The code analyzed below are all FILTERED code.
-        # Step 4.1 Initialize the DiffFileInfo
-        diff_file_info = JavaDiffFileInfo(old_code=old_filtered_code, new_code=new_filtered_code)
-
-        # Step 4.2 Combine the old and new code
-        comb_code, line_id_old2new, line_id_old2comb, line_id_new2comb = combine_code_old_and_new(
-            diff_file_info.old_code, diff_file_info.new_code, filtered_file_diff_lines
+        # (1) Build file diff info
+        diff_file_info = build_diff_info_for_java_modified_file(
+            ast_parser=ast_parser,
+            old_code=old_filtered_code,
+            new_code=new_filtered_code,
+            file_diff_lines=filtered_file_diff_lines
         )
 
-        diff_file_info.merge_code = comb_code
-        diff_file_info.line_id_old2new = line_id_old2new
-        diff_file_info.line_id_old2merge = line_id_old2comb
-        diff_file_info.line_id_new2merge = line_id_new2comb
-
-        # Step 4.3 Parse the old and new code respectively
-        # (1) Parse the old code and update
-        ast_parser.set(code=old_filtered_code, code_fpath=None)
-        ast_parser.parse_java_code()
-
-        diff_file_info.old_iface_index = ast_parser.all_interfaces
-        diff_file_info.old_class_index = ast_parser.all_classes
-        diff_file_info.old_inclass_iface_index = ast_parser.all_inclass_interfaces
-        diff_file_info.old_inclass_class_index = ast_parser.all_inclass_classes
-        diff_file_info.old_inclass_method_index = ast_parser.all_inclass_methods
-        diff_file_info.old_imports = ast_parser.all_imports
-
-        # (2) Parse the new code and update
-        ast_parser.set(code=new_filtered_code, code_fpath=None)
-        ast_parser.parse_java_code()
-
-        diff_file_info.new_iface_index = ast_parser.all_interfaces
-        diff_file_info.new_class_index = ast_parser.all_classes
-        diff_file_info.new_inclass_iface_index = ast_parser.all_inclass_interfaces
-        diff_file_info.new_inclass_class_index = ast_parser.all_inclass_classes
-        diff_file_info.new_inclass_method_index = ast_parser.all_inclass_methods
-        diff_file_info.new_imports = ast_parser.all_imports
-
-        # Step 4.4 Build diff content of file
+        # (2) Build diff content of file
         if globals_opt.opt_to_file_diff_context == 1:
             diff_context = diff_lines_to_str(filtered_file_diff_lines)
         elif globals_opt.opt_to_file_diff_context == 2:
             diff_context = build_file_diff_context(filtered_file_diff_lines, diff_file_info)
         else:
-            raise NotImplementedError(f"Strategy {globals_opt.opt_to_file_diff_context} for building file diff context "
-                                      f"is not supported yet.")
+            raise NotImplementedError(f"Strategy {globals_opt.opt_to_file_diff_context} for building file diff context is not supported yet.")
 
         return diff_file_info, diff_context
     else:

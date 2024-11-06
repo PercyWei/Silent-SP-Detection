@@ -180,20 +180,20 @@ class DiffFileInfo:
     """
     _lang: str = field(init=False, repr=False)
     # -------------------- Code -------------------- #
-    old_code: str  # Need setup while initializing
-    new_code: str  # Need setup while initializing
-    merge_code: str = None
+    old_code: str | None  # Need setup while initializing
+    new_code: str | None  # Need setup while initializing
+    merge_code: str | None = None
     # -------------------- Simple Node -------------------- #
-    old_nodes: Dict[int, SimNode] = None  # Simple Node id -> Simple Node
-    new_nodes: Dict[int, SimNode] = None  # Simple Node id -> Simple Node
+    old_nodes: Dict[int, SimNode] | None = None  # Simple Node id -> Simple Node
+    new_nodes: Dict[int, SimNode] | None = None  # Simple Node id -> Simple Node
     # -------------------- Mapping -------------------- #
     # (1) Mapping of line id to Simple Node id
-    old_li2node: Dict[int, int] = None
-    new_li2node: Dict[int, int] = None
+    old_li2node: Dict[int, int] | None = None
+    new_li2node: Dict[int, int] | None = None
     # (2) Line id mapping
-    line_id_old2new: Dict[int, int] = None
-    line_id_old2merge: Dict[int, int] = None
-    line_id_new2merge: Dict[int, int] = None
+    line_id_old2new: Dict[int, int] | None = None
+    line_id_old2merge: Dict[int, int] | None = None
+    line_id_new2merge: Dict[int, int] | None = None
 
     def __post_init__(self):
         self._lang = self._get_lang()
@@ -205,32 +205,29 @@ class DiffFileInfo:
     def _get_lang(self) -> str:
         raise NotImplementedError("Subclasses must implement this method.")
 
-    def all_set(self) -> bool:
-        return all(v is not None for v in self.__dict__.values())
-
 
 @dataclass
 class PyDiffFileInfo(DiffFileInfo):
     """Dataclass to hold info of diff Python file in the commit."""
     # -------------------- Simple Node -------------------- #
-    old_nodes: Dict[int, PySimNode] = None  # Simple Node id -> Simple Node
-    new_nodes: Dict[int, PySimNode] = None  # Simple Node id -> Simple Node
+    old_nodes: Dict[int, PySimNode] | None = None  # Simple Node id -> Simple Node
+    new_nodes: Dict[int, PySimNode] | None = None  # Simple Node id -> Simple Node
     # ----------------------- Old Struct Index ----------------------- #
     # 1.1 Top-level class / function:   [name, line range]
-    old_func_index: List[Tuple[str, LineRange]] = None
-    old_class_index: List[Tuple[str, LineRange]] = None
+    old_func_index: List[Tuple[str, LineRange]] | None = None
+    old_class_index: List[Tuple[str, LineRange]] | None = None
     # 1.2 Inclass method:               [class name, [name, line range]]
-    old_inclass_method_index: List[Tuple[str, List[Tuple[str, LineRange]]]] = None
+    old_inclass_method_index: List[Tuple[str, List[Tuple[str, LineRange]]]] | None = None
     # 1.3 Import:                       [(pkg path, attr name, alias name)]
-    old_imports: List[Tuple[str, str, str]] = None
+    old_imports: List[Tuple[str, str, str]] | None = None
     # ----------------------- New Struct Index ----------------------- #
     # 2.1 Top-level class / function:   [name, line range]
-    new_func_index: List[Tuple[str, LineRange]] = None
-    new_class_index: List[Tuple[str, LineRange]] = None
+    new_func_index: List[Tuple[str, LineRange]] | None = None
+    new_class_index: List[Tuple[str, LineRange]] | None = None
     # 2.2 Inclass method:               [class name, [name, line range]]
-    new_inclass_method_index: List[Tuple[str, List[Tuple[str, LineRange]]]] = None
+    new_inclass_method_index: List[Tuple[str, List[Tuple[str, LineRange]]]] | None = None
     # 2.3 Import:                       [(pkg path, attr name, alias name)]
-    new_imports: List[Tuple[str, str, str]] = None
+    new_imports: List[Tuple[str, str, str]] | None = None
 
     def _get_lang(self) -> str:
         return "Python"
@@ -240,30 +237,30 @@ class PyDiffFileInfo(DiffFileInfo):
 class JavaDiffFileInfo(DiffFileInfo):
     """Dataclass to hold info of diff Java file in the commit."""
     # -------------------- Package -------------------- #
-    package_name: str = None
+    package_name: str | None = None
     # -------------------- Simple Node -------------------- #
-    old_nodes: Dict[int, JavaSimNode] = None  # Simple Node id -> Simple Node
-    new_nodes: Dict[int, JavaSimNode] = None  # Simple Node id -> Simple Node
+    old_nodes: Dict[int, JavaSimNode] | None = None  # Simple Node id -> Simple Node
+    new_nodes: Dict[int, JavaSimNode] | None = None  # Simple Node id -> Simple Node
     # ----------------------- Old Struct Index ----------------------- #
     # 1.1 Top-level interface / class:        [name, line range]
-    old_iface_index: List[Tuple[str, LineRange]] = None
-    old_class_index: List[Tuple[str, LineRange]] = None
+    old_iface_index: List[Tuple[str, LineRange]] | None = None
+    old_class_index: List[Tuple[str, LineRange]] | None = None
     # 1.2 Inclass interface / class / method: [class name, [name, line range]]
-    old_inclass_iface_index: List[Tuple[str, List[Tuple[str, LineRange]]]] = None
-    old_inclass_class_index: List[Tuple[str, List[Tuple[str, LineRange]]]] = None
-    old_inclass_method_index: List[Tuple[str, List[Tuple[str, LineRange]]]] = None
+    old_inclass_iface_index: List[Tuple[str, List[Tuple[str, LineRange]]]] | None = None
+    old_inclass_class_index: List[Tuple[str, List[Tuple[str, LineRange]]]] | None = None
+    old_inclass_method_index: List[Tuple[str, List[Tuple[str, LineRange]]]] | None = None
     # 1.3 Import:                             [full import statement]
-    old_imports: List[str] = None
+    old_imports: List[str] | None = None
     # ----------------------- New Struct Index ----------------------- #
     # 2.1 Top-level interface / class:        [name, line range]
-    new_iface_index: List[Tuple[str, LineRange]] = None
-    new_class_index: List[Tuple[str, LineRange]] = None
+    new_iface_index: List[Tuple[str, LineRange]] | None = None
+    new_class_index: List[Tuple[str, LineRange]] | None = None
     # 2.2 Inclass interface / class / method: [class name, [name, line range]]
-    new_inclass_iface_index: List[Tuple[str, List[Tuple[str, LineRange]]]] = None
-    new_inclass_class_index: List[Tuple[str, List[Tuple[str, LineRange]]]] = None
-    new_inclass_method_index: List[Tuple[str, List[Tuple[str, LineRange]]]] = None
+    new_inclass_iface_index: List[Tuple[str, List[Tuple[str, LineRange]]]] | None = None
+    new_inclass_class_index: List[Tuple[str, List[Tuple[str, LineRange]]]] | None = None
+    new_inclass_method_index: List[Tuple[str, List[Tuple[str, LineRange]]]] | None = None
     # 2.3 Import:                             [full import statement]
-    new_imports: List[str] = None
+    new_imports: List[str] | None = None
 
     def _get_lang(self) -> str:
         return "Java"
