@@ -5,12 +5,11 @@ import json
 import requests
 
 from typing import *
+
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import NoSuchElementException
-from lxml import etree
-
 
 from utils import selenium_driver_setup, selenium_driver_close
 
@@ -312,6 +311,155 @@ def compare_cwe_collected_with_treevul():
                   f"\n\n")
 
 
+def check_dataset_cwe_depth():
+
+    treevul_cwe_paths_fpath = "/root/projects/TreeVul/data/cwe_path.json"
+
+    with open(treevul_cwe_paths_fpath, "r") as f:
+        treevul_cwe_paths = json.load(f)
+
+    treevul_invalid_cwes_fpath = "/root/projects/VDTest/data/CWE/treevul_invalid_cwes.json"
+    with open(treevul_invalid_cwes_fpath, "r") as f:
+        treevul_invalid_cwes = json.load(f)
+
+    dataset_fpaths = [
+        "/root/projects/VDTest/dataset/Final/VIEW_1000/py_vul_tasks_nvdvul_v1.json",
+        "/root/projects/VDTest/dataset/Final/VIEW_1000/py_vul_tasks_vulfix.json",
+        "/root/projects/VDTest/dataset/Final/VIEW_1000/py_vul_tasks_treevul.json"
+    ]
+
+    for dataset_fpath in dataset_fpaths:
+        with open(dataset_fpath, "r") as f:
+            dataset = json.load(f)
+
+        for data in dataset:
+            cwe_id = data["cwe_id"]
+
+            if cwe_id in treevul_invalid_cwes:
+                continue
+
+            if cwe_id in treevul_cwe_paths:
+                if len(treevul_cwe_paths[cwe_id]) != data["cwe_depth"]:
+                    print(data["source"] + " " + data["commit_hash"])
+
+
+def check_original_treevul_cwe_paths():
+    treevul_cwe_paths_fpath = "/root/projects/TreeVul/data/cwe_path.json"
+    with open(treevul_cwe_paths_fpath, "r") as f:
+        treevul_cwe_paths = json.load(f)
+
+    standard_cwe_paths_fpath = "/root/projects/VDTest/data/CWE/VIEW_1000/CWE_tree.json"
+    with open(standard_cwe_paths_fpath, "r") as f:
+        standard_cwe_paths = json.load(f)
+
+    diff_cwe_ids = []
+
+    for full_cwe_id, full_cwe_path in treevul_cwe_paths.items():
+        cwe_id = full_cwe_id.split("-")[-1]
+        cwe_path = [full_cwe_id.split("-")[-1] for full_cwe_id in full_cwe_path]
+
+        assert cwe_id in standard_cwe_paths
+        if cwe_path not in standard_cwe_paths[cwe_id]["cwe_paths"]:
+            diff_cwe_ids.append(full_cwe_id)
+
+    save_fpath = "/root/projects/VDTest/data/CWE/treevul_invalid_cwes.json"
+    with open(save_fpath, "w") as f:
+        json.dump(diff_cwe_ids, f, indent=4)
+
+
+def group_cwe_by_depth(cwe_tree_fpath: str, output_dpath: str):
+    with open(cwe_tree_fpath, "r") as f:
+        cwe_tree = json.load(f)
+
+    multi_path_cwes = {}
+    all_cwes = [[], [], [], [], [], []]
+
+    for cwe_id, data in cwe_tree.items():
+        full_cwe_id = f"CWE-{cwe_id}"
+        cwe_paths = data["cwe_paths"]
+        all_depths = []
+
+        for cwe_path in cwe_paths:
+            depth = len(cwe_path)
+
+            all_depths.append(depth)
+            if full_cwe_id not in all_cwes[depth - 1]:
+                all_cwes[depth - 1].append(full_cwe_id)
+
+        if len(all_depths) > 1:
+            all_depths = sorted(set(all_depths))
+            multi_path_cwes[full_cwe_id] = " ".join([str(d) for d in all_depths])
+
+    all_cwes_fpath = os.path.join(output_dpath, "processed_cwes.json")
+    with open(all_cwes_fpath, "w") as f:
+        json.dump(all_cwes, f, indent=4)
+
+    multi_path_cwes_fpath = os.path.join(output_dpath, "multi_depth_cwes.json")
+    with open(multi_path_cwes_fpath, "w") as f:
+        json.dump(multi_path_cwes, f, indent=4)
+
+
+def update_cwe_tree_by_depth(cwe_tree_fpath: str, ref_depth: int = 3, opt: int = 1):
+    with open(cwe_tree_fpath, "r") as f:
+        cwe_tree = json.load(f)
+
+    updt_cwe_tree = {}
+
+    for cwe_id, data in cwe_tree.items():
+
+        depths = []
+        for path in data["cwe_paths"]:
+            depths.append(len(path))
+        depths = sorted(set(depths))
+
+        if opt == 1:
+            # Strategy 1: Choose the deepest path
+            cwe_depth = depths[-1]
+        elif opt == 2:
+            # Strategy 2: Based on reference depth
+            if len(depths) == 1:
+                cwe_depth = depths[0]
+            else:
+                more_than_ref_depths = [d for d in depths if d > 3]
+                less_than_ref_depths = [d for d in depths if d < 3]
+
+                if ref_depth in depths:
+                    cwe_depth = ref_depth
+                elif len(more_than_ref_depths) == len(depths):
+                    cwe_depth = min(depths)
+                elif len(less_than_ref_depths) == len(depths):
+                    cwe_depth = max(depths)
+                else:
+                    cwe_depth = min(more_than_ref_depths)
+        else:
+            raise RuntimeError(f"Option {opt} is not supported yet.")
+
+        data["cwe_depth"] = cwe_depth
+        updt_cwe_tree[cwe_id] = data
+
+    with open(cwe_tree_fpath, "w") as f:
+        json.dump(updt_cwe_tree, f, indent=4)
+
+
+def update_dataset_by_cwe_depth(dataset_fpath: str, cwe_tree_fpath: str):
+    with open(cwe_tree_fpath, "r") as f:
+        cwe_tree = json.load(f)
+
+    with open(dataset_fpath, "r") as f:
+        dataset = json.load(f)
+
+    updt_dataset = []
+    for data in dataset:
+        cwe_id = data["cwe_id"].split("-")[-1]
+        assert cwe_id in cwe_tree
+
+        data["cwe_depth"] = cwe_tree[cwe_id]["cwe_depth"]
+        updt_dataset.append(data)
+
+    with open(dataset_fpath, "w") as f:
+        json.dump(updt_dataset, f, indent=4)
+
+
 if __name__ == '__main__':
     pass
 
@@ -326,4 +474,27 @@ if __name__ == '__main__':
 
     # process_raw_cwe_tree(view_id)
 
-    compare_cwe_collected_with_treevul()
+    # compare_cwe_collected_with_treevul()
+
+    # check_dataset_cwe_depth()
+
+    # check_original_treevul_cwe_paths()
+
+    cwe_tree_file = "/root/projects/VDTest/data/CWE/VIEW_1000/CWE_tree.json"
+    output_dir = "/root/projects/VDTest/data/CWE/VIEW_1000"
+
+    # group_cwe_by_depth(cwe_tree_file, output_dir)
+
+    ## CWE Depth
+    # 1. Update CWE tree
+    # update_cwe_tree_by_depth(cwe_tree_file, opt=2)
+
+    # 2. Update dataset
+    # dataset_files = [
+    #     # "/root/projects/VDTest/dataset/Final/VIEW_1000/py_vul_tasks_nvdvul_v1.json",
+    #     # "/root/projects/VDTest/dataset/Final/VIEW_1000/py_vul_tasks_vulfix.json",
+    #     # "/root/projects/VDTest/dataset/Final/VIEW_1000/py_vul_tasks_treevul.json",
+    #     "/root/projects/VDTest/dataset/Final/VIEW_1000/java_vul_tasks_treevul.json"
+    # ]
+    # for dataset_file in dataset_files:
+    #     update_dataset_by_cwe_depth(dataset_file, cwe_tree_file)
