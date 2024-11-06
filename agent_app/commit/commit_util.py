@@ -1462,7 +1462,7 @@ def analyse_deleted_py_file(ast_parser: PyASTParser, old_code: str, comb_code: s
     diff_file_info = PyDiffFileInfo(old_code=old_code, new_code=None, merge_code=comb_code)
 
     ## (2) Update
-    ast_parser.set(code=old_code)
+    ast_parser.set(code=old_code, code_fpath=None)
     ast_parser.parse_python_code()
 
     # 1. Simple Nodes
@@ -1485,7 +1485,7 @@ def analyse_added_py_file(ast_parser: PyASTParser, new_code: str, comb_code: str
     diff_file_info = PyDiffFileInfo(old_code=None, new_code=new_code, merge_code=comb_code)
 
     ## (2) Update
-    ast_parser.set(code=new_code)
+    ast_parser.set(code=new_code, code_fpath=None)
     ast_parser.parse_python_code()
 
     # 1. Simple Nodes
@@ -1542,7 +1542,7 @@ def analyse_modified_py_file(
 
         # Step 4.3 Parse the old and new code respectively
         # (1) Parse the old code and update
-        ast_parser.set(code=old_filtered_code)
+        ast_parser.set(code=old_filtered_code, code_fpath=None)
         ast_parser.parse_python_code()
 
         diff_file_info.old_func_index = ast_parser.all_funcs
@@ -1551,7 +1551,7 @@ def analyse_modified_py_file(
         diff_file_info.old_imports = ast_parser.all_imports
 
         # (2) Parse the new code and update
-        ast_parser.set(code=new_filtered_code)
+        ast_parser.set(code=new_filtered_code, code_fpath=None)
         ast_parser.parse_python_code()
 
         diff_file_info.new_func_index = ast_parser.all_funcs
@@ -1580,7 +1580,7 @@ def analyse_deleted_java_file(ast_parser: JavaASTParser, old_code: str, comb_cod
     diff_file_info = JavaDiffFileInfo(old_code=old_code, new_code=None, merge_code=comb_code)
 
     ## (2) Update
-    ast_parser.set(code=old_code)
+    ast_parser.set(code=old_code, code_fpath=None)
     ast_parser.parse_java_code()
 
     # 1. Simple Nodes
@@ -1605,7 +1605,7 @@ def analyse_added_java_file(ast_parser: JavaASTParser, new_code: str, comb_code:
     diff_file_info = JavaDiffFileInfo(old_code=None, new_code=new_code, merge_code=comb_code)
 
     ## (2) Update
-    ast_parser.set(code=new_code)
+    ast_parser.set(code=new_code, code_fpath=None)
     ast_parser.parse_java_code()
 
     # 1. Simple Nodes
@@ -1667,7 +1667,7 @@ def analyse_modified_java_file(
 
         # Step 4.3 Parse the old and new code respectively
         # (1) Parse the old code and update
-        ast_parser.set(code=old_filtered_code)
+        ast_parser.set(code=old_filtered_code, code_fpath=None)
         ast_parser.parse_java_code()
 
         diff_file_info.old_iface_index = ast_parser.all_interfaces
@@ -1678,7 +1678,7 @@ def analyse_modified_java_file(
         diff_file_info.old_imports = ast_parser.all_imports
 
         # (2) Parse the new code and update
-        ast_parser.set(code=new_filtered_code)
+        ast_parser.set(code=new_filtered_code, code_fpath=None)
         ast_parser.parse_java_code()
 
         diff_file_info.new_iface_index = ast_parser.all_interfaces
