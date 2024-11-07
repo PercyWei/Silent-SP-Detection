@@ -265,6 +265,9 @@ class PyProcessManager(ProcessManager):
     def __init__(self, task: Task, output_dpath: str):
         super().__init__(task, output_dpath)
 
+        # Initialize search API functions
+        self.init_search_api_functions()
+
         # Initialize commit manager
         self.init_commit_manager()
 
@@ -411,6 +414,9 @@ class JavaProcessManager(ProcessManager):
 
     def __init__(self, task: Task, output_dpath: str):
         super().__init__(task, output_dpath)
+
+        # Initialize search API functions
+        self.init_search_api_functions()
 
         # Initialize commit manager
         self.init_commit_manager()
