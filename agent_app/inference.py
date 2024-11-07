@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from loguru import logger
 
 from agent_app import globals
-from agent_app.api.manage import ProcessManager
+from agent_app.api.manage import ProcessManager, PyProcessManager, JavaProcessManager
 from agent_app.api.agent_proxy import ProxyTask
 from agent_app.model import common
 from agent_app.search.search_manage import (
@@ -902,9 +902,9 @@ def run_in_context_retrieval_state(
             func_name, func_arg_values = parse_function_invocation(api_call)
 
             if globals.lang == 'Python':
-                func_arg_spec = inspect.getfullargspec(getattr(PySearchManager, func_name))
+                func_arg_spec = inspect.getfullargspec(getattr(PyProcessManager, func_name))
             elif globals.lang == 'Java':
-                func_arg_spec = inspect.getfullargspec(getattr(JavaSearchManager, func_name))
+                func_arg_spec = inspect.getfullargspec(getattr(JavaProcessManager, func_name))
             else:
                 raise LanguageNotSupportedError(globals.lang)
 
