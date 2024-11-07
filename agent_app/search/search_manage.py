@@ -1,5 +1,6 @@
 # This code is modified from https://github.com/nus-apr/auto-code-rover
 # Original file: agent_app/search/search_manage.py
+import json
 import os
 import re
 import sys
@@ -1242,7 +1243,7 @@ class JavaSearchManager(BaseSearchManager):
         # FIXME: NEED INITIALIZATION!
         self.standard_packages: List[str] = []
         # full package name -> dir path
-        self.custom_packages: Dict[str, str] = {}
+        self.custom_packages: Dict[str, str | None] = {}
         # NOTE: Only for custom packages
         # full package name -> [type name] (type: class, interface, enum, record, annotation)
         self.package_space: Dict[str, List[str]] = {}
@@ -1300,12 +1301,18 @@ class JavaSearchManager(BaseSearchManager):
 
 
     @staticmethod
-    def get_package_dir_path(full_package_name: str, file_path: str) -> str:
-        assert full_package_name in file_path
+    def get_package_dir_path(full_package_name: str, file_path: str) -> str | None:
+        full_package_name = full_package_name.replace('.', '/')
 
-        last_sos = file_path.rfind(full_package_name)
-        last_eos = last_sos + len(full_package_name)
-        dir_path = file_path[:last_eos]
+        dir_path = None
+        if full_package_name in file_path:
+            # Check
+            file_dir = "/".join(file_path.split("/")[:-1])
+            assert file_dir.endswith(full_package_name)
+
+            last_sos = file_path.rfind(full_package_name)
+            last_eos = last_sos + len(full_package_name)
+            dir_path = file_path[:last_eos]
 
         return dir_path
 
@@ -1442,20 +1449,34 @@ class JavaSearchManager(BaseSearchManager):
         all_files = {**self.diff_files, **self.nodiff_files}
 
         for file_path, package_name in all_files.items():
-            if package_name is not None and package_name not in self.custom_packages:
-                # (1) Package path
-                package_dir_path = self.get_package_dir_path(package_name, file_path)
-                assert os.path.isdir(package_dir_path)
-                self.custom_packages[package_name] = package_dir_path
+            # (1) Current file has no package declaration
+            if package_name is None:
+                continue
 
-                # (2) Package types
-                package_types: List[str] = []
+            # (2) Current package has been successfully added
+            if self.custom_packages.get(package_name, None) is not None:
+                continue
 
-                for sub in os.listdir(package_dir_path):
+            # (3) Add current package
+            abs_pkg_dpath = None
+            pkg_dpath = self.get_package_dir_path(package_name, file_path)
+
+            if pkg_dpath is not None:
+                abs_pkg_dpath = os.path.join(self.local_repo_dpath, pkg_dpath)
+                assert os.path.isdir(abs_pkg_dpath)
+
+            # 1. Package path
+            self.custom_packages[package_name] = pkg_dpath
+
+            # 2. Package types
+            package_types: List[str] = []
+
+            if abs_pkg_dpath is not None:
+                for sub in os.listdir(abs_pkg_dpath):
                     if sub.endswith(".java"):
                         package_types.append(sub[:-5])
 
-                self.package_space[package_name] = package_types
+            self.package_space[package_name] = package_types
 
 
     def _update_parsed_files(self) -> None:
