@@ -1740,7 +1740,7 @@ class JavaSearchManager(BaseSearchManager):
                     res = JavaSearchResult(
                         file_path=cand_inclass_type.file_path,
                         class_name=class_name,
-                        inclass_func_name=type_name,
+                        inclass_method_name=type_name,
                         code=inclass_type_code
                     )
 
@@ -1816,7 +1816,7 @@ class JavaSearchManager(BaseSearchManager):
                     res = JavaSearchResult(
                         file_path=fpath,
                         class_name=class_name,
-                        inclass_func_name=type_name,
+                        inclass_method_name=type_name,
                         code=inclass_type_code
                     )
 

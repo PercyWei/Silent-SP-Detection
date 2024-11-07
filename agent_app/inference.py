@@ -18,10 +18,12 @@ from agent_app import globals
 from agent_app.api.manage import ProcessManager
 from agent_app.api.agent_proxy import ProxyTask
 from agent_app.model import common
-from agent_app.search.search_manage import PySearchManager, JavaSearchManager
+from agent_app.search.search_manage import (
+    PySearchManager, JavaSearchManager,
+    PySearchResult, JavaSearchResult
+)
 from agent_app.data_structures import (
     CommitType,
-    BaseCodeSnippetLocation,
     FunctionCallIntent,
     MessageThread,
     State, ProcessStatus,
@@ -32,7 +34,7 @@ from agent_app.log import (
     print_commit_content,
     log_and_print
 )
-from agent_app.util import parse_function_invocation
+from agent_app.util import LanguageNotSupportedError, parse_function_invocation
 from utils import make_hie_dirs
 
 
@@ -74,18 +76,10 @@ def get_api_calls_des(lang: Literal['Python', 'Java']) -> str:
                 "\n- search_type_in_class_in_file(ttype: ['interface', 'class', 'method'], type_name: str, class_name: str, file_name: str): Search for a type in the given class of the given file, while type indicates interface, class or method."
                 "\n\nNOTE: You can use MULTIPLE search APIs in one round.")
     else:
-        raise RuntimeError(f"Language {lang} is not supported yet.")
+        raise LanguageNotSupportedError(lang)
 
 
 """HYPOTHESIS"""
-
-
-@dataclass
-class CodeContext(BaseCodeSnippetLocation):
-    """Dataclass to hold the locations of searched code snippet."""
-
-    def to_str(self) -> str:
-        return self.to_tagged_str()
 
 
 @dataclass
@@ -236,7 +230,7 @@ def _ask_proxy_agent_and_print(
 ) -> Tuple[str | None, str | None, List[MessageThread]]:
     # TODO: Consider whether to add the Proxy Agent extraction failure summary while
     #       asking the Actor Agent in the new retry.
-    json_text, failure_summary, proxy_msg_threads = manager.call_proxy_llm(text, task)
+    json_text, failure_summary, proxy_msg_threads = manager.call_proxy_llm(globals.lang, text, task)
     print_proxy(msg=json_text, desc=print_desc, print_callback=print_callback)
     return json_text, failure_summary, proxy_msg_threads
 
@@ -276,8 +270,8 @@ class ProcHypothesis:
     cur_hyp: Hypothesis | None = None
     unverified: List[Hypothesis] = field(default_factory=list)
     verified: List[VerifiedHypothesis] = field(default_factory=list)
-    patch: List[CodeContext] = field(default_factory=list)
-    code_context: List[CodeContext] = field(default_factory=list)
+    patch: List[PySearchResult | JavaSearchResult] = field(default_factory=list)
+    code_context: List[PySearchResult | JavaSearchResult] = field(default_factory=list)
 
     """UPDATE"""
 
@@ -324,16 +318,16 @@ class ProcHypothesis:
 
     """TO STRING"""
 
-    def code_to_str(self) -> str:
+    def context_to_str(self) -> str:
         code_seq_list = []
         for c in self.code_context:
-            code_seq_list.append(c.to_str())
+            code_seq_list.append(c.to_tagged_str())
         return "\n\n".join(code_seq_list)
 
     def patch_to_str(self) -> str:
         code_seq_list = []
         for c in self.patch:
-            code_seq_list.append(c.to_str())
+            code_seq_list.append(c.to_tagged_str())
         return "\n\n".join(code_seq_list)
 
     """SAVE"""
@@ -424,13 +418,20 @@ def run_in_start_state(
             break
 
     if patch_exist:
-        # TODO: We believe that the extracted patch locations is not very closely related to the vulnerability types
-        #       in the hypothesis, so we only ask once.
+        # TODO: We believe that the extracted patch locations is not very closely related to the predicted
+        #  vulnerability types in the hypothesis, so we only ask once.
 
         # ------------------ 2.2 Prepare the prompt ------------------ #
-        patch_extraction_prompt = (
-            "Since your hypothesis include the case that the commit fixes a vulnerability, we need to extract the code snippets that might be the patch from the original commit."
-            "\n\nNOTE: For each extracted code snippet, you should at least provide its 'file_name' and 'code', while 'class_name' and 'func_name' are not required.")
+        patch_extraction_prompt = "Since your hypothesis include the case that the commit fixes a vulnerability, we need to extract the code snippets that might be the patch from the original commit."
+        if globals.lang == 'Python':
+            patch_extraction_prompt += ("\n\nNOTE: For each extracted code snippet, you should provide 'code'. "
+                                        "\nBesides, there are four attributes that indicate its location in the code repo, namely 'file_name', 'func_name', ‘class_name’, and 'inclass_method_name', where 'file_name' is required.")
+        elif globals.lang == 'Java':
+            patch_extraction_prompt += ("\n\nNOTE: For each extracted code snippet, you should provide 'code'. "
+                                        "\nBesides, there are six attributes that indicate its location in the code repo, namely 'file_name', 'iface_name', ‘class_name’, 'inclass_method_name', 'inclass_iface_name' and 'inclass_class_name', where 'file_name' is required.")
+        else:
+            raise LanguageNotSupportedError(globals.lang)
+
 
         _add_usr_msg_and_print(patch_extraction_prompt, msg_thread, print_desc, print_callback)
 
@@ -463,12 +464,28 @@ def run_in_start_state(
 
             # TODO: Consider whether to activate search since the LLM response about locations may not be clear.
             for patch_loc in raw_patches:
-                fpath = patch_loc["file"]
-                class_name = patch_loc.get("class_name", None)
-                func_name = patch_loc.get("func_name", None)
-                code = patch_loc["code"]
-                code_snip = CodeContext(fpath, class_name, func_name, code)
-                proc_all_hypothesis.patch.append(code_snip)
+                if globals.lang == 'Python':
+                    snip = PySearchResult(
+                        file_path=patch_loc["file_name"],
+                        code=patch_loc["code"],
+                        func_name=patch_loc.get("func_name", None),
+                        class_name=patch_loc.get("class_name", None),
+                        inclass_method_name=patch_loc.get("inclass_method_name", None)
+                    )
+                elif globals.lang == 'Java':
+                    snip = JavaSearchResult(
+                        file_path=patch_loc["file_name"],
+                        code=patch_loc["code"],
+                        iface_name=patch_loc.get("iface_name", None),
+                        class_name=patch_loc.get("class_name", None),
+                        inclass_method_name=patch_loc.get("inclass_method_name", None),
+                        inclass_iface_name=patch_loc.get("inclass_iface_name", None),
+                        inclass_class_name=patch_loc.get("inclass_class_name", None)
+                    )
+                else:
+                    raise LanguageNotSupportedError(globals.lang)
+
+                proc_all_hypothesis.patch.append(snip)
 
     return proc_all_hypothesis
 
@@ -522,7 +539,7 @@ def run_in_reflexion_state(
         # TODO: Consider how to add the patch code snippets.
         code_snippet_desc = (
             "Besides, by calling the search APIs, you have got the following code snippets which help with analysis."
-            f"\n\n{proc_all_hypothesis.code_to_str()}")
+            f"\n\n{proc_all_hypothesis.context_to_str()}")
 
         reflexion_prompt = f"{commit_prompt}\n\n{loop_summary}\n\n{code_snippet_desc}"
 
@@ -834,7 +851,7 @@ def run_in_context_retrieval_state(
         manager.start_new_tool_call_layer()
 
         # ------------------ 1.1 Prepare the prompt ------------------ #
-        api_calls_des = get_api_calls_des()
+        api_calls_des = get_api_calls_des(globals.lang)
         if round_no == 1:
             # Init round
             retrieval_prompt = (
@@ -884,7 +901,13 @@ def run_in_context_retrieval_state(
         for api_call in raw_apis:
             func_name, func_arg_values = parse_function_invocation(api_call)
 
-            func_arg_spec = inspect.getfullargspec(getattr(PySearchManager, func_name))
+            if globals.lang == 'Python':
+                func_arg_spec = inspect.getfullargspec(getattr(PySearchManager, func_name))
+            elif globals.lang == 'Java':
+                func_arg_spec = inspect.getfullargspec(getattr(JavaSearchManager, func_name))
+            else:
+                raise LanguageNotSupportedError(globals.lang)
+
             func_arg_names = func_arg_spec.args[1:]  # first parameter is self
 
             func_arg_kwargs = dict(zip(func_arg_names, func_arg_values))
@@ -900,9 +923,7 @@ def run_in_context_retrieval_state(
                                        f"\n\n{tool_output}\n\n")
 
             # (2) Collect code snippet extracted
-            for res in all_search_res:
-                code_snip = CodeContext(res.file_path, res.class_name, res.func_name, res.code)
-                proc_all_hypothesis.code_context.append(code_snip)
+            proc_all_hypothesis.code_context.extend(all_search_res)
 
         collated_tool_response.rstrip()
 
@@ -1204,7 +1225,7 @@ def post_process(
         # TODO: Consider how to add the patch code snippets?
         code_snippet_desc = (
             "In the previous analysis, by calling the search APIs, you have got the following code snippets:"
-            f"\n\n{proc_all_hypothesis.code_to_str()}")
+            f"\n\n{proc_all_hypothesis.context_to_str()}")
 
         # 2.3 Description of hypothesis with the same confidence score
         hyp_desc = f"After analysing and verifying, you give the following hypothesis the same high score {max_conf_score}/10:"

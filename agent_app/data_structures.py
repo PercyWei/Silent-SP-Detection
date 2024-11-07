@@ -11,8 +11,6 @@ from dataclasses import dataclass, field
 from openai.types.chat import ChatCompletionMessageToolCall
 from openai.types.chat.chat_completion_message_tool_call import Function as OpenaiFunction
 
-from agent_app import globals
-
 
 LineRange = NamedTuple("LineRange", [("start", int), ("end", int)])
 

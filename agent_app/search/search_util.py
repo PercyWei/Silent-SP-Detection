@@ -76,9 +76,9 @@ class JavaSearchResult(BaseCodeSnippetLocation):
     package_name: str | None = None
     iface_name: str | None = None
     class_name: str | None = None
-    inclass_func_name: str | None = None
     inclass_iface_name: str | None = None
     inclass_class_name: str | None = None
+    inclass_method_name: str | None = None
 
     def to_tagged_upto_iface(self) -> str:
         """Convert the code snippet location to a tagged string, upto interface."""
@@ -95,13 +95,13 @@ class JavaSearchResult(BaseCodeSnippetLocation):
     def to_tagged_upto_inclass_type(self) -> str:
         """Convert the code snippet location to a tagged string, upto inclass method / interface / class."""
         # Cannot in inclass method / interface / class at the same time.
-        assert (self.inclass_func_name is not None) + \
+        assert (self.inclass_method_name is not None) + \
                (self.inclass_iface_name is not None) + \
                (self.inclass_class_name is not None) <= 1
 
         prefix = self.to_tagged_upto_class()
-        if self.inclass_func_name is not None:
-            inclass_type_part = f"<func>{self.inclass_func_name}</func>"
+        if self.inclass_method_name is not None:
+            inclass_type_part = f"<func>{self.inclass_method_name}</func>"
         elif self.inclass_iface_name is not None:
             inclass_type_part = f"<iface>{self.inclass_iface_name}</iface>"
         elif self.inclass_class_name is not None:
@@ -130,7 +130,7 @@ class JavaSearchResult(BaseCodeSnippetLocation):
             "package_name": self.package_name,
             "interface_name": self.iface_name,
             "class_name": self.class_name,
-            "inclass_func_name": self.inclass_func_name,
+            "inclass_func_name": self.inclass_method_name,
             "inclass_iface_name": self.inclass_iface_name,
             "inclass_class_name": self.inclass_class_name,
             "code": self.code

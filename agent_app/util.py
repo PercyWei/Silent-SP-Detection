@@ -18,6 +18,14 @@ from agent_app.log import print_stdout, log_and_print
 from utils import run_command as base_run_command
 
 
+class LanguageNotSupportedError(Exception):
+    def __init__(self, lang: str):
+        self.lang = lang
+
+    def __str__(self):
+        return f"Language {self.lang} is not supported yet"
+
+
 """TEMPORARY FILE"""
 
 

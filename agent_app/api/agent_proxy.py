@@ -15,7 +15,7 @@ from loguru import logger
 from agent_app.model import common
 from agent_app.search.search_manage import PySearchManager
 from agent_app.data_structures import MessageThread
-from agent_app.util import parse_function_invocation
+from agent_app.util import LanguageNotSupportedError, parse_function_invocation
 
 
 class ProxyTask(str, Enum):
@@ -83,16 +83,18 @@ Now based on the given context, write a cwe_type section that conforms to the CW
 """
 
 
-def _get_patch_extraction_prompt() -> str:
-    return """You are a helpful assistant to convert text containing the following information into json format.
+def _get_patch_extraction_prompt(lang: Literal['Python', 'Java']) -> str:
+    if lang == 'Python':
+        return """You are a helpful assistant to convert text containing the following information into json format.
 1. Where is the patch located?
 
-Extract the locations of patch code snippet from question 1, and for each location, it at least contains a "file" and a "code".
+Extract the locations of patch code snippet from question 1, and for each location, it at least contains a "file_name" and a "code".
 
 interface PatchLocation {
-  file: string;
-  class?: string;
-  func?: string;
+  file_name: string;
+  func_name?: string;
+  class_name?: string;
+  inclass_method_name?: string;
   code: string;
 }
 
@@ -102,6 +104,30 @@ interface PatchLocations {
 
 Now based on the given context, write a patch_locations section that conforms to the PatchLocations schema.
 """
+    elif lang == 'Java':
+        return """You are a helpful assistant to convert text containing the following information into json format.
+1. Where is the patch located?
+
+Extract the locations of patch code snippet from question 1, and for each location, it at least contains a "file_name" and a "code".
+
+interface PatchLocation {
+  file_name: string;
+  iface_name?: string;
+  class_name?: string;
+  inclass_method_name?: string;
+  inclass_iface_name?: string;
+  inclass_class_name?: string;
+  code: string;
+}
+
+interface PatchLocations {
+  patch_locations: PatchLocation[];
+}
+
+Now based on the given context, write a patch_locations section that conforms to the PatchLocations schema.
+"""
+    else:
+        raise LanguageNotSupportedError(lang)
 
 
 def _get_context_retrieval_prompt(lang: Literal['Python', 'Java']) -> str:
@@ -172,7 +198,7 @@ interface ApiCalls {
 Now based on the given context, write a api_calls section that conforms to the ApiCalls schema.
 """
     else:
-        raise RuntimeError(f"Language {lang} is not supported yet.")
+        raise LanguageNotSupportedError(lang)
 
 
 def _get_score_prompt() -> str:
@@ -452,10 +478,14 @@ def is_valid_response(data: List | Dict, task: ProxyTask) -> Tuple[bool, str, st
         {
             "patch_locations": [
                 [
-                    "file": str, required
+                    "file_name": str, required
                     "code": str, required
-                    "class": str, not required
-                    "func": str, not required
+                    "func_name": str, not required
+                    "iface_name": str, not required
+                    "class_name": str, not required
+                    "inclass_method_name": str, not required
+                    "inclass_iface_name": str, not required
+                    "inclass_class_name": str, not required
                 ],
                 ...
             ]
@@ -467,9 +497,9 @@ def is_valid_response(data: List | Dict, task: ProxyTask) -> Tuple[bool, str, st
 
         patch_locations = data["patch_locations"]
         for loc in patch_locations:
-            if "file" in loc and "code" in loc:
+            if "file_name" in loc and "code" in loc:
                 continue
-            simp_reason = verb_reason = "A location missing the required 'file' and 'code'"
+            simp_reason = verb_reason = "A location missing the required 'file_name' and 'code'"
             verb_reason += f" and the location is: {loc}"
             return False, simp_reason, verb_reason
 
