@@ -429,9 +429,9 @@ class JavaProcessManager(ProcessManager):
 
     def init_search_api_functions(self):
         self.search_api_functions = [
-            "search_interface"
+            "search_interface",
             "search_class",
-            "search_interface_in_file"
+            "search_interface_in_file",
             "search_class_in_file",
             "search_type_in_class",
             "search_type_in_class_in_file"
