@@ -239,7 +239,7 @@ def get_task_prompt(task: ProxyTask, lang: Literal['Python', 'Java']) -> str:
     elif task == ProxyTask.HYP_CHECK:
         return _get_hyp_check_prompt()
     elif task == ProxyTask.PATCH_EXTRACTION:
-        return _get_patch_extraction_prompt()
+        return _get_patch_extraction_prompt(lang)
     elif task == ProxyTask.CONTEXT_RETRIEVAL:
         return _get_context_retrieval_prompt(lang)
     elif task == ProxyTask.SCORE:
