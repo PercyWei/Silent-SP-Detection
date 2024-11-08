@@ -656,9 +656,6 @@ if __name__ == '__main__':
     # build_vul_tasks_with_cwe_from_vulfix_treevul()
     # complete_vul_tasks_with_cwe_with_path_list()
 
-    dataset_file = "/root/projects/VDTest/dataset/Final/py_vul_tasks_vulfix_view1000_v1.json"
-    # count_commit_file(dataset_file)
-
     # filter_dataset_for_baseline_treevul(dataset_file)
 
     # exps_root = "/root/projects/VDTest/output/agent/vul_2024-09-24T09:58:55_SAVE"
