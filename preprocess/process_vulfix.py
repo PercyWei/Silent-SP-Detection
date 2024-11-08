@@ -604,6 +604,39 @@ def count_repo_cve_commits(dataset_fpath: str) -> None:
     print("Invalid CVEs: \n" + json.dumps(invalid_cves, indent=4))
 
 
+def filter_dataset_for_cwe_not_in_view_1000(
+        dataset_fpath: str,
+        cwe_tree_fpath: str = "/root/projects/VDTest/data/CWE/VIEW_1000/CWE_tree.json"
+) -> None:
+    with open(cwe_tree_fpath, 'r') as f:
+        cwe_tree = json.load(f)
+
+    with open(dataset_fpath, 'r') as f:
+        dataset = json.load(f)
+
+    updt_dataset = []
+    for data in dataset:
+        cwe_list = data["cwe_list"]
+        invalid_cwe_idx = []
+
+        for i, full_cwe_id in enumerate(cwe_list):
+            cwe_id = full_cwe_id.split("-")[-1]
+            if cwe_id not in cwe_tree:
+                invalid_cwe_idx.append(i)
+
+        if len(invalid_cwe_idx) != len(cwe_list):
+            updt_cwe_list = []
+            for i, full_cwe_id in enumerate(cwe_list):
+                if i not in invalid_cwe_idx:
+                    updt_cwe_list.append(full_cwe_id)
+            data["cwe_list"] = updt_cwe_list
+
+            updt_dataset.append(data)
+
+    with open(dataset_fpath, 'w') as f:
+        json.dump(updt_dataset, f, indent=4)
+
+
 """DATASET FILTER"""
 
 
@@ -650,7 +683,7 @@ if __name__ == '__main__':
     vulfix_java_file = "/root/projects/VDTest/dataset/Original/VulFix/vulfix_java.json"
 
 
-    lang = 'Python'  # 'Java'
+    lang = 'Python'  # 'Python' / 'Java'
 
 
     ## Step 2: Simplify dataset
@@ -708,6 +741,7 @@ if __name__ == '__main__':
     # check_commits_reproducibility_by_cloning(vulfix_lang_vul_file)
     # final_check(vulfix_lang_vul_file)
     count_repo_cve_commits(vulfix_lang_vul_file)
+    # filter_dataset_for_cwe_not_in_view_1000(vulfix_lang_vul_file)
 
 
     ## Step 5: Build filtered dataset
