@@ -659,7 +659,7 @@ if __name__ == '__main__':
     dataset_file = "/root/projects/VDTest/dataset/Final/py_vul_tasks_vulfix_view1000_v1.json"
     # count_commit_file(dataset_file)
 
-    filter_dataset_for_baseline_treevul(dataset_file)
+    # filter_dataset_for_baseline_treevul(dataset_file)
 
     # exps_root = "/root/projects/VDTest/output/agent/vul_2024-09-24T09:58:55_SAVE"
     # exps = os.listdir(exps_root)
@@ -691,6 +691,3 @@ if __name__ == '__main__':
         # meta["task_info"]["instance_id"] = task_id
         # with open(meta_fpath, 'w') as f:
         #     json.dump(meta, f, indent=4)
-
-
-
