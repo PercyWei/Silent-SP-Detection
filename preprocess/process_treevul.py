@@ -8,7 +8,7 @@ from typing import *
 from collections import defaultdict
 from tqdm import tqdm
 
-from preprocess.repo_manage import format_size
+from preprocess.repo_manage import format_size, get_remote_repo_size
 from preprocess.process_all import update_dataset_with_commit_file_count
 from preprocess.util import clone_repo, is_commit_exist, is_commit_exist_in_repo
 
@@ -184,25 +184,6 @@ def check_commits_existence_by_fetching(lang: Literal['Python', 'Java'], dataset
         json.dump(updt_dataset, f, indent=4)
 
 
-def get_repo_size(auth_repo) -> int:
-    token = os.getenv("TOKEN", "")
-    headers = {
-        "Authorization": f"token {token}",
-        "Accept": "application/vnd.github.v3+json"
-    }
-
-    url = f"https://api.github.com/repos/{auth_repo}"
-    try:
-        response = requests.get(url, headers=headers, timeout=5)
-        if response.status_code == 200:
-            repo_data = response.json()
-            kb_size = repo_data['size']
-            return kb_size * 1024
-    except requests.exceptions.RequestException as e:
-        pass
-    return 0
-
-
 def check_local_repos_and_clone(
         lang: Literal['Python', 'Java'],
         dataset_fpath: str,
@@ -231,7 +212,7 @@ def check_local_repos_and_clone(
     # success_num = 0
     # noexist_local_repo2size = {}
     # for auth_repo in noexist_local_repos:
-    #     size = get_repo_size(auth_repo)
+    #     size = get_remote_repo_size(auth_repo)
     #     total_size += size
     #     if size > 0:
     #         success_num += 1
@@ -311,7 +292,6 @@ def final_check(lang: Literal['Python', 'Java'], dataset_fpath: str) -> None:
     with open(dataset_fpath, 'r') as f:
         dataset = json.load(f)
 
-    updt_dataset: List[Dict] = []
     for cve_data in dataset:
         if cve_data['PL_list'] == [lang]:
             for i, commit in enumerate(cve_data['commits']):
@@ -332,11 +312,6 @@ def final_check(lang: Literal['Python', 'Java'], dataset_fpath: str) -> None:
                 # 3. Commit with false existence
                 if is_exist is False:
                     print(f"Commit with false existence: {commit['commit_hash']}")
-
-        updt_dataset.append(cve_data)
-
-    with open(dataset_fpath, 'w') as f:
-        json.dump(updt_dataset, f, indent=4)
 
 
 """DATASET FILTER"""
@@ -510,35 +485,3 @@ if __name__ == '__main__':
     vul_tasks_fpath = "/root/projects/VDTest/dataset/Final/VIEW_1000/java_vul_tasks_treevul.json"
 
     update_dataset_with_commit_file_count(vul_tasks_fpath, suffix=['.java'])
-
-
-    # another_v = "/root/projects/VDTest/dataset/Intermediate/TreeVul/sim_treevul.json"
-    # with open(another_v, 'r') as f:
-    #     a_dataset = json.load(f)
-    #
-    # with open(simp_treevul_cleaned_file, 'r') as f:
-    #     dataset = json.load(f)
-    #
-    # valid_cves = []
-    # for cve_data in dataset:
-    #     if cve_data['PL_list'] == ["Python"]:
-    #         valid_flag = True
-    #         for commit in cve_data['commits']:
-    #             if not commit["reproducibility"]:
-    #                 valid_flag = False
-    #                 break
-    #
-    #         if valid_flag:
-    #             valid_cves.append(cve_data["cve_id"])
-    #
-    # for item in a_dataset:
-    #     if item["PL_list"] == ["Python"]:
-    #         cve_ids = item["cve_list"]
-    #         for cve_id in cve_ids:
-    #             if cve_id not in valid_cves:
-    #                 print(cve_id)
-    #             else:
-    #                 valid_cves.remove(cve_id)
-    #
-    # print(valid_cves)
-

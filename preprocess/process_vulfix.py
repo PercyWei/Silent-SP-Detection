@@ -16,12 +16,14 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from webdriver_manager.chrome import ChromeDriverManager
 
 from openai import OpenAI
 from openai.types.chat.completion_create_params import ResponseFormat
 
-from preprocess.util import is_commit_exist_in_repo
-from utils import run_command
+from preprocess.repo_manage import format_size, get_remote_repo_size
+from preprocess.process_all import update_dataset_with_commit_file_count
+from preprocess.util import clone_repo, is_commit_exist, is_commit_exist_in_repo
 
 
 """RAW DATASET"""
@@ -140,8 +142,6 @@ def ask_gpt(client: OpenAI, commit_msg: str) -> str | None:
     else:
         response = response.content
 
-    print(response + "\n")
-
     json_response = json.loads(response)
 
     if isinstance(json_response, dict) and "cve_id" in json_response:
@@ -150,12 +150,14 @@ def ask_gpt(client: OpenAI, commit_msg: str) -> str | None:
     return None
 
 
-def refine_dataset_with_cve(dataset_fpath: str, log_fpath: str) -> None:
+def find_dataset_missing_cve(dataset_fpath: str, log_fpath: str) -> None:
     with open(dataset_fpath, 'r') as f:
         dataset = json.load(f)
 
-    with open(log_fpath, 'r') as f:
-        log: Dict[str, Dict] = json.load(f)
+    log: Dict[str, Dict] = {}
+    if os.path.exists(log_fpath):
+        with open(log_fpath, 'r') as f:
+            log = json.load(f)
 
     api_key = os.getenv("OPENAI_KEY", None)
     api_base = os.getenv("OPENAI_API_BASE", None)
@@ -163,8 +165,8 @@ def refine_dataset_with_cve(dataset_fpath: str, log_fpath: str) -> None:
     client = OpenAI(api_key=api_key, base_url=api_base)
 
     with tqdm(total=len(dataset)) as pb:
-        for i, item in enumerate(dataset):
-            if item["commit_type"] == 1:
+        for item in dataset:
+            if item["commit_type"] == 1 and not re.fullmatch(r"CVE-\d+-\d+", item["cve_list"]):
                 repo = item["repo"]
                 commit_hash = item["commit_hash"]
 
@@ -176,6 +178,8 @@ def refine_dataset_with_cve(dataset_fpath: str, log_fpath: str) -> None:
                     try:
                         commit_response = requests.get(commit_url, timeout=10)
                     except requests.exceptions.Timeout:
+                        continue
+                    except requests.exceptions.SSLError:
                         continue
 
                     if commit_response.status_code != 200:
@@ -197,83 +201,31 @@ def refine_dataset_with_cve(dataset_fpath: str, log_fpath: str) -> None:
         json.dump(log, f, indent=4)
 
 
-def clean_dataset_by_cve():
-    simp_py_vulfix_fpath = "/root/projects/VDTest/dataset/Intermediate/VulFix/vulfix_py.json"
-    with open(simp_py_vulfix_fpath, 'r') as f:
+def refine_dataset_with_cve(dataset_fpath: str, log_fpath: str):
+    with open(dataset_fpath, 'r') as f:
         dataset = json.load(f)
 
-    # cve id -> [data]
-    vul_cve2item: Dict[str, Dict] = {}
-    # [data]
-    novul_items: List[Dict] = []
+    with open(log_fpath, 'r') as f:
+        log = json.load(f)
 
+    updt_dataset = []
     for item in dataset:
-        commit_type = item["commit_type"]
+        if item["commit_type"] == 1 and not re.fullmatch(r"CVE-\d+-\d+", item["cve_list"]):
+            repo = item["repo"]
+            commit_hash = item["commit_hash"]
 
-        if commit_type == 0:
-            novul_items.append(item)
-        else:
-            cve_id = item["cve_id"]
-            if cve_id is not None:
-                if cve_id not in vul_cve2item:
-                    vul_cve2item[cve_id] = {
-                        "cve_id": cve_id,
-                        "commit_type": 1,
-                        "cwe_id": item["cwe_id"],
-                        "path_list": [],
-                        "commits": [
-                            {
-                                "repo": item["repo"],
-                                "commit_hash": item["commit_hash"],
-                                "PL_list": item["PL_list"]
-                            }
-                        ]
-                    }
-                else:
-                    vul_cve2item[cve_id]["commits"].append(
-                        {
-                            "repo": item["repo"],
-                            "commit_hash": item["commit_hash"],
-                            "PL_list": item["PL_list"]
-                        }
-                    )
+            if commit_hash not in log:
+                print(f"https://github.com/{repo}/commit/{commit_hash}")
+            else:
+                item["cve_list"] = log[commit_hash]["cve_id"]
 
-    novul_save_fpath = "/root/projects/VDTest/dataset/Intermediate/VulFix/vulfix_py_novul_cleaned.json"
-    with open(novul_save_fpath, 'w') as f:
-        json.dump(novul_items, f, indent=4)
+        updt_dataset.append(item)
 
-    vul_save_fpath = "/root/projects/VDTest/dataset/Intermediate/VulFix/vulfix_py_vul_cleaned.json"
-    with open(vul_save_fpath, 'w') as f:
-        json.dump(list(vul_cve2item.values()), f, indent=4)
+    with open(dataset_fpath, 'w') as f:
+        json.dump(updt_dataset, f, indent=4)
 
 
-def count_clean_dataset():
-    novul_save_fpath = "/root/projects/VDTest/dataset/Intermediate/VulFix/vulfix_py_novul_cleaned.json"
-    with open(novul_save_fpath, 'r') as f:
-        dataset = json.load(f)
-
-    print(f"Novul commit number: {len(dataset)}")
-
-    vul_save_fpath = "/root/projects/VDTest/dataset/Intermediate/VulFix/vulfix_py_vul_cleaned.json"
-    with open(vul_save_fpath, 'r') as f:
-        dataset = json.load(f)
-
-    cve_num = len(dataset)
-    commit_num = 0
-    commit_num2cve_num: Dict[int, int] = {}
-    for item in dataset:
-        curr_commit_num = len(item["commits"])
-        if curr_commit_num not in commit_num2cve_num:
-            commit_num2cve_num[curr_commit_num] = 1
-        else:
-            commit_num2cve_num[curr_commit_num] += 1
-        commit_num += curr_commit_num
-    print(f"Vul CVE number: {cve_num}")
-    print(f"Vul commit number: {commit_num}")
-    print(f"Vul commit&cve: {json.dumps(commit_num2cve_num, indent=4)}")
-
-
-"""SEARCH CWE INFO"""
+"""SEARCH CWE"""
 
 
 def search_and_extract_cwe(driver, cve_id):
@@ -307,194 +259,378 @@ def search_and_extract_cwe(driver, cve_id):
     return cwe_ids
 
 
-def complete_log():
-    log_fpath = "/root/projects/VDTest/output/dataset/log.json"
-    with open(log_fpath, 'r') as f:
-        log = json.load(f)
+def search_cwe_for_dataset(dataset_fpath: str, log_fpath: str):
+    with open(dataset_fpath, 'r') as f:
+        dataset = json.load(f)
 
-    driver_path = '/usr/local/bin/chromedriver'
     chrome_options = Options()
     chrome_options.add_argument("--headless")
     chrome_options.add_argument("--disable-gpu")
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
-    driver = webdriver.Chrome(service=Service(driver_path), options=chrome_options)
+    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
 
     try:
-        nvd_not_found = []
-        nvd_mul_cwe = {}
-        for i, item in enumerate(log):
-            print("=" * 50 + f" {i} " + "=" * 50)
+        nvd_not_found: List[str] = []
+        nvd_no_cwe: List[str] = []
+        nvd_with_cwe: Dict[str, List[str]] = {}
 
-            cve_id = item["cve_id"]
+        searched_cves: List[str] = []
 
-            print(f"CVE-ID: {cve_id}")
+        with tqdm(total=len(dataset)) as pb:
+            for item in dataset:
 
-            try:
-                cwe_ids = search_and_extract_cwe(driver, cve_id)
-            except Exception as e:
-                nvd_not_found.append(cve_id)
-                continue
+                cve_id = item["cve_list"]
+                if cve_id is not None and re.fullmatch(r"CVE-\d+-\d+", cve_id) and cve_id not in searched_cves:
+                    searched_cves.append(cve_id)
 
-            print(f"CWE-IDS: {cwe_ids}")
+                    try:
+                        cwe_ids = search_and_extract_cwe(driver, cve_id)
+                    except Exception as e:
+                        nvd_not_found.append(cve_id)
+                        continue
 
-            if cwe_ids is None or len(cwe_ids) == 0:
-                nvd_not_found.append(cve_id)
-                continue
+                    if cwe_ids is None or len(cwe_ids) == 0:
+                        nvd_no_cwe.append(cve_id)
+                        continue
 
-            if len(cwe_ids) != 1:
-                nvd_mul_cwe[cve_id] = cwe_ids
-                continue
+                    nvd_with_cwe[cve_id] = cwe_ids
 
-            item["cwe_id"] = cwe_ids[0]
+                pb.update(1)
+
+        nvd_with_cwe = dict(sorted(nvd_with_cwe.items(), key=lambda x: len(x[1]), reverse=True))
 
         with open(log_fpath, 'w') as f:
-            json.dump(log, f, indent=4)
-
-        log_log_fpath = "/root/projects/VDTest/output/dataset/log_log.json"
-        with open(log_log_fpath, 'w') as f:
-            json.dump({"nvd_not_found": nvd_not_found, "nvd_mul_cwe": nvd_mul_cwe}, f, indent=4)
+            json.dump({
+                "nvd_not_found": nvd_not_found,
+                "nvd_no_cwe": nvd_no_cwe,
+                "nvd_with_cwe": nvd_with_cwe
+            }, f, indent=4)
     finally:
         driver.quit()
 
 
-def complete_sim_dataset():
-    sim_py_vulfix_fpath = "/root/projects/VDTest/output/dataset/sim_py_vulfix.json"
-    with open(sim_py_vulfix_fpath, 'r') as f:
-        py_items = json.load(f)
-
-    log_fpath = "/root/projects/VDTest/output/dataset/log.json"
-    with open(log_fpath, 'r') as f:
-        log = json.load(f)
-
-    log_lookup = {}
-    for item in log:
-        repo = item["repo"]
-        commit_hash = item["commit_hash"]
-        log_lookup[repo + "_" + commit_hash] = (item["cve_id"], item["cwe_id"])
-
-    for item in py_items:
-        repo = item["repo"]
-        commit_hash = item["commit_hash"]
-        key = repo + "_" + commit_hash
-        if key in log_lookup:
-            item["cve_list"] = [log_lookup[key][0]]
-            item["cwe_id"] = log_lookup[key][1]
-
-    with open(sim_py_vulfix_fpath, 'w') as f:
-        json.dump(py_items, f, indent=4)
+"""SEPARATE NOVUL AND VUL"""
 
 
-def clone():
-    py_items_fpath = "/root/projects/VDTest/output/dataset/py_items.json"
-    with open(py_items_fpath, 'r') as f:
-        items = json.load(f)
-
-    failed_repos = []
-    for item in items:
-        if item["commit_type"] == 1:
-            repo = item["repo"]
-            name = repo.replace("/", "_")
-
-            clone_dpath = f"/root/projects/clone_projects/{name}"
-            if not os.path.exists(clone_dpath):
-                token = ""
-                repo_url = f"https://{token}@github.com/{repo}.git"
-                clone_command = ["git", "clone", repo_url, clone_dpath]
-
-                res, _ = run_command(clone_command, print_log=False, print_stdout=False, raise_error=False, timeout=300)
-
-                if res is None:
-                    # Delete local dir for saving this repo
-                    try:
-                        shutil.rmtree(clone_dpath)
-                    except Exception as e:
-                        pass
-                    failed_repos.append(repo)
-
-    lof_fpath = "/root/projects/VDTest/output/dataset/clone_log.json"
-    with open(lof_fpath, 'w') as f:
-        json.dump(failed_repos, f, indent=4)
-
-
-"""VULFIX NOVUL"""
-
-
-pass
-
-
-"""VULFIX VUL V1"""
-
-
-def build_vulfix_vul_v1():
-    simp_py_vulfix_file = "/root/projects/VDTest/dataset/Intermediate/VulFix/vulfix_py.json"
-    with open(simp_py_vulfix_file, 'r') as f:
+def separate_dataset(lang: Literal["Python", "Java"], dataset_fpath: str, cwe_log_fpath:str, save_dpath: str):
+    with open(dataset_fpath, 'r') as f:
         dataset = json.load(f)
 
-    items = []
+    with open(cwe_log_fpath, 'r') as f:
+        cwe_log = json.load(f)
+
+    nvd_with_cwe: Dict[str, List[str]] = cwe_log["nvd_with_cwe"]
+
+    cve2items: Dict[str, Dict] = {}
+    novul_items: List[Dict] = []
+
     for item in dataset:
-        if item["commit_type"] == 1 and item["cve_id"] is None:
-            items.append(item)
+        commit_type = item["commit_type"]
 
-    save_file = "/root/projects/VDTest/dataset/Intermediate/VulFix/py_cleaned_vul_v1.json"
-    with open(save_file, 'w') as f:
-        json.dump(items, f, indent=4)
+        if commit_type == 0:
+            novul_items.append({
+                "cve_id": None,
+                "commit_type": commit_type,
+                "cwe_list": None,
+                "repo": item["repo"],
+                "commit_hash": item["commit_hash"],
+                "file_count": None
+            })
+        else:
+            cve_id = item["cve_list"]
+            if cve_id is not None:
+                if cve_id not in cve2items and cve_id in nvd_with_cwe:
+                    cve2items[cve_id] = {
+                        "cve_id": cve_id,
+                        "commit_type": commit_type,
+                        "cwe_list": nvd_with_cwe[cve_id],
+                        "commits": [
+                            {
+                                "repo": item["repo"],
+                                "commit_hash": item["commit_hash"]
+                            }
+                        ]
+                    }
+                elif cve_id in nvd_with_cwe:
+                    cve2items[cve_id]["commits"].append(
+                        {
+                            "repo": item["repo"],
+                            "commit_hash": item["commit_hash"]
+                        }
+                    )
+
+    vul_items = list(cve2items.values())
+
+    novul_save_fpath = os.path.join(save_dpath, f"vulfix_{lang.lower()}_novul_cleaned.json")
+    with open(novul_save_fpath, 'w') as f:
+        json.dump(novul_items, f, indent=4)
+
+    vul_save_fpath = os.path.join(save_dpath, f"vulfix_{lang.lower()}_vul_cleaned.json")
+    with open(vul_save_fpath, 'w') as f:
+        json.dump(vul_items, f, indent=4)
 
 
-def process_vulfix_vul_v1():
-    repos_root = "/root/projects/clone_projects"
-    dataset_v1_file = "/root/projects/VDTest/dataset/Intermediate/VulFix/py_cleaned_vul_v1.json"
-    with open(dataset_v1_file, 'r') as f:
+"""COMMITS CHECKING"""
+
+
+def check_commits_existence_by_fetching(dataset_fpath: str) -> None:
+    """Check the commits existence through fetching."""
+    token = os.getenv("TOKEN", "")
+
+    with open(dataset_fpath, 'r') as f:
         dataset = json.load(f)
 
-    ## FUNCTION 1
-    # noexist_repos = []
-    # for item in dataset:
-    #     repo = item["repo"]
-    #     repo_dpath = os.path.join(repos_root, repo.replace("/", "_"))
-    #     if not os.path.exists(repo_dpath) and repo not in noexist_repos:
-    #         noexist_repos.append(repo)
-    # print(json.dumps(noexist_repos, indent=4))
+    updt_dataset: List[Dict] = []
+
+    with (tqdm(total=len(dataset)) as pb):
+        for cve_data in dataset:
+            for i, commit in enumerate(cve_data['commits']):
+                is_exist = commit.get('existence', None)
+                if is_exist is None:
+                    is_exist, _ = is_commit_exist(commit["repo"], commit["commit_hash"], token)
+                    # Update current cve data
+                    # is_exist:
+                    # - True: commit exists
+                    # - False: commit does not exist
+                    # - Null: check failed
+                    cve_data['commits'][i]['existence'] = is_exist
+
+            updt_dataset.append(cve_data)
+
+            pb.update(1)
+
+    with open(dataset_fpath, 'w') as f:
+        json.dump(updt_dataset, f, indent=4)
 
 
-    ## FUNCTION 2
-    # total_num = len(dataset)
-    # repro_commit_num = 0
-    # for item in dataset:
-    #     if item["reproducibility"]:
-    #         repro_commit_num += 1
-    # print(f"{repro_commit_num} / {total_num}")
+def check_local_repos_and_clone(
+        dataset_fpath: str,
+        repos_root: str = '/root/projects/clone_projects'
+) -> None:
+    token = os.getenv("TOKEN", "")
 
+    with open(dataset_fpath, 'r') as f:
+        dataset = json.load(f)
 
-    ## FUNCTION 3
-    # for i, item in enumerate(dataset):
-    #     if item.get("reproducibility", None) is not None:
+    noexist_local_repos = []
+    for cve_data in dataset:
+        for commit in cve_data['commits']:
+            auth_repo = commit["repo"]
+            repo_dpath = os.path.join(repos_root, auth_repo.replace('/', '_'))
+            if not os.path.exists(repo_dpath):
+                noexist_local_repos.append(auth_repo)
+
+    noexist_local_repos = list(set(noexist_local_repos))
+    print(f"No exist local repo number: {len(noexist_local_repos)}")
+    # print(json.dumps(noexist_local_repos, indent=4))
+
+    # (2) Calculate the total size of all repos which need to be cloned
+    # total_size = 0
+    # success_num = 0
+    # noexist_local_repo2size = {}
+    # for auth_repo in noexist_local_repos:
+    #     size = get_remote_repo_size(auth_repo)
+    #     total_size += size
+    #     if size > 0:
+    #         success_num += 1
+    #     noexist_local_repo2size[auth_repo] = size
+    # noexist_local_repo2size = dict(sorted(noexist_local_repo2size.items(), key=lambda x: x[1], reverse=True))
+    # noexist_local_repo2size = {repo: format_size(size) for repo, size in noexist_local_repo2size.items()}
+    # print(f"Total size: {format_size(total_size)} ({success_num} / {len(noexist_local_repos)})")
+    # print(json.dumps(noexist_local_repo2size, indent=4))
+
+    # (3) Clone repos
+    # for repo in noexist_local_repos:
+    #     if repo in [
+    #         "OpenNMS/opennms",
+    #         "OpenOLAT/OpenOLAT",
+    #         "apache/ofbiz-framework",
+    #         "wuyouzhuguli/FEBS-Shiro",
+    #         "keycloak/keycloak",
+    #         "facebook/buck",
+    #         "luchua-bc/GreenBrowser",
+    #         "gradle/gradle",
+    #         "igniterealtime/Openfire",
+    #         "shopizer-ecommerce/shopizer",
+    #         "jamesagnew/hapi-fhir",
+    #         "eclipse/rdf4j",
+    #         "xwiki/xwiki-platform",
+    #         "OpenAPITools/openapi-generator",
+    #         "bigbluebutton/bigbluebutton",
+    #         "brianchandotcom/liferay-portal",
+    #         "elastic/elasticsearch",
+    #         "restlet/restlet-framework-java",
+    #         "siacs/Conversations",
+    #         "ballerina-platform/ballerina-lang",
+    #         "hapifhir/hapi-fhir",
+    #         "intranda/goobi-viewer-core",
+    #         "dotCMS/dotCMS",
+    #         "alkacon/opencms-core",
+    #         "apache/camel",
+    #         "SonarSource/sonarqube",
+    #         "apache/hive",
+    #         "eXist-db/exist",
+    #         "javaserverfaces/mojarra",
+    #         "apache/geronimo",
+    #         "blynkkk/blynk-server",
+    #         "dotCMS/core",
+    #         "apache/ignite",
+    #         "apache/ambari",
+    #         "apache/hbase",
+    #         "XIOGit/https-github.com-wuyouzhuguli-FEBS-Shiro",
+    #         "JabRef/jabref"
+    #     ]:
     #         continue
     #
-    #     repo = item["repo"]
-    #     repo_dpath = os.path.join(repos_root, repo.replace("/", "_"))
-    #     if os.path.exists(repo_dpath):
-    #         res = is_commit_exist_in_repo(repo_dpath, item["commit_hash"])
-    #         dataset[i]["reproducibility"] = res
-    #
-    # with open(dataset_v1_file, 'w') as f:
-    #     json.dump(dataset, f, indent=4)
+    #     print("=" * 100 + "\n\n")
+    #     repo_dpath = os.path.join(repos_root, repo.replace('/', '_'))
+    #     clone_repo(repo, repo_dpath, token=token, timeout=60)
 
 
-    ## FUNCTION 4
-    # updt_dataset = []
-    # for item in dataset:
-    #     if item["reproducibility"]:
-    #         updt_dataset.append(item)
-    #
-    # with open(dataset_v1_file, 'w') as f:
-    #     json.dump(updt_dataset, f, indent=4)
+def check_commits_reproducibility_by_cloning(
+        dataset_fpath: str,
+        repos_root: str = '/root/projects/clone_projects'
+) -> None:
+    """Check the commits reproducibility through cloning."""
+    with open(dataset_fpath, 'r') as f:
+        dataset = json.load(f)
+
+    updt_dataset: List[Dict] = []
+    for cve_data in dataset:
+        for i, commit in enumerate(cve_data['commits']):
+            is_exist = commit['existence']
+            is_repro = commit.get('reproducibility', None)
+
+            if is_exist is False:
+                is_repro = False
+            else:
+                repo_dpath = os.path.join(repos_root, commit['repo'].replace("/", "_"))
+                if is_repro is None and os.path.exists(repo_dpath):
+                    is_repro = is_commit_exist_in_repo(repo_dpath, commit['commit_hash'])
+
+            # Update current cve data
+            cve_data['commits'][i]['reproducibility'] = is_repro
+
+        updt_dataset.append(cve_data)
+
+    with open(dataset_fpath, 'w') as f:
+        json.dump(updt_dataset, f, indent=4)
 
 
-"""VULFIX VUL V2"""
+def final_check(dataset_fpath: str) -> None:
+    with open(dataset_fpath, 'r') as f:
+        dataset = json.load(f)
+
+    for cve_data in dataset:
+        for i, commit in enumerate(cve_data['commits']):
+            is_exist = commit['existence']
+            is_repro = commit.get('reproducibility', None)
+
+            # 1. Commit with null existence
+            if is_exist is None:
+                if is_repro:
+                    cve_data['commits'][i]['existence'] = True
+                else:
+                    print(f"Commit with null existence: {commit['commit_hash']}")
+
+            # 2. Commit with null reproducibility
+            if is_repro is None:
+                print(f"Commit with null reproducibility: {commit['commit_hash']}")
+
+            # 3. Commit with false existence
+            if is_exist is False:
+                print(f"Commit with false existence: {commit['commit_hash']}")
 
 
-pass
+def count_repo_cve_commits(dataset_fpath: str) -> None:
+    with open(dataset_fpath, 'r') as f:
+        dataset = json.load(f)
+
+    valid_cve_num = 0
+    commit_num2cve_num: Dict[int, int] = {}
+
+    invalid_cves = []
+    invalid_commit_num = 0
+    valid_commit_num = 0
+
+    valid_single_commit_cve_repos = []
+
+    for cve_data in dataset:
+        valid_flag = True
+        curr_invalid_commit_num = 0
+
+        for commit in cve_data['commits']:
+            if not commit["reproducibility"]:
+                # As long as one of the commits involved in the CVE cannot be reproduced, we consider it invalid!
+                valid_flag = False
+                curr_invalid_commit_num += 1
+
+        curr_commit_num = len(cve_data['commits'])
+        if valid_flag:
+            valid_cve_num += 1
+
+            if curr_commit_num not in commit_num2cve_num:
+                commit_num2cve_num[curr_commit_num] = 1
+            else:
+                commit_num2cve_num[curr_commit_num] += 1
+
+            if curr_commit_num == 1:
+                repo = cve_data['commits'][0]['repo']
+                if repo not in valid_single_commit_cve_repos:
+                    valid_single_commit_cve_repos.append(repo)
+        else:
+            invalid_cves.append(cve_data['cve_id'])
+            valid_commit_num += curr_commit_num - curr_invalid_commit_num
+            invalid_commit_num += curr_invalid_commit_num
+
+    print(f"Valid CVE number: {valid_cve_num}")
+    print(f"Repo of valid single commit CVE number: {len(valid_single_commit_cve_repos)}")
+
+    commit_num2cve_num = dict(sorted(commit_num2cve_num.items(), key=lambda x: x[1], reverse=True))
+    print("Mapping from commit number to cve number: \n" + json.dumps(commit_num2cve_num, indent=4))
+
+    print("\n" + "-" * 100 + "\n")
+
+    print(f"Invalid CVE number: {len(invalid_cves)}")
+    print(f"Valid / Invalid commit number (in invalid CVEs): {valid_commit_num} / {invalid_commit_num}")
+    print("Invalid CVEs: \n" + json.dumps(invalid_cves, indent=4))
+
+
+"""DATASET FILTER"""
+
+
+def build_dataset_containing_cves_with_valid_single_commit(
+        lang: Literal['Python', 'Java'],
+        dataset_fpath: str,
+        output_root: str
+) -> str:
+    with open(dataset_fpath, 'r') as f:
+        dataset = json.load(f)
+
+    filtered_dataset: List[Dict] = []
+
+    for data in dataset:
+        commits = data["commits"]
+
+        if len(commits) == 1 and commits[0]['existence'] is True and commits[0]['reproducibility'] is True:
+            new_data = {
+                "source": "vulfix",
+                "task_id": f"vulfix-vul-{len(filtered_dataset)}",
+                "cve_id": data["cve_id"],
+                "commit_type": data["commit_type"],
+                "cwe_list": data["cwe_list"],
+                "repo": commits[0]['repo'],
+                "commit_hash": commits[0]['commit_hash'],
+                "file_count": None
+            }
+            filtered_dataset.append(new_data)
+
+    output_fpath = os.path.join(output_root, f"{lang.lower()}_vul_tasks_vulfix.json")
+    with open(output_fpath, 'w') as f:
+        json.dump(filtered_dataset, f, indent=4)
+
+    return output_fpath
 
 
 if __name__ == '__main__':
@@ -503,35 +639,56 @@ if __name__ == '__main__':
 
     ## Step 1: Read original VulFix
     # py_vulfix_file, java_vulfix_file = read_raw_vulfix(ori_vulfix_csv, "/root/projects/VDTest/dataset/VulFix")
-    py_vulfix_file = "/root/projects/VDTest/dataset/Original/VulFix/vulfix_py.json"
-    java_vulfix_file = "/root/projects/VDTest/dataset/Original/VulFix/vulfix_java.json"
+    vulfix_py_file = "/root/projects/VDTest/dataset/Original/VulFix/vulfix_py.json"
+    vulfix_java_file = "/root/projects/VDTest/dataset/Original/VulFix/vulfix_java.json"
+
 
     ## Step 2: Simplify dataset
-    # simp_py_vulfix_file = build_simplified_dataset(py_vulfix_file, output_dir)
-    simp_py_vulfix_file = "/root/projects/VDTest/dataset/Intermediate/VulFix/vulfix_py.json"
-    # simp_java_vulfix_file = build_simplified_dataset(java_vulfix_file, output_dir)
-    simp_java_vulfix_file = "/root/projects/VDTest/dataset/Intermediate/VulFix/vulfix_java.json"
+    # vulfix_py_simp_file = build_simplified_dataset(vulfix_py_file, output_dir)
+    vulfix_py_simp_file = "/root/projects/VDTest/dataset/Intermediate/VulFix/vulfix_py.json"
+    # vulfix_java_simp_file = build_simplified_dataset(vulfix_java_file, output_dir)
+    vulfix_java_simp_file = "/root/projects/VDTest/dataset/Intermediate/VulFix/vulfix_java.json"
 
-    ## Step 3: Find CVE of dataset items (only for 'vulfix_py', cause 'vulfix_java' has CVE annotations)
-    # log_file = "/root/projects/VDTest/dataset/Intermediate/log_vulfix_py.json"
-    # refine_dataset_with_cve(simp_py_vulfix_file, log_file)
+
+    ## Step 3: Find CVE of dataset items (NOTE: some data in 'vulfix_java' has CVE annotations)
+    java_cve_log_file = "/root/projects/VDTest/dataset/Intermediate/VulFix/vulfix_java_cve.log"
+    # find_dataset_missing_cve(vulfix_java_simp_file, java_cve_log_fil)
+    # refine_dataset_with_cve(vulfix_java_simp_file, java_cve_log_fil)
+
 
     ## Step 4: Find CWE of dataset items
-    pass
+    java_cwe_log_file = "/root/projects/VDTest/dataset/Intermediate/VulFix/vulfix_java_cwe.log"
+    # search_cwe_for_dataset(vulfix_java_simp_file, java_cwe_log_file)
 
 
-    ############# Tree types of task dataset #############
-    ## (1) vulfix_novul:
-    #       - novul fix commit
-    pass
+    ## Step 5: Separate dataset to novul and vul sub dataset
+    # separate_dataset(
+    #     lang='Java',
+    #     dataset_fpath=vulfix_java_simp_file,
+    #     cwe_log_fpath=java_cwe_log_file,
+    #     save_dpath="/root/projects/VDTest/dataset/Intermediate/VulFix"
+    # )
+    vulfix_py_novul_file = "/root/projects/VDTest/dataset/Intermediate/VulFix/vulfix_py_novul_cleaned.json"
+    vulfix_py_vul_file = "/root/projects/VDTest/dataset/Intermediate/VulFix/vulfix_py_vul_cleaned.json"
 
-    ## (2) vulfix_vul_v1:
-    #       - vul fix commit;
-    #       - Without CWE labels.
-    # build_vulfix_vul_v1()
-    # process_vulfix_vul_v1()
+    vulfix_java_novul_file = "/root/projects/VDTest/dataset/Intermediate/VulFix/vulfix_java_novul_cleaned.json"
+    vulfix_java_vul_file = "/root/projects/VDTest/dataset/Intermediate/VulFix/vulfix_java_vul_cleaned.json"
 
-    ## (3) vulfix_vul_v2:
-    #       - vul fix commit;
-    #       - With CWE labels.
-    pass
+
+    ## Step 6: Check commits validity
+    # check_commits_existence_by_fetching(vulfix_java_vul_file)
+    # check_local_repos_and_clone(vulfix_java_vul_file)
+    # check_commits_reproducibility_by_cloning(vulfix_java_vul_file)
+    # final_check(vulfix_java_vul_file)
+    # count_repo_cve_commits(vulfix_java_vul_file)
+
+
+    ## Step 5: Build filtered dataset
+    # vul_tasks_fpath = build_dataset_containing_cves_with_valid_single_commit(
+    #     lang='Java',
+    #     dataset_fpath=vulfix_java_vul_file,
+    #     output_root="/root/projects/VDTest/dataset/Final/VIEW_1000"
+    # )
+    vul_tasks_fpath = "/root/projects/VDTest/dataset/Final/VIEW_1000/java_vul_tasks_vulfix.json"
+
+    update_dataset_with_commit_file_count(vul_tasks_fpath, suffix=['.java'])

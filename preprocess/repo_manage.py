@@ -1,6 +1,7 @@
 import os
 import json
 import shutil
+import requests
 
 from typing import *
 from collections import defaultdict
@@ -37,7 +38,26 @@ def get_dir_size(dir_path: str) -> int:
     return total_size
 
 
-def cal_repos_size(repo2size: Dict[str, int], threshold: int = 500) -> None:
+def get_remote_repo_size(auth_repo) -> int:
+    token = os.getenv("TOKEN", "")
+    headers = {
+        "Authorization": f"token {token}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+
+    url = f"https://api.github.com/repos/{auth_repo}"
+    try:
+        response = requests.get(url, headers=headers, timeout=5)
+        if response.status_code == 200:
+            repo_data = response.json()
+            kb_size = repo_data['size']
+            return kb_size * 1024
+    except requests.exceptions.RequestException as e:
+        pass
+    return 0
+
+
+def _count_repos_size(repo2size: Dict[str, int], threshold: int = 500) -> None:
     # Count repos <= x MB (default x = 500)
     size_threshold = threshold * 1024 * 1024
 
