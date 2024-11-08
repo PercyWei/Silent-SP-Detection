@@ -477,11 +477,12 @@ if __name__ == '__main__':
     # count_repo_cve_commits(lang='Java', dataset_fpath=simp_treevul_cleaned_file)
 
     ## Step 5: Build filtered dataset
-    # vul_tasks_fpath = build_dataset_containing_cves_with_valid_single_commit(
+    # java_vul_tasks_fpath = build_dataset_containing_cves_with_valid_single_commit(
     #     lang='Java',
     #     dataset_fpath=simp_treevul_cleaned_file,
     #     output_root="/root/projects/VDTest/dataset/Final/VIEW_1000"
     # )
-    vul_tasks_fpath = "/root/projects/VDTest/dataset/Final/VIEW_1000/java_vul_tasks_treevul.json"
+    py_vul_tasks_fpath = "/root/projects/VDTest/dataset/Final/VIEW_1000/py_vul_tasks_treevul.json"
+    java_vul_tasks_fpath = "/root/projects/VDTest/dataset/Final/VIEW_1000/java_vul_tasks_treevul.json"
 
-    update_dataset_with_commit_file_count(vul_tasks_fpath, suffix=['.java'])
+    update_dataset_with_commit_file_count(java_vul_tasks_fpath, suffix=['.java'])

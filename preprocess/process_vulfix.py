@@ -225,6 +225,74 @@ def refine_dataset_with_cve(dataset_fpath: str, log_fpath: str):
         json.dump(updt_dataset, f, indent=4)
 
 
+"""SEPARATE NOVUL AND VUL"""
+
+
+def separate_dataset(lang: Literal["Python", "Java"], dataset_fpath: str, cwe_log_fpath:str, save_dpath: str):
+    with open(dataset_fpath, 'r') as f:
+        dataset = json.load(f)
+
+    with open(cwe_log_fpath, 'r') as f:
+        cwe_log = json.load(f)
+
+    nvd_with_cwe: Dict[str, List[str]] = cwe_log["nvd_with_cwe"]
+
+    cve2items: Dict[str, Dict] = {}
+    novul_items: List[Dict] = []
+
+    for item in dataset:
+        commit_type = item["commit_type"]
+
+        if commit_type == 0:
+            novul_items.append({
+                "cve_id": None,
+                "commit_type": commit_type,
+                "cwe_list": None,
+                "repo": item["repo"],
+                "commit_hash": item["commit_hash"],
+                "file_count": None
+            })
+        else:
+            cve_id = item["cve_id"]
+            if cve_id is not None:
+                if cve_id not in cve2items and cve_id in nvd_with_cwe:
+                    cve2items[cve_id] = {
+                        "cve_id": cve_id,
+                        "commit_type": commit_type,
+                        "cwe_list": nvd_with_cwe[cve_id],
+                        "commits": [
+                            {
+                                "repo": item["repo"],
+                                "commit_hash": item["commit_hash"]
+                            }
+                        ]
+                    }
+                elif cve_id in nvd_with_cwe:
+                    cve2items[cve_id]["commits"].append(
+                        {
+                            "repo": item["repo"],
+                            "commit_hash": item["commit_hash"]
+                        }
+                    )
+
+    vul_items = list(cve2items.values())
+
+    if lang == "Python":
+        novul_save_fpath = os.path.join(save_dpath, f"vulfix_py_novul_cleaned.json")
+        vul_save_fpath = os.path.join(save_dpath, f"vulfix_py_vul_cleaned.json")
+    elif lang == "Java":
+        novul_save_fpath = os.path.join(save_dpath, f"vulfix_java_novul_cleaned.json")
+        vul_save_fpath = os.path.join(save_dpath, f"vulfix_java_vul_cleaned.json")
+    else:
+        raise RuntimeError
+
+    with open(novul_save_fpath, 'w') as f:
+        json.dump(novul_items, f, indent=4)
+
+    with open(vul_save_fpath, 'w') as f:
+        json.dump(vul_items, f, indent=4)
+
+
 """SEARCH CWE"""
 
 
@@ -308,67 +376,6 @@ def search_cwe_for_dataset(dataset_fpath: str, log_fpath: str):
             }, f, indent=4)
     finally:
         driver.quit()
-
-
-"""SEPARATE NOVUL AND VUL"""
-
-
-def separate_dataset(lang: Literal["Python", "Java"], dataset_fpath: str, cwe_log_fpath:str, save_dpath: str):
-    with open(dataset_fpath, 'r') as f:
-        dataset = json.load(f)
-
-    with open(cwe_log_fpath, 'r') as f:
-        cwe_log = json.load(f)
-
-    nvd_with_cwe: Dict[str, List[str]] = cwe_log["nvd_with_cwe"]
-
-    cve2items: Dict[str, Dict] = {}
-    novul_items: List[Dict] = []
-
-    for item in dataset:
-        commit_type = item["commit_type"]
-
-        if commit_type == 0:
-            novul_items.append({
-                "cve_id": None,
-                "commit_type": commit_type,
-                "cwe_list": None,
-                "repo": item["repo"],
-                "commit_hash": item["commit_hash"],
-                "file_count": None
-            })
-        else:
-            cve_id = item["cve_list"]
-            if cve_id is not None:
-                if cve_id not in cve2items and cve_id in nvd_with_cwe:
-                    cve2items[cve_id] = {
-                        "cve_id": cve_id,
-                        "commit_type": commit_type,
-                        "cwe_list": nvd_with_cwe[cve_id],
-                        "commits": [
-                            {
-                                "repo": item["repo"],
-                                "commit_hash": item["commit_hash"]
-                            }
-                        ]
-                    }
-                elif cve_id in nvd_with_cwe:
-                    cve2items[cve_id]["commits"].append(
-                        {
-                            "repo": item["repo"],
-                            "commit_hash": item["commit_hash"]
-                        }
-                    )
-
-    vul_items = list(cve2items.values())
-
-    novul_save_fpath = os.path.join(save_dpath, f"vulfix_{lang.lower()}_novul_cleaned.json")
-    with open(novul_save_fpath, 'w') as f:
-        json.dump(novul_items, f, indent=4)
-
-    vul_save_fpath = os.path.join(save_dpath, f"vulfix_{lang.lower()}_vul_cleaned.json")
-    with open(vul_save_fpath, 'w') as f:
-        json.dump(vul_items, f, indent=4)
 
 
 """COMMITS CHECKING"""
@@ -643,52 +650,80 @@ if __name__ == '__main__':
     vulfix_java_file = "/root/projects/VDTest/dataset/Original/VulFix/vulfix_java.json"
 
 
+    lang = 'Python'  # 'Java'
+
+
     ## Step 2: Simplify dataset
-    # vulfix_py_simp_file = build_simplified_dataset(vulfix_py_file, output_dir)
-    vulfix_py_simp_file = "/root/projects/VDTest/dataset/Intermediate/VulFix/vulfix_py.json"
-    # vulfix_java_simp_file = build_simplified_dataset(vulfix_java_file, output_dir)
-    vulfix_java_simp_file = "/root/projects/VDTest/dataset/Intermediate/VulFix/vulfix_java.json"
+    if lang == 'Python':
+        # vulfix_lang_simp_file = build_simplified_dataset(vulfix_py_file, output_dir)
+        vulfix_lang_simp_file = "/root/projects/VDTest/dataset/Intermediate/VulFix/vulfix_py.json"
+    elif lang == 'Java':
+        # vulfix_lang_simp_file = build_simplified_dataset(vulfix_java_file, output_dir)
+        vulfix_lang_simp_file = "/root/projects/VDTest/dataset/Intermediate/VulFix/vulfix_java.json"
+    else:
+        raise RuntimeError
 
 
     ## Step 3: Find CVE of dataset items (NOTE: some data in 'vulfix_java' has CVE annotations)
-    java_cve_log_file = "/root/projects/VDTest/dataset/Intermediate/VulFix/vulfix_java_cve.log"
-    # find_dataset_missing_cve(vulfix_java_simp_file, java_cve_log_fil)
-    # refine_dataset_with_cve(vulfix_java_simp_file, java_cve_log_fil)
+    if lang == 'Python':
+        lang_cve_log_file = "/root/projects/VDTest/dataset/Intermediate/VulFix/vulfix_py_cve.log"
+    elif lang == 'Java':
+        lang_cve_log_file = "/root/projects/VDTest/dataset/Intermediate/VulFix/vulfix_java_cve.log"
+    else:
+        raise RuntimeError
+    # find_dataset_missing_cve(vulfix_lang_simp_file, lang_cve_log_file)
+    # refine_dataset_with_cve(vulfix_lang_simp_file, lang_cve_log_file)
 
 
     ## Step 4: Find CWE of dataset items
-    java_cwe_log_file = "/root/projects/VDTest/dataset/Intermediate/VulFix/vulfix_java_cwe.log"
-    # search_cwe_for_dataset(vulfix_java_simp_file, java_cwe_log_file)
+    if lang == 'Python':
+        lang_cwe_log_file = "/root/projects/VDTest/dataset/Intermediate/VulFix/vulfix_py_cwe.log"
+    elif lang == 'Java':
+        lang_cwe_log_file = "/root/projects/VDTest/dataset/Intermediate/VulFix/vulfix_java_cwe.log"
+    else:
+        raise RuntimeError
+    # search_cwe_for_dataset(vulfix_lang_simp_file, lang_cwe_log_file)
 
 
     ## Step 5: Separate dataset to novul and vul sub dataset
     # separate_dataset(
-    #     lang='Java',
-    #     dataset_fpath=vulfix_java_simp_file,
-    #     cwe_log_fpath=java_cwe_log_file,
+    #     lang=lang,
+    #     dataset_fpath=vulfix_lang_simp_file,
+    #     cwe_log_fpath=lang_cwe_log_file,
     #     save_dpath="/root/projects/VDTest/dataset/Intermediate/VulFix"
     # )
-    vulfix_py_novul_file = "/root/projects/VDTest/dataset/Intermediate/VulFix/vulfix_py_novul_cleaned.json"
-    vulfix_py_vul_file = "/root/projects/VDTest/dataset/Intermediate/VulFix/vulfix_py_vul_cleaned.json"
 
-    vulfix_java_novul_file = "/root/projects/VDTest/dataset/Intermediate/VulFix/vulfix_java_novul_cleaned.json"
-    vulfix_java_vul_file = "/root/projects/VDTest/dataset/Intermediate/VulFix/vulfix_java_vul_cleaned.json"
-
+    if lang == 'Python':
+        vulfix_lang_novul_file = "/root/projects/VDTest/dataset/Intermediate/VulFix/vulfix_py_novul_cleaned.json"
+        vulfix_lang_vul_file = "/root/projects/VDTest/dataset/Intermediate/VulFix/vulfix_py_vul_cleaned.json"
+    elif lang == 'Java':
+        vulfix_lang_novul_file = "/root/projects/VDTest/dataset/Intermediate/VulFix/vulfix_java_novul_cleaned.json"
+        vulfix_lang_vul_file = "/root/projects/VDTest/dataset/Intermediate/VulFix/vulfix_java_vul_cleaned.json"
+    else:
+        raise RuntimeError
 
     ## Step 6: Check commits validity
-    # check_commits_existence_by_fetching(vulfix_java_vul_file)
-    # check_local_repos_and_clone(vulfix_java_vul_file)
-    # check_commits_reproducibility_by_cloning(vulfix_java_vul_file)
-    # final_check(vulfix_java_vul_file)
-    # count_repo_cve_commits(vulfix_java_vul_file)
+    # check_commits_existence_by_fetching(vulfix_lang_vul_file)
+    # check_local_repos_and_clone(vulfix_lang_vul_file)
+    # check_commits_reproducibility_by_cloning(vulfix_lang_vul_file)
+    # final_check(vulfix_lang_vul_file)
+    count_repo_cve_commits(vulfix_lang_vul_file)
 
 
     ## Step 5: Build filtered dataset
-    # vul_tasks_fpath = build_dataset_containing_cves_with_valid_single_commit(
-    #     lang='Java',
-    #     dataset_fpath=vulfix_java_vul_file,
+    # final_vul_tasks_fpath = build_dataset_containing_cves_with_valid_single_commit(
+    #     lang=lang,
+    #     dataset_fpath=vulfix_lang_vul_file,
     #     output_root="/root/projects/VDTest/dataset/Final/VIEW_1000"
     # )
-    vul_tasks_fpath = "/root/projects/VDTest/dataset/Final/VIEW_1000/java_vul_tasks_vulfix.json"
 
-    update_dataset_with_commit_file_count(vul_tasks_fpath, suffix=['.java'])
+
+    ## Step 6: Update final dataset with file count
+    if lang == 'Python':
+        final_vul_tasks_fpath = "/root/projects/VDTest/dataset/Final/VIEW_1000/py_vul_tasks_vulfix.json"
+        # update_dataset_with_commit_file_count(vul_tasks_fpath, suffix=['.py'])
+    elif lang == 'Java':
+        final_vul_tasks_fpath = "/root/projects/VDTest/dataset/Final/VIEW_1000/java_vul_tasks_vulfix.json"
+        # update_dataset_with_commit_file_count(vul_tasks_fpath, suffix=['.java'])
+    else:
+        raise RuntimeError
