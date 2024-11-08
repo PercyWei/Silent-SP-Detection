@@ -201,9 +201,61 @@ def find_useless_repos(local_repos_root: str = "/root/projects/clone_projects"):
     #     shutil.rmtree(repo_dpath)
 
 
+"""COUNT DATASET REPOs"""
+
+
+def _count_dataset_repos(dataset_fpath: str) -> Dict[str, int]:
+    with open(dataset_fpath, 'r') as f:
+        dataset = json.load(f)
+
+    repo2cnum: Dict[str, int] = {}
+    for data in dataset:
+        repo = data['repo']
+        if repo not in repo2cnum:
+            repo2cnum[repo] = 1
+        else:
+            repo2cnum[repo] += 1
+
+    print(f"Repo number: {len(repo2cnum)}")
+
+    return repo2cnum
+
+
+def count_lang_dataset_repos(lang: Literal['Python', 'Java']):
+    if lang == 'Python':
+        dataset_files = [
+            "/root/projects/VDTest/dataset/Final/VIEW_1000/py_vul_tasks_treevul.json",
+            "/root/projects/VDTest/dataset/Final/VIEW_1000/py_vul_tasks_vulfix.json",
+            "/root/projects/VDTest/dataset/Final/VIEW_1000/py_vul_tasks_nvdvul_v1.json"
+        ]
+    elif lang == 'Java':
+        dataset_files = [
+            "/root/projects/VDTest/dataset/Final/VIEW_1000/java_vul_tasks_treevul.json",
+            "/root/projects/VDTest/dataset/Final/VIEW_1000/java_vul_tasks_vulfix.json",
+        ]
+    else:
+        raise RuntimeError
+
+    total_repo2cnum = {}
+    for dataset_file in dataset_files:
+        cur_repo2cnum = _count_dataset_repos(dataset_file)
+        for repo in cur_repo2cnum:
+            if repo not in total_repo2cnum:
+                total_repo2cnum[repo] = cur_repo2cnum[repo]
+            else:
+                total_repo2cnum[repo] += cur_repo2cnum[repo]
+
+    total_repo2cnum = dict(sorted(total_repo2cnum.items(), key=lambda x: x[1], reverse=True))
+
+    print(f"Total repo number: {len(total_repo2cnum)}")
+    print(json.dumps(total_repo2cnum, indent=4))
+
+
 if __name__ == "__main__":
     pass
 
     # check_python_datasets()
 
     # find_useless_repos()
+
+    count_lang_dataset_repos("Java")
