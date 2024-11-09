@@ -24,6 +24,7 @@ from openai.types.chat.completion_create_params import ResponseFormat
 from preprocess.repo_manage import format_size, get_remote_repo_size
 from preprocess.process_all import update_dataset_with_commit_file_count
 from preprocess.util import clone_repo, is_commit_exist, is_commit_exist_in_repo
+from utils import selenium_driver_setup, selenium_driver_close
 
 
 """RAW DATASET"""
@@ -331,12 +332,7 @@ def search_cwe_for_dataset(dataset_fpath: str, log_fpath: str):
     with open(dataset_fpath, 'r') as f:
         dataset = json.load(f)
 
-    chrome_options = Options()
-    chrome_options.add_argument("--headless")
-    chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
+    driver = selenium_driver_setup()
 
     try:
         nvd_not_found: List[str] = []
@@ -375,7 +371,7 @@ def search_cwe_for_dataset(dataset_fpath: str, log_fpath: str):
                 "nvd_with_cwe": nvd_with_cwe
             }, f, indent=4)
     finally:
-        driver.quit()
+        selenium_driver_close(driver)
 
 
 """COMMITS CHECKING"""
