@@ -426,7 +426,7 @@ def get_class_signature_from_diff_file(
         assert line_id_old2merge is not None and line_id_new2merge is not None
 
         if old_class_range is not None and line_id_old2merge is not None:
-            assert is_overlap_in_merged_file(old_class_range, line_id_old2merge, new_class_range, line_id_new2merge)
+            assert is_overlap_in_merged_file(old_class_range, new_class_range, line_id_old2merge, line_id_new2merge)
         else:
             assert old_class_range is not None or line_id_old2merge is not None
 
