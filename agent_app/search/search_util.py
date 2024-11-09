@@ -10,7 +10,6 @@ from dataclasses import dataclass
 
 from agent_app.data_structures import LineRange, BaseCodeSnippetLocation
 from agent_app.static_analysis.py_ast_parse import (
-    cal_class_or_func_def_range,
     extract_class_sig_lines_from_file as extract_class_sig_lines_from_py_file
 )
 from agent_app.static_analysis.java_ast_parse import (
@@ -169,20 +168,6 @@ def find_java_files(dir_path: str) -> List[str]:
     """
     abs_java_fpaths = glob.glob(os.path.join(dir_path, "**/*.java"), recursive=True)
     return abs_java_fpaths
-
-
-"""EXTRACT IMPORTED LIB"""
-
-
-def lib_info_to_seq(pkg_path: str, attr_name: str, alias_name: str) -> str:
-    if attr_name == "":
-        import_seq = f"import {pkg_path}"
-    else:
-        import_seq = f"from {pkg_path} import {attr_name}"
-
-    import_seq = import_seq + f" as {alias_name}" if alias_name != "" else import_seq
-
-    return import_seq
 
 
 """MERGED LINES"""

@@ -672,6 +672,18 @@ class PySearchManager(BaseSearchManager):
     """SEARCH FUNCTIONS"""
 
 
+    @staticmethod
+    def _lib_info_to_seq(pkg_path: str, attr_name: str, alias_name: str) -> str:
+        if attr_name == "":
+            import_seq = f"import {pkg_path}"
+        else:
+            import_seq = f"from {pkg_path} import {attr_name}"
+
+        import_seq = import_seq + f" as {alias_name}" if alias_name != "" else import_seq
+
+        return import_seq
+
+
     def _search_class_or_func_in_file_imports(self, call_name: str, file_path: str) -> Tuple[str, PySearchResult] | None:
         """Search for the class / function among the imported statements in the specified file.
 
@@ -700,7 +712,7 @@ class PySearchManager(BaseSearchManager):
 
                 # FIXME: Instead of looking for the import statement in the original code, we reconstruct
                 #       an individual import statement based on the current import. Are any improvements needed?
-                import_seq = search_util.lib_info_to_seq(pkg_path, attr_name, alias_name)
+                import_seq = self._lib_info_to_seq(pkg_path, attr_name, alias_name)
 
                 desc = f"It is imported through '{import_seq}'. The library is a {lib_source}, and "
                 if lib_source == "custom library":
