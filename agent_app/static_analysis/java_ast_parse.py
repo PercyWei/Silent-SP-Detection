@@ -216,8 +216,8 @@ def extract_class_sig_lines_from_file_by_processing_java_script(
     args.extend(['-s', os.path.abspath(code_fpath)])
     args.extend(['-o', os.path.abspath(output_fpath)])
     args.extend(['-cn', class_name])
-    args.extend(['-cs', class_start])
-    args.extend(['-ce', class_end])
+    args.extend(['-cs', str(class_start)])
+    args.extend(['-ce', str(class_end)])
     if base:
         args.append('-b')
     if detailed:
