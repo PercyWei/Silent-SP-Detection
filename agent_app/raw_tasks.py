@@ -37,9 +37,8 @@ class RawLocalTask(RawTask):
             task_id: str,
             cve_id: str | None,
             commit_type: int,
-            cwe_id: str | None,
-            cwe_depth: int | None,
-            repo_name: str,
+            cwe_list: List[str] | None,
+            auth_repo: str,
             commit_hash: str,
             local_repo_dpath: str
     ):
@@ -48,11 +47,10 @@ class RawLocalTask(RawTask):
         self._task_id = task_id
         # target
         self.commit_type = commit_type
-        self.cwe_id = cwe_id
-        self.cwe_depth = cwe_depth
+        self.cwe_list = cwe_list
         # source
         self.cve_id = cve_id
-        self.repo_name = repo_name
+        self.auth_repo = auth_repo
         self.commit_hash = commit_hash
         self.local_repo_dpath = local_repo_dpath
 
@@ -88,7 +86,7 @@ class RawLocalTask(RawTask):
 
     def prepare_local_repo(self) -> bool:
         if not os.path.exists(self.local_repo_dpath):
-            res = clone_repo(self.repo_name, self.local_repo_dpath)
+            res = clone_repo(self.auth_repo, self.local_repo_dpath)
             return res
         return True
 
@@ -111,11 +109,10 @@ class RawLocalTask(RawTask):
         meta = {
             "task_info": {
                 "commit_type": self.commit_type,
-                "cwe_id": self.cwe_id,
-                "cwe_depth": self.cwe_depth,
+                "cwe_list": self.cwe_list,
                 "instance_id": self.task_id,
                 "cve_id": self.cve_id,
-                "repo": self.repo_name,
+                "repo": self.auth_repo,
                 "commit_hash": self.commit_hash,
                 "commit_content": self.commit_content
             },
@@ -133,7 +130,7 @@ class RawLocalTask(RawTask):
 
     def to_task(self) -> Task:
         return Task(
-            repo_name=self.repo_name,
+            repo_name=self.auth_repo,
             commit_hash=self.commit_hash,
             commit_content=self.commit_content,
             local_repo_dpath=self.local_repo_dpath,

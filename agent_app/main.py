@@ -366,22 +366,27 @@ def construct_tasks(tasks_map_file: str, local_repos_dpath: str) -> List[RawLoca
         commit_type = task_info["commit_type"]
         if (globals.expr_type == "vul" and commit_type == 1) or (globals.expr_type == "novul" and commit_type == 0):
             task_id = task_info["task_id"]
+            auth_repo = task_info["repo"]
 
+            # Filter 1
             if task_id in checked_task_ids:
                 continue
 
-            repo_name = task_info["repo"]
-            assert len(repo_name.split('/')) == 2
+            # Filter 2
+            local_repo_dpath = os.path.join(local_repos_dpath, auth_repo.replace('/', '_'))
+            if not os.path.isdir(local_repo_dpath):
+                continue
 
-            local_repo_dpath = os.path.join(local_repos_dpath, repo_name.replace('/', '_'))
+            # Filter 3
+            if task_info["file_count"] > 5:
+                continue
 
             task = RawLocalTask(
                 task_id=task_id,
                 cve_id=task_info["cve_id"],
                 commit_type=commit_type,
-                cwe_id=task_info["cwe_id"],
-                cwe_depth=task_info["cwe_depth"],
-                repo_name=repo_name,
+                cwe_list=task_info["cwe_list"],
+                auth_repo=auth_repo,
                 commit_hash=task_info["commit_hash"],
                 local_repo_dpath=local_repo_dpath
             )
@@ -407,10 +412,10 @@ def construct_tasks(tasks_map_file: str, local_repos_dpath: str) -> List[RawLoca
 def group_local_tasks_by_repo(tasks: List[RawLocalTask]) -> Dict[str, List[RawLocalTask]]:
     groups = {}
     for task in tasks:
-        repo_name = task.repo_name
-        if repo_name not in groups:
-            groups[repo_name] = []
-        groups[repo_name].append(task)
+        auth_repo = task.auth_repo
+        if auth_repo not in groups:
+            groups[auth_repo] = []
+        groups[auth_repo].append(task)
     return groups
 
 
