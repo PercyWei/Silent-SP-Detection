@@ -8,7 +8,7 @@ from typing import *
 """BASIC CONFIG"""
 
 # Project language (Python / Java)
-lang: str = ""
+lang: Literal['Python', 'Java'] = 'Python'
 
 # Overall output directory for results
 output_dpath: str = ""
@@ -62,4 +62,6 @@ test_exec_timeout: int = 300
 """OTHER CONFIG"""
 
 # Task
-task_limit: int = 5
+task_limit: int = 1
+
+java_standard_packages_file: str = "/root/projects/VDTest/data/JavaPKG/java_23_packages.json"

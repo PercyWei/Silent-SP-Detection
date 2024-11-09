@@ -13,6 +13,7 @@ from collections import defaultdict
 from collections.abc import MutableMapping
 from abc import abstractmethod
 
+from agent_app import globals
 from agent_app.search import search_util
 from agent_app.search.search_util import PySearchResult, JavaSearchResult
 from agent_app.static_analysis.py_ast_parse import ASTParser as PyASTParser
@@ -46,6 +47,7 @@ RESULT_SHOW_LIMIT = 3
 
 
 class BaseSearchManager:
+
     def __init__(self, local_repo_dpath: str, **kwargs):
         # Basic Info
         self.local_repo_dpath = local_repo_dpath
@@ -142,6 +144,7 @@ class BaseSearchManager:
 
 
 class PySearchManager(BaseSearchManager):
+
     def __init__(
             self,
             local_repo_dpath: str,
@@ -1239,6 +1242,7 @@ class PySearchManager(BaseSearchManager):
 
 
 class JavaSearchManager(BaseSearchManager):
+
     def __init__(
             self,
             local_repo_dpath: str,
@@ -1252,7 +1256,6 @@ class JavaSearchManager(BaseSearchManager):
         # -------------------------------- I. Basic Info -------------------------------- #
         super().__init__(local_repo_dpath)
 
-        # FIXME: NEED INITIALIZATION!
         self.standard_packages: List[str] = []
         # full package name -> dir path
         self.custom_packages: Dict[str, str | None] = {}
@@ -1347,6 +1350,9 @@ class JavaSearchManager(BaseSearchManager):
 
         # (4) Collect all parsed files
         self._update_parsed_files()
+
+        # (5) Update standard packages
+        self._update_standard_packages()
 
 
     def _update_commit_file_info(
@@ -1493,6 +1499,11 @@ class JavaSearchManager(BaseSearchManager):
 
     def _update_parsed_files(self) -> None:
         self.parsed_files: List[str] = list(self.diff_files.keys()) + list(self.nodiff_files.keys())
+
+
+    def _update_standard_packages(self) -> None:
+        with open(globals.java_standard_packages_file, 'r') as f:
+            self.standard_packages = json.load(f)
 
 
     """EXTRACT CODE SNIPPET"""
