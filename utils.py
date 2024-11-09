@@ -5,6 +5,7 @@ from typing import *
 from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
+from webdriver_manager.chrome import ChromeDriverManager
 
 from logs import base_log_and_cprint
 
@@ -60,7 +61,7 @@ def run_command(
 """CRAWLER"""
 
 
-def selenium_driver_setup(driver_type='chrome', driver_path='/usr/local/bin/chromedriver') -> webdriver.Remote | None:
+def selenium_driver_setup(driver_type='chrome') -> webdriver.Remote | None:
     driver = None
 
     if driver_type == 'chrome':
@@ -69,10 +70,7 @@ def selenium_driver_setup(driver_type='chrome', driver_path='/usr/local/bin/chro
         chrome_options.add_argument("--disable-gpu")
         chrome_options.add_argument("--no-sandbox")
         chrome_options.add_argument("--disable-dev-shm-usage")
-
-        service = Service(executable_path=driver_path)
-
-        driver = webdriver.Chrome(service=service, options=chrome_options)
+        driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
     else:
         print("Driver type not supported")
 
