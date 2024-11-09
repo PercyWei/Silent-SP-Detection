@@ -11,7 +11,7 @@ from enum import Enum
 from loguru import logger
 
 from agent_app.model import common
-from agent_app.search.search_manage import PySearchManager
+from agent_app.search.search_manage import PySearchManager, JavaSearchManager
 from agent_app.data_structures import MessageThread
 from agent_app.util import LanguageNotSupportedError, parse_function_invocation
 
@@ -231,7 +231,7 @@ Now based on the given context, write a ranking section that conforms to the Ran
 """
 
 
-def get_task_prompt(task: ProxyTask, lang: Literal['Python', 'Java']) -> str:
+def get_task_prompt(lang: Literal['Python', 'Java'], task: ProxyTask) -> str:
     if task == ProxyTask.HYP_PROPOSAL:
         return _get_hyp_proposal_prompt()
     elif task == ProxyTask.HYP_CHECK:
@@ -247,8 +247,8 @@ def get_task_prompt(task: ProxyTask, lang: Literal['Python', 'Java']) -> str:
 
 
 def run(
-        task: ProxyTask,
         lang: Literal['Python', 'Java'],
+        task: ProxyTask,
         text: str,
         prev_summary: str | None = None
 ) -> Tuple[str, MessageThread]:
@@ -256,8 +256,8 @@ def run(
     Run the agent to extract useful information in json format.
 
     Args:
-        task (ProxyTask): Task of Proxy Agent.
         lang (str): Programming language. Only choose from 'Python' and 'Java'.
+        task (ProxyTask): Task of Proxy Agent.
         text (str): Text to be extracted.
         prev_summary (str): The summary of the previous failed retries.
     Returns:
@@ -265,7 +265,7 @@ def run(
         msg_threads (MessageThread): MessageThread instance containing current conversation with Proxy Agent.
     """
     msg_thread = MessageThread()
-    task_prompt = get_task_prompt(task, lang)
+    task_prompt = get_task_prompt(lang, task)
     msg_thread.add_system(task_prompt)
     msg_thread.add_user(text)
     if prev_summary is not None:
@@ -294,11 +294,12 @@ def is_valid_json(json_str: str) -> Tuple[bool, Union[List, Dict, None]]:
     return True, data
 
 
-def is_valid_response(data: List | Dict, task: ProxyTask) -> Tuple[bool, str, str]:
+def is_valid_response(lang: Literal['Python', 'Java'], data: List | Dict, task: ProxyTask) -> Tuple[bool, str, str]:
     """
     Check if input data is a valid response
 
     Args:
+        lang (str): Programming language. Only choose from 'Python' and 'Java'.
         data (List | Dict | None): Json data.
         task (ProxyTask): Task of Proxy Agent.
     Returns:
@@ -447,7 +448,12 @@ def is_valid_response(data: List | Dict, task: ProxyTask) -> Tuple[bool, str, st
                 return False, simp_reason, verb_reason
 
             # NOTE: Generally speaking, the name of the api called by LLM is not wrong
-            function = getattr(PySearchManager, func_name, None)
+            if lang == 'Python':
+                function = getattr(PySearchManager, func_name, None)
+            elif lang == 'Java':
+                function = getattr(JavaSearchManager, func_name, None)
+            else:
+                raise LanguageNotSupportedError(lang)
             if function is None:
                 simp_reason = verb_reason = "An API call invokes a non-existent function"
                 verb_reason += f" and the API call is: {api_call}"
@@ -540,7 +546,7 @@ def run_with_retries(
             prev_summary += "\n\nPlease avoid making the same mistake in your next answer."
 
         # Ask the LLM
-        proxy_response, new_thread = run(task, lang, text, prev_summary)
+        proxy_response, new_thread = run(lang, task, text, prev_summary)
         msg_threads.append(new_thread)
 
         # Check the format
@@ -554,7 +560,7 @@ def run_with_retries(
             continue
 
         # Check the content
-        valid, simp_reason, verb_reason = is_valid_response(data, task)
+        valid, simp_reason, verb_reason = is_valid_response(lang, data, task)
         if not valid:
             logger.debug(f"Extracted a invalid result in json. Reason: {verb_reason}.")
 
