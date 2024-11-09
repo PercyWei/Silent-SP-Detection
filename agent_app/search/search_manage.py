@@ -673,7 +673,7 @@ class PySearchManager(BaseSearchManager):
 
 
     @staticmethod
-    def _lib_info_to_seq(pkg_path: str, attr_name: str, alias_name: str) -> str:
+    def lib_info_to_seq(pkg_path: str, attr_name: str, alias_name: str) -> str:
         if attr_name == "":
             import_seq = f"import {pkg_path}"
         else:
@@ -712,7 +712,7 @@ class PySearchManager(BaseSearchManager):
 
                 # FIXME: Instead of looking for the import statement in the original code, we reconstruct
                 #       an individual import statement based on the current import. Are any improvements needed?
-                import_seq = self._lib_info_to_seq(pkg_path, attr_name, alias_name)
+                import_seq = self.lib_info_to_seq(pkg_path, attr_name, alias_name)
 
                 desc = f"It is imported through '{import_seq}'. The library is a {lib_source}, and "
                 if lib_source == "custom library":
