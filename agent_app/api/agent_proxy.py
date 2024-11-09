@@ -248,89 +248,6 @@ def get_task_prompt(task: ProxyTask, lang: Literal['Python', 'Java']) -> str:
         return _get_rank_prompt()
 
 
-def run_with_retries(
-        lang: Literal['Python', 'Java'],
-        text: str,
-        task: ProxyTask,
-        retries: int = 3,
-        with_summary: bool = False
-) -> Tuple[str | None, str | None, List[MessageThread]]:
-    """Main method to ask the LLM Agent to extract JSON answer from the given text with retries.
-
-    Args:
-        lang (str): Programming language. Only choose from 'Python' and 'Java'.
-        text (str): Text to be extracted.
-        task (ProxyTask): Task of Proxy Agent.
-        retries (int): Number of retries for Proxy Agent.
-        with_summary (bool): Use the summary of previous failed retries in the next attempt if True, otherwise not.
-    Returns:
-        str | None: Valid response in JSON format if the extraction succeed, otherwise None.
-        str | None: Failure summary if the extraction failed, otherwise None.
-        List[MessageThread]: List of all MessageThread instances.
-    """
-    msg_threads = []
-
-    proxy_responses: List[str] = []
-    failure_simp_reasons: List[str] = []
-    failure_verb_reasons: List[str] = []
-
-    ## Step 1: Ask the Proxy Agent with retries
-    for idx in range(1, retries + 1):
-        logger.debug(f"Trying to select {task.task_target()} in json. Try {idx} of {retries}.")
-
-        # Summarize the previous failed retries
-        prev_summary = None
-        if with_summary and idx > 1:
-            prev_summary = "Previous retries have failed, and their results and reasons for failure are as below:"
-            for i, (res, simp_reason) in enumerate(zip(proxy_responses, failure_simp_reasons)):
-                prev_summary += (f"\n\nRetry {i + 1}: "
-                                 f"\n - Result: {res}"
-                                 f"\n - Reason: {simp_reason}")
-            prev_summary += "\n\nPlease avoid making the same mistake in your next answer."
-
-        # Ask the LLM
-        proxy_response, new_thread = run(task, lang, text, prev_summary)
-        msg_threads.append(new_thread)
-
-        # Check the format
-        is_valid, data = is_valid_json(proxy_response)
-        if not is_valid:
-            logger.debug("Extracted a result in invalid json.")
-
-            proxy_responses.append(proxy_response)
-            failure_simp_reasons.append("Invalid json")
-            failure_verb_reasons.append("Invalid json")
-            continue
-
-        # Check the content
-        valid, simp_reason, verb_reason = is_valid_response(data, task)
-        if not valid:
-            logger.debug(f"Extracted a invalid result in json. Reason: {verb_reason}.")
-
-            proxy_responses.append(proxy_response)
-            failure_simp_reasons.append(simp_reason)
-            failure_verb_reasons.append(verb_reason)
-            continue
-
-        logger.debug("Extracted a valid result in json.")
-        return proxy_response, None, msg_threads
-
-    ## Step 2: Extraction failed, summarize the failure reasons and return
-    failure_summary = f"We failed to extract valid {task.task_target()} in JSON format with retries. "
-
-    if len(set(failure_simp_reasons)) == 1:
-        # Retires failed for the same reason
-        failure_summary += f"The reason is: {failure_simp_reasons[0]}."
-    else:
-        # Retires failed for the different reasons
-        # TODO: For multiple failure reasons, do we need to use LLM to summary?
-        failure_summary += "The reasons include:"
-        for i, reason in enumerate(failure_simp_reasons):
-            failure_summary += f"\n - {i + 1}: {reason}"
-
-    return None, failure_summary, msg_threads
-
-
 def run(
         task: ProxyTask,
         lang: Literal['Python', 'Java'],
@@ -579,3 +496,89 @@ def is_valid_response(data: List | Dict, task: ProxyTask) -> Tuple[bool, str, st
                 return False, simp_reason, verb_reason
 
     return True, "OK", "OK"
+
+
+"""MAIN ENTRY"""
+
+
+def run_with_retries(
+        lang: Literal['Python', 'Java'],
+        text: str,
+        task: ProxyTask,
+        retries: int = 3,
+        with_summary: bool = False
+) -> Tuple[str | None, str | None, List[MessageThread]]:
+    """Main method to ask the LLM Agent to extract JSON answer from the given text with retries.
+
+    Args:
+        lang (str): Programming language. Only choose from 'Python' and 'Java'.
+        text (str): Text to be extracted.
+        task (ProxyTask): Task of Proxy Agent.
+        retries (int): Number of retries for Proxy Agent.
+        with_summary (bool): Use the summary of previous failed retries in the next attempt if True, otherwise not.
+    Returns:
+        str | None: Valid response in JSON format if the extraction succeed, otherwise None.
+        str | None: Failure summary if the extraction failed, otherwise None.
+        List[MessageThread]: List of all MessageThread instances.
+    """
+    msg_threads = []
+
+    proxy_responses: List[str] = []
+    failure_simp_reasons: List[str] = []
+    failure_verb_reasons: List[str] = []
+
+    ## Step 1: Ask the Proxy Agent with retries
+    for idx in range(1, retries + 1):
+        logger.debug(f"Trying to select {task.task_target()} in json. Try {idx} of {retries}.")
+
+        # Summarize the previous failed retries
+        prev_summary = None
+        if with_summary and idx > 1:
+            prev_summary = "Previous retries have failed, and their results and reasons for failure are as below:"
+            for i, (res, simp_reason) in enumerate(zip(proxy_responses, failure_simp_reasons)):
+                prev_summary += (f"\n\nRetry {i + 1}: "
+                                 f"\n - Result: {res}"
+                                 f"\n - Reason: {simp_reason}")
+            prev_summary += "\n\nPlease avoid making the same mistake in your next answer."
+
+        # Ask the LLM
+        proxy_response, new_thread = run(task, lang, text, prev_summary)
+        msg_threads.append(new_thread)
+
+        # Check the format
+        is_valid, data = is_valid_json(proxy_response)
+        if not is_valid:
+            logger.debug("Extracted a result in invalid json.")
+
+            proxy_responses.append(proxy_response)
+            failure_simp_reasons.append("Invalid json")
+            failure_verb_reasons.append("Invalid json")
+            continue
+
+        # Check the content
+        valid, simp_reason, verb_reason = is_valid_response(data, task)
+        if not valid:
+            logger.debug(f"Extracted a invalid result in json. Reason: {verb_reason}.")
+
+            proxy_responses.append(proxy_response)
+            failure_simp_reasons.append(simp_reason)
+            failure_verb_reasons.append(verb_reason)
+            continue
+
+        logger.debug("Extracted a valid result in json.")
+        return proxy_response, None, msg_threads
+
+    ## Step 2: Extraction failed, summarize the failure reasons and return
+    failure_summary = f"We failed to extract valid {task.task_target()} in JSON format with retries. "
+
+    if len(set(failure_simp_reasons)) == 1:
+        # Retires failed for the same reason
+        failure_summary += f"The reason is: {failure_simp_reasons[0]}."
+    else:
+        # Retires failed for the different reasons
+        # TODO: For multiple failure reasons, do we need to use LLM to summary?
+        failure_summary += "The reasons include:"
+        for i, reason in enumerate(failure_simp_reasons):
+            failure_summary += f"\n - {i + 1}: {reason}"
+
+    return None, failure_summary, msg_threads
