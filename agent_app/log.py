@@ -27,6 +27,10 @@ def log_exception(exception):
     logger.exception(exception)
 
 
+def log_debug(msg):
+    logger.debug(msg)
+
+
 def print_banner(msg: str) -> None:
     if not print_stdout:
         return

@@ -10,8 +10,7 @@ from copy import deepcopy
 from docstring_parser import parse
 from abc import abstractmethod
 
-from loguru import logger
-
+from agent_app import log
 from agent_app.api.agent_proxy import ProxyTask, run_with_retries as run_proxy_with_retries
 from agent_app.CWE.cwe_manage import CWEManager
 from agent_app.commit.commit_manage import PyCommitManager, JavaCommitManager
@@ -24,7 +23,6 @@ from agent_app.data_structures import (
     ProcessActionStatus, ProcessSearchStatus
 )
 from agent_app.task import Task
-from agent_app.log import log_exception
 from agent_app import globals
 
 
@@ -183,15 +181,15 @@ class ProcessManager:
             call_res = func_obj(**intent.call_arg_values)
         except TypeError as e:
             # TypeError can happen when the function is called with wrong parameters
-            log_exception(e)
+            log.log_exception(e)
             error = str(e)
             call_res = (error, SearchStatus.DISPATCH_ERROR, [])
         except Exception as e:
-            log_exception(e)
+            log.log_exception(e)
             error = str(e)
             call_res = (error, SearchStatus.DISPATCH_ERROR, [])
 
-        logger.debug(f"Result of {intent.call_stmt}: {call_res}")
+        log.log_debug(f"Result of {intent.call_stmt}: {call_res}")
 
         # Record this call and its result separately
         _, search_status, _ = call_res

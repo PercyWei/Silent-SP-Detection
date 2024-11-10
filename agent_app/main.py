@@ -15,14 +15,14 @@ from concurrent.futures import ProcessPoolExecutor
 
 from loguru import logger
 
-from agent_app import globals, globals_mut, inference, log
+from agent_app import globals, globals_mut, log
 from agent_app.data_structures import ProcessStatus
 from agent_app.api.manage import PyProcessManager, JavaProcessManager
 from agent_app.model import common
 from agent_app.model.register import register_all_models
 from agent_app.raw_tasks import RawTask, RawLocalTask
 from agent_app.task import Task
-from agent_app.log import get_timestamp, log_and_always_print, log_and_cprint, always_cprint
+from agent_app.flow_control import inference
 from agent_app.util import create_dir_if_not_exists
 
 
@@ -166,20 +166,20 @@ def run_task_groups(
     globals_mut.init_total_num_tasks(num_tasks)
 
     # Print some info about task
-    log_and_always_print(f"Total number of tasks: {num_tasks}")
-    log_and_always_print(f"Total number of processes: {num_processes}")
-    log_and_always_print(f"Task group info: (number of groups: {len(task_groups)})")
+    log.log_and_always_print(f"Total number of tasks: {num_tasks}")
+    log.log_and_always_print(f"Total number of processes: {num_processes}")
+    log.log_and_always_print(f"Task group info: (number of groups: {len(task_groups)})")
     for key, tasks in task_groups.items():
-        log_and_always_print(f"\t{key}: {len(tasks)} tasks")
+        log.log_and_always_print(f"\t{key}: {len(tasks)} tasks")
 
     if num_processes == 1:
         # Single-process mode
-        log_and_always_print("Running in single-process mode.")
+        log.log_and_always_print("Running in single-process mode.")
         run_tasks_serial(all_tasks)
-        log_and_always_print("Finished all tasks sequentially.")
+        log.log_and_always_print("Finished all tasks sequentially.")
     else:
         # Multi-process mode
-        log_and_always_print("Running in multi-process mode.")
+        log.log_and_always_print("Running in multi-process mode.")
         run_task_groups_parallel(task_groups, num_processes)
 
 
@@ -199,14 +199,14 @@ def run_task_groups_parallel(task_groups: Mapping[str, Sequence[RawTask]], num_p
     task_group_ids_items: List[Tuple[str, Sequence[RawTask]]] = sorted(
         task_groups.items(), key=lambda x: len(x[1]), reverse=True
     )
-    log_and_always_print(f"Sorted task groups: {[x[0] for x in task_group_ids_items]}")
+    log.log_and_always_print(f"Sorted task groups: {[x[0] for x in task_group_ids_items]}")
     try:
         # Use ProcessPoolExecutor instead of multiprocessing.Pool to support nested sub-processing
         group_ids, group_tasks = zip(*task_group_ids_items)
         with ProcessPoolExecutor(num_processes) as executor:
             executor.map(run_task_group, group_ids, group_tasks)
     finally:
-        log_and_always_print("Finishing all tasks in the pool.")
+        log.log_and_always_print("Finishing all tasks in the pool.")
 
 
 def run_task_group(task_group_id: str, task_group_items: List[RawTask]) -> None:
@@ -214,14 +214,14 @@ def run_task_group(task_group_id: str, task_group_items: List[RawTask]) -> None:
     Run all tasks in a task group sequentially.
     Main entry to parallel processing.
     """
-    log_and_always_print(f"Starting process for task group {task_group_id}. Number of tasks: {len(task_group_items)}.")
+    log.log_and_always_print(f"Starting process for task group {task_group_id}. Number of tasks: {len(task_group_items)}.")
 
     for task in task_group_items:
         # Within a group, the runs are always sequential
         run_task_in_subprocess(task)
-        log_and_always_print(globals_mut.inc_task_return_msg())
+        log.log_and_always_print(globals_mut.inc_task_return_msg())
 
-    log_and_always_print(f"{globals_mut.inc_task_group_return_msg()} Finished task group {task_group_id}.")
+    log.log_and_always_print(f"{globals_mut.inc_task_group_return_msg()} Finished task group {task_group_id}.")
 
 
 def run_task_in_subprocess(task: RawTask) -> None:
@@ -244,11 +244,11 @@ def run_raw_task(task: RawTask, print_callback: Callable[[dict], None] | None = 
     """
     task_id = task.task_id
 
-    start_time_s = get_timestamp()
+    start_time_s = log.get_timestamp()
     task_output_dpath = os.path.join(globals.expr_dpath, f"{task_id}_{start_time_s}")
     create_dir_if_not_exists(task_output_dpath)
 
-    log_and_always_print("=" * 10 + f" Running task {task_id} " + "=" * 10)
+    log.log_and_always_print("=" * 10 + f" Running task {task_id} " + "=" * 10)
 
     all_proc_status = None
     try:
@@ -274,7 +274,7 @@ def run_raw_task(task: RawTask, print_callback: Callable[[dict], None] | None = 
 
         task.dump_meta_data(task_output_dpath, {"completion_info": completion_info})
 
-    log_and_always_print(run_status_message)
+    log.log_and_always_print(run_status_message)
 
     return all_proc_status is not None
 
@@ -302,7 +302,7 @@ def do_inference(
     else:
         raise RuntimeError(f"Language {globals.lang} not supported yet.")
 
-    log_and_cprint(f"Manager preparation: {time.time() - start_time.timestamp()}")
+    log.log_and_cprint(f"Manager preparation: {time.time() - start_time.timestamp()}")
 
     all_proc_status = None
     try:
@@ -361,7 +361,7 @@ def construct_tasks(tasks_map_file: str, local_repos_dpath: str) -> List[RawLoca
     with open(tasks_map_file) as f:
         tasks_map = json.load(f)
 
-    log_and_always_print("Adding tasks ...")
+    log.log_and_always_print("Adding tasks ...")
     for i, task_info in enumerate(tasks_map):
         commit_type = task_info["commit_type"]
         if (globals.expr_type == "vul" and commit_type == 1) or (globals.expr_type == "novul" and commit_type == 0):
@@ -378,7 +378,7 @@ def construct_tasks(tasks_map_file: str, local_repos_dpath: str) -> List[RawLoca
                 continue
 
             # Filter 3
-            if task_info["file_count"] > 5:
+            if task_info["file_count"] == "NOT COUNT" or task_info["file_count"] > 5:
                 continue
 
             task = RawLocalTask(
@@ -394,10 +394,10 @@ def construct_tasks(tasks_map_file: str, local_repos_dpath: str) -> List[RawLoca
             # Select tasks initialised successfully
             if task.valid:
                 valid_tasks.append(task)
-                log_and_cprint(f"{task_id}: Done!", style="green")
+                log.log_and_cprint(f"{task_id}: Done!", style="green")
             else:
                 invalid_tasks.append({"task_id": task.task_id, "cve_id": task.cve_id})
-                log_and_cprint(f"{task_id}: Failed!", style="red")
+                log.log_and_cprint(f"{task_id}: Failed!", style="red")
 
             if len(valid_tasks) >= globals.task_limit:
                 break
@@ -432,7 +432,7 @@ def main(args):
 
     # 3. dir to current experiment
     globals.expr_type = args.expr_type
-    expr_name = args.expr_type + "_" + get_timestamp()
+    expr_name = args.expr_type + "_" + log.get_timestamp()
     expr_dpath = os.path.join(globals.output_dpath, expr_name)
     globals.expr_dpath = os.path.abspath(expr_dpath)
     create_dir_if_not_exists(globals.expr_dpath)
@@ -447,7 +447,7 @@ def main(args):
     globals.cwe_tree_file = args.cwe_tree_file
     if args.view_cwe_tree_files:
         if len(args.view_cwe_tree_files) % 2 != 0:
-            always_cprint("Error: The number of strings for --view-cwe-tree-files must be even.", style="red")
+            log.always_cprint("Error: The number of strings for --view-cwe-tree-files must be even.", style="red")
             sys.exit(1)
         else:
             view_cwe_tree_files = [(args.view_cwe_tree_files[i], args.view_cwe_tree_files[i + 1])

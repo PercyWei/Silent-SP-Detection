@@ -7,36 +7,12 @@ import re
 import json
 
 from typing import *
-from enum import Enum
-from loguru import logger
 
+from agent_app import log
 from agent_app.model import common
 from agent_app.search.search_manage import PySearchManager, JavaSearchManager
-from agent_app.data_structures import MessageThread
+from agent_app.data_structures import ProxyTask, MessageThread
 from agent_app.util import LanguageNotSupportedError, parse_function_invocation
-
-
-class ProxyTask(str, Enum):
-    HYP_PROPOSAL = "HYP_PROPOSAL"
-    HYP_CHECK = "HYP_CHECK"
-    PATCH_EXTRACTION = "PATCH_EXTRACTION"
-    CONTEXT_RETRIEVAL = "CONTEXT_RETRIEVAL"
-    SCORE = "SCORE"
-    RANK = "RANK"
-
-    def task_target(self) -> str:
-        if self == ProxyTask.HYP_PROPOSAL:
-            return "hypothesis"
-        elif self == ProxyTask.HYP_CHECK:
-            return "CWE type"
-        elif self == ProxyTask.PATCH_EXTRACTION:
-            return "patch_code"
-        elif self == ProxyTask.CONTEXT_RETRIEVAL:
-            return "search APIs"
-        elif self == ProxyTask.SCORE:
-            return "confidence score"
-        elif self == ProxyTask.RANK:
-            return "ranking"
 
 
 def _get_hyp_proposal_prompt() -> str:
@@ -533,7 +509,7 @@ def run_with_retries(
 
     ## Step 1: Ask the Proxy Agent with retries
     for idx in range(1, retries + 1):
-        logger.debug(f"Trying to select {task.task_target()} in json. Try {idx} of {retries}.")
+        log.log_debug(f"Trying to select {task.task_target()} in json. Try {idx} of {retries}.")
 
         # Summarize the previous failed retries
         prev_summary = None
@@ -552,7 +528,7 @@ def run_with_retries(
         # Check the format
         is_valid, data = is_valid_json(proxy_response)
         if not is_valid:
-            logger.debug("Extracted a result in invalid json.")
+            log.log_debug("Extracted a result in invalid json.")
 
             proxy_responses.append(proxy_response)
             failure_simp_reasons.append("Invalid json")
@@ -562,14 +538,14 @@ def run_with_retries(
         # Check the content
         valid, simp_reason, verb_reason = is_valid_response(lang, data, task)
         if not valid:
-            logger.debug(f"Extracted a invalid result in json. Reason: {verb_reason}.")
+            log.log_debug(f"Extractd a invalid result in json. Reason: {verb_reason}.")
 
             proxy_responses.append(proxy_response)
             failure_simp_reasons.append(simp_reason)
             failure_verb_reasons.append(verb_reason)
             continue
 
-        logger.debug("Extracted a valid result in json.")
+        log.log_debug("Extracted a valid result in json.")
         return proxy_response, None, msg_threads
 
     ## Step 2: Extraction failed, summarize the failure reasons and return

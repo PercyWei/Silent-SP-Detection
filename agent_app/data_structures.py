@@ -318,6 +318,32 @@ class FunctionCallIntent:
         }
 
 
+"""LLM MANAGE"""
+
+
+class ProxyTask(str, Enum):
+    HYP_PROPOSAL = "HYP_PROPOSAL"
+    HYP_CHECK = "HYP_CHECK"
+    PATCH_EXTRACTION = "PATCH_EXTRACTION"
+    CONTEXT_RETRIEVAL = "CONTEXT_RETRIEVAL"
+    SCORE = "SCORE"
+    RANK = "RANK"
+
+    def task_target(self) -> str:
+        if self == ProxyTask.HYP_PROPOSAL:
+            return "hypothesis"
+        elif self == ProxyTask.HYP_CHECK:
+            return "CWE type"
+        elif self == ProxyTask.PATCH_EXTRACTION:
+            return "patch_code"
+        elif self == ProxyTask.CONTEXT_RETRIEVAL:
+            return "search APIs"
+        elif self == ProxyTask.SCORE:
+            return "confidence score"
+        elif self == ProxyTask.RANK:
+            return "ranking"
+
+
 """CONVERSATION"""
 
 
@@ -422,20 +448,6 @@ class MessageThread:
 
 
 """PROCESS MANAGE"""
-
-
-class State(str, Enum):
-    START_STATE = "start"
-    REFLEXION_STATE = "reflexion"
-    HYPOTHESIS_CHECK_STATE = "hypothesis_check"
-    CONTEXT_RETRIEVAL_STATE = "context_retrieval"
-    HYPOTHESIS_VERIFY_STATE = "hypothesis_verify"
-    END_STATE = "end"
-    POST_PROCESS_STATE = "post_process"
-
-    @staticmethod
-    def attributes():
-        return [k.value for k in State]
 
 
 @dataclass
