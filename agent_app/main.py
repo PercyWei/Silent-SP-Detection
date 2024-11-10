@@ -8,7 +8,7 @@ import time
 
 from typing import *
 from pathlib import Path
-from argparse import ArgumentParser
+from argparse import ArgumentParser, Namespace
 from datetime import datetime
 from itertools import chain
 from concurrent.futures import ProcessPoolExecutor
@@ -24,7 +24,7 @@ from agent_app.task import Task
 from agent_app.util import create_dir_if_not_exists
 
 
-def get_args():
+def get_args() -> Namespace:
     parser = ArgumentParser()
 
     ## Base settings
@@ -79,16 +79,26 @@ def get_args():
         help="Path to json file that stores information about the CWE tree in current VIEW.",
     )
     parser.add_argument(
-        "--all-weakness-entry-file",
+        "--all-weakness-entries-file",
         type=str,
-        required=True,
         help="Path to json file that stores information about all Weakness CWE entries.",
+    )
+    parser.add_argument(
+        "--weakness-attributes-file",
+        type=str,
+        help="Path to json file that stores about attributes of some weaknesses (depth <= 3).",
     )
     parser.add_argument(
         "--view-cwe-tree-files",
         type=str,
         nargs="+",
         help="Appear in pairs: brief VIEW-ID, CWE tree file"
+    )
+    parser.add_argument(
+        "--view-cwe-entries-files",
+        type=str,
+        nargs="+",
+        help="Appear in pairs: brief VIEW-ID, CWE entries file"
     )
 
     ## Model settings
@@ -430,19 +440,35 @@ def main(args):
 
     ## CWE
     globals.view_id = args.view_id
-    globals.all_weakness_entry_file = args.all_weakness_entry_file
     globals.cwe_entry_file = args.cwe_entry_file
     globals.cwe_tree_file = args.cwe_tree_file
+
+    if args.all_weakness_entries_file:
+        globals.all_weakness_entries_file = args.all_weakness_entries_file
+    if args.weakness_attributes_file:
+        globals.weakness_attributes_file = args.weakness_attributes_file
+
     if args.view_cwe_tree_files:
         if len(args.view_cwe_tree_files) % 2 != 0:
             log.always_cprint("Error: The number of strings for --view-cwe-tree-files must be even.", style="red")
             sys.exit(1)
         else:
-            view_cwe_tree_files = [(args.view_cwe_tree_files[i], args.view_cwe_tree_files[i + 1])
-                                   for i in range(0, len(args.view_cwe_tree_files), 2)]
-    else:
-        view_cwe_tree_files = []
-    globals.view_cwe_tree_files = view_cwe_tree_files
+            view_cwe_tree_files = {
+                args.view_cwe_tree_files[i]: args.view_cwe_tree_files[i + 1]
+                for i in range(0, len(args.view_cwe_tree_files), 2)
+            }
+        globals.view_cwe_tree_files.update(view_cwe_tree_files)
+
+    if args.view_cwe_tree_files:
+        if len(args.view_cwe_entries_files) % 2 != 0:
+            log.always_cprint("Error: The number of strings for --view-cwe-entries-files must be even.", style="red")
+            sys.exit(1)
+        else:
+            view_cwe_entries_files = {
+                args.view_cwe_entries_files[i]: args.view_cwe_entries_files[i + 1]
+                for i in range(0, len(args.view_cwe_entries_files), 2)
+            }
+        globals.view_cwe_entries_files.update(view_cwe_entries_files)
 
     ## Other
     # number of processes

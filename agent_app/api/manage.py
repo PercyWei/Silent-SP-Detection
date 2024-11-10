@@ -300,12 +300,14 @@ class PyProcessManager(ProcessManager):
         )
 
     def init_cwe_manager(self):
-        self.cwe_manager = CWEManager(
-            globals.view_id,
-            globals.cwe_entry_file,
-            globals.cwe_tree_file,
-            globals.all_weakness_entry_file,
-            globals.view_cwe_tree_files
+        self.cwe_manager: CWEManager = CWEManager(
+            full_view_id=globals.view_id,
+            cwe_entry_fpath=globals.cwe_entry_file,
+            cwe_tree_fpath=globals.cwe_tree_file,
+            all_weakness_entries_fpath=globals.all_weakness_entries_file,
+            weakness_attributes_fpath=globals.weakness_attributes_file,
+            view_cwe_entries_fpaths=globals.view_cwe_entries_files,
+            view_cwe_tree_fpaths=globals.view_cwe_tree_files
         )
 
     """SEARCH API FUNCTIONS"""
@@ -444,12 +446,14 @@ class JavaProcessManager(ProcessManager):
         )
 
     def init_cwe_manager(self):
-        self.cwe_manager = CWEManager(
-            globals.view_id,
-            globals.cwe_entry_file,
-            globals.cwe_tree_file,
-            globals.all_weakness_entry_file,
-            globals.view_cwe_tree_files
+        self.cwe_manager: CWEManager = CWEManager(
+            full_view_id=globals.view_id,
+            cwe_entry_fpath=globals.cwe_entry_file,
+            cwe_tree_fpath=globals.cwe_tree_file,
+            all_weakness_entries_fpath=globals.all_weakness_entries_file,
+            weakness_attributes_fpath=globals.weakness_attributes_file,
+            view_cwe_entries_fpaths=globals.view_cwe_entries_files,
+            view_cwe_tree_fpaths=globals.view_cwe_tree_files
         )
 
     """SEARCH API FUNCTIONS"""

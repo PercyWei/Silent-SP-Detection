@@ -7,6 +7,12 @@ from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
+class WeaknessAttrs:
+    trigger_action: str
+    key_variables: List[str]
+
+
+@dataclass(frozen=True)
 class VIEWInfo:
     basis: str
     cwe_tree: Dict[str, Dict]
@@ -18,68 +24,101 @@ class CWEManager:
             full_view_id: str,
             cwe_entry_fpath: str,
             cwe_tree_fpath: str,
-            all_weakness_entry_fpath: str,
-            view_cwe_tree_fpaths: List[Tuple[str, str]],
+            all_weakness_entries_fpath: str,
+            weakness_attributes_fpath: str,
+            view_cwe_entries_fpaths: Dict[str, str],
+            view_cwe_tree_fpaths: Dict[str, str]
     ):
         self.full_view_id = full_view_id
-        self.cwe_entry_fpath = cwe_entry_fpath
-        self.cwe_tree_fpath = cwe_tree_fpath
-        # NOTE: All CWE entries here refers to 939 weakness CWE entries, i.e. all CWE entries under VIEW-1000.
-        self.all_weakness_entry_fpath = all_weakness_entry_fpath
-        self.view_cwe_tree_fpaths = view_cwe_tree_fpaths
 
         self.max_depth = 3
         view_id = self.full_view_id.split('-')[-1]
         if view_id == "1003":
             self.max_depth = 2
 
-        # NOTE: The CWE-IDs / VIEW-IDs following are all brief name, i.e. number only.
-        ## Supported / considered CWE ids and tree structures
-        self.cwe_ids: List[str] = []         # CWE_ID
-        self.cwe_tree: Dict[str, Dict] = {}  # CWE-ID -> CWE tree info
 
-        ## All CWE info
+        ## (1) All CWE (category + weakness) info
+        # NOTE: All CWE entries here refers to 939 weakness CWE entries, i.e. all CWE entries under VIEW-1000.
         self.all_category_entries: Dict[str, Dict] = {}  # CWE-ID -> CWE entry info
         self.all_weakness_entries: Dict[str, Dict] = {}  # CWE-ID -> CWE entry info
 
-        ## Useful VIEW info
-        # VIEW-ID -> VIEW info
-        self.view_cwe_trees: Dict[str, VIEWInfo] = {}
+        self.update_all_weakness_entries(all_weakness_entries_fpath)
+        self.update_all_category_entries(view_cwe_entries_fpaths)
 
-        ## Update
-        self.update()
+
+        ## (2) Weakness attributes (depth <= 3)
+        self.weakness_attributes: Dict[str, WeaknessAttrs] = {}
+
+        self.update_weakness_attributes(weakness_attributes_fpath)
+
+
+        ## (3) Useful VIEW info
+        # VIEW-ID -> VIEW info
+        self.all_view_cwe_trees: Dict[str, VIEWInfo] = {}
+
+        self.update_all_view_cwe_trees(view_cwe_tree_fpaths)
+
+
+        # NOTE: The CWE-IDs / VIEW-IDs following are all brief name, i.e. number only.
+        ## (4) Supported / considered CWE ids and tree structures
+        self.cwe_ids: List[str] = []         # CWE_ID
+        self.cwe_tree: Dict[str, Dict] = {}  # CWE-ID -> CWE tree info
+
+        self.update_supported_cwe_info(cwe_entry_fpath, cwe_tree_fpath)
 
 
     """UPDATE"""
 
 
-    def update_all_weakness_entries(self) -> None:
-        with open(self.all_weakness_entry_fpath, 'r') as f:
+    def update_all_weakness_entries(self, all_weakness_entries_fpath: str) -> None:
+        with open(all_weakness_entries_fpath, 'r') as f:
             weakness_entries = json.load(f)
 
         for entry in weakness_entries:
             self.all_weakness_entries[entry["CWE-ID"]] = entry
 
 
-    def update_all_category_entries_and_view_cwe_trees(self) -> None:
-        for view_id, cwe_tree_fpath in self.view_cwe_tree_fpaths:
+    def update_all_category_entries(self, view_cwe_entries_fpaths: Dict[str, str]) -> None:
+        for view_id, cwe_entries_fpath in view_cwe_entries_fpaths.items():
+            with open(cwe_entries_fpath, 'r') as f:
+                cwe_entries = json.load(f)
+
+            for cwe_data in cwe_entries:
+                if cwe_data["Type"] == "category":
+                    cwe_id = cwe_data["CWE-ID"]
+                    assert cwe_id not in self.all_category_entries
+                    self.all_category_entries[cwe_id] = cwe_data
+
+
+    def update_weakness_attributes(self, weakness_attributes_fpath: str) -> None:
+        with open(weakness_attributes_fpath, 'r') as f:
+            weakness_attrs = json.load(f)
+
+        for cwe_id, attrs in weakness_attrs.items():
+            self.weakness_attributes[cwe_id] = WeaknessAttrs(attrs["trigger_action"], attrs["key_variables"])
+
+
+    def update_all_view_cwe_trees(self, view_cwe_tree_fpaths: Dict[str, str]) -> None:
+        for view_id, cwe_tree_fpath in view_cwe_tree_fpaths.items():
             with open(cwe_tree_fpath, 'r') as f:
                 cwe_tree = json.load(f)
 
             if view_id == "699":
-                self.view_cwe_trees[view_id] = VIEWInfo("concepts in software development", cwe_tree)
+                self.all_view_cwe_trees[view_id] = VIEWInfo("concepts in software development", cwe_tree)
             elif view_id == "888":
-                self.view_cwe_trees[view_id] = VIEWInfo("software fault pattern", cwe_tree)
+                self.all_view_cwe_trees[view_id] = VIEWInfo("software fault pattern", cwe_tree)
             elif view_id == "1400":
-                self.view_cwe_trees[view_id] = VIEWInfo("software assurance trends", cwe_tree)
+                self.all_view_cwe_trees[view_id] = VIEWInfo("software assurance trends", cwe_tree)
             else:
                 raise RuntimeError(f"Unexpected view_id: {view_id}")
 
 
-    def update_supported_info(self) -> None:
+    def update_supported_cwe_info(self, cwe_entry_fpath: str, cwe_tree_fpath: str) -> None:
         """NOTE: Perform this operation after updating all CWE information."""
+        assert self.all_weakness_entries
+
         # (1) Update supported CWE ids
-        with open(self.cwe_entry_fpath, 'r') as f:
+        with open(cwe_entry_fpath, 'r') as f:
             cwe_entries = json.load(f)
 
         for entry in cwe_entries:
@@ -88,20 +127,15 @@ class CWEManager:
                 self.cwe_ids.append(cwe_id)
 
         # (2) Update supported CWE tree
-        with open(self.cwe_tree_fpath, 'r') as f:
+        with open(cwe_tree_fpath, 'r') as f:
             self.cwe_tree = json.load(f)
 
 
-    def update(self):
-        self.update_all_weakness_entries()
-        self.update_all_category_entries_and_view_cwe_trees()
-        self.update_supported_info()
+    """MAPPING"""
 
 
-    """LOOKUP"""
-
-
-    def get_standard_cwe_id(self, data: str) -> str | None:
+    @staticmethod
+    def get_standard_cwe_id(data: str) -> str | None:
         match_1 = re.match(r'CWE-(\d+)', data)
         match_2 = re.match(r'CWE (\d+)', data)
 
@@ -155,9 +189,10 @@ class CWEManager:
         if cwe_id not in self.all_weakness_entries:
             return None
 
-        view_descs: List[str] = []
+        # (1) Iterate over all views
+        all_view_descs: List[str] = []
 
-        for view_id, view_info in self.view_cwe_trees.items():
+        for view_id, view_info in self.all_view_cwe_trees.items():
             cl_basis = view_info.basis
             cwe_tree = view_info.cwe_tree
 
@@ -175,15 +210,17 @@ class CWEManager:
                 related_attrs_str = ', '.join(related_attrs)
 
                 view_desc = f"In VIEW-{view_id}, CWEs are clustered according to {cl_basis}, while CWE-{cwe_id} is related to {related_attrs_str}."
-                view_descs.append(view_desc)
+                all_view_descs.append(view_desc)
 
-        if view_descs:
-            desc = f"CWE-{cwe_id} has the following attributes:"
-            for i, view_desc in enumerate(view_descs):
-                desc += f"\n{i+1}. {view_desc}"
-            return desc
-        else:
-            return ""
+        # (2) Form a description containing all views
+        entire_view_desc: str = ""
+
+        if all_view_descs:
+            entire_view_desc = f"CWE-{cwe_id} has the following attributes:"
+            for i, view_desc in enumerate(all_view_descs):
+                entire_view_desc += f"\n{i+1}. {view_desc}"
+
+        return entire_view_desc
 
 
     def is_too_detailed_weakness(self, cwe_id: str) -> bool:
@@ -211,3 +248,14 @@ class CWEManager:
         fathers = list(set(fathers))
 
         return fathers
+
+
+    """CWE MEMORY"""
+    @staticmethod
+    def trigger_action_def() -> str:
+        return "The direct action triggering the vulnerability"
+
+
+    @staticmethod
+    def key_variable_def() -> str:
+        return "Important variables that have a direct or indirect relationship with the triggering action"
