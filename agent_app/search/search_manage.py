@@ -960,19 +960,12 @@ class PySearchManager(BaseSearchManager):
 
 
     def search_code_in_file(self, code_str: str, file_path: str) -> Tuple[str, SearchStatus, List[PySearchResult]]:
+        # FIXME: Not complete!
         pass
 
 
     def search_class(self, class_name: str) -> Tuple[str, SearchStatus, List[PySearchResult]]:
-        """Search class in the entire repo.
-
-        Args:
-            class_name (str): Class name.
-        Returns:
-            str: Detailed output of the current search API call.
-            SearchStatus: Status of the search.
-            List[SearchResult]: All search results.
-        """
+        """Search for a class in the codebase."""
         # ----------------- (1) Check if the arg is an empty str ----------------- #
         cont_search, tool_output = self._search_arg_pre_check(class_name=class_name)
 
@@ -1003,16 +996,7 @@ class PySearchManager(BaseSearchManager):
 
 
     def search_class_in_file(self, class_name: str, file_name: str) -> Tuple[str, SearchStatus, List[PySearchResult]]:
-        """Search class in the specified file.
-
-        Args:
-            class_name (str): Class name.
-            file_name (str): File name.
-        Returns:
-            str: Detailed output of the current search API call.
-            SearchStatus: Status of the search.
-            List[SearchResult]: All search results.
-        """
+        """Search for a class in a given file."""
         # ----------------- (1) Check if the arg is an empty str ----------------- #
         cont_search, tool_output = self._search_arg_pre_check(class_name=class_name, file_name=file_name)
 
@@ -1060,17 +1044,7 @@ class PySearchManager(BaseSearchManager):
 
 
     def search_method_in_file(self, method_name: str, file_name: str) -> Tuple[str, SearchStatus, List[PySearchResult]]:
-        """Search function in the specified file.
-
-        NOTE: Including top level functions and class functions
-        Args:
-            method_name (str): Function name.
-            file_name (str): File name.
-        Returns:
-            str: Detailed output of the current search API call.
-            SearchStatus: Status of the search.
-            List[SearchResult]: All search results.
-        """
+        """Search for a method in a given file, including top-level function and inclass method."""
         # ----------------- (1) Check if the arg is an empty str ----------------- #
         cont_search, tool_output = self._search_arg_pre_check(method_name=method_name, file_name=file_name)
 
@@ -1119,17 +1093,12 @@ class PySearchManager(BaseSearchManager):
 
     # TODO: Considering the accuracy of the search, should we keep the search API calls that
     #        do not contain file path and the related index?
-    def search_method_in_class(self, method_name: str, class_name: str) -> Tuple[str, SearchStatus, List[PySearchResult]]:
-        """Search class function in the specified class.
-
-        Args:
-            method_name (str): Function name.
-            class_name (str): Class name.
-        Returns:
-            str: Detailed output of the current search API call.
-            SearchStatus: Status of the search.
-            List[SearchResult]: All search results.
-        """
+    def search_method_in_class(
+            self,
+            method_name: str,
+            class_name: str
+    ) -> Tuple[str, SearchStatus, List[PySearchResult]]:
+        """Search for a method in a given class."""
         # ----------------- (1) Check if the arg is an empty str ----------------- #
         cont_search, tool_output = self._search_arg_pre_check(method_name=method_name, class_name=class_name)
 
@@ -1172,19 +1141,12 @@ class PySearchManager(BaseSearchManager):
 
 
     def search_method_in_class_in_file(
-            self, method_name: str, class_name: str, file_name: str
+            self,
+            method_name: str,
+            class_name: str,
+            file_name: str
     ) -> Tuple[str, SearchStatus, List[PySearchResult]]:
-        """Search class function in the specified class and file.
-
-        Args:
-            method_name (str): Function name.
-            class_name (str): Class name.
-            file_name (str): File name.
-        Returns:
-            str: Detailed output of the current search API call.
-            SearchStatus: Status of the search.
-            List[SearchResult]: All search results.
-        """
+        """Search for a method in a given class which is in a given file."""
         # ----------------- (1) Check if the arg is an empty str ----------------- #
         cont_search, tool_output = \
             self._search_arg_pre_check(method_name=method_name, class_name=class_name, file_name=file_name)
@@ -1232,10 +1194,6 @@ class PySearchManager(BaseSearchManager):
             res_str = res.to_tagged_str()
             tool_output += f"\n- Search result {idx + 1}:\n```\n{res_str}\n```"
         return tool_output, SearchStatus.FIND_CODE, all_search_res
-
-
-    def get_classes_and_methods_in_file(self, file_name: str) -> Tuple[str, SearchStatus, List[PySearchResult]]:
-        pass
 
 
 """JAVA SEARCH MANAGER"""
@@ -1875,7 +1833,10 @@ class JavaSearchManager(BaseSearchManager):
 
 
     def _search_top_level_type_of_nodiff_file(
-            self, ttype: Literal['interface', 'class'], type_name: str, file_path: str | None = None
+            self,
+            ttype: Literal['interface', 'class'],
+            type_name: str,
+            file_path: str | None = None
     ) -> List[JavaSearchResult]:
         """Search for this top-level type in the repo / specified file.
 
@@ -1912,7 +1873,10 @@ class JavaSearchManager(BaseSearchManager):
 
 
     def _search_top_level_type_of_diff_file(
-            self, ttype: Literal['interface', 'class'], type_name: str, file_path: str | None = None
+            self,
+            ttype: Literal['interface', 'class'],
+            type_name: str,
+            file_path: str | None = None
     ) -> List[JavaSearchResult]:
         """Search for this top-level type in the repo / specified file.
 
@@ -1962,7 +1926,10 @@ class JavaSearchManager(BaseSearchManager):
 
 
     def _search_top_level_type(
-            self, ttype: Literal['interface', 'class'], type_name: str, file_path: str | None = None
+            self,
+            ttype: Literal['interface', 'class'],
+            type_name: str,
+            file_path: str | None = None
     ) -> List[JavaSearchResult]:
         """Search for this top-level type in the repo / specified file.
 
@@ -1983,11 +1950,13 @@ class JavaSearchManager(BaseSearchManager):
         return result
 
 
-    """INTERFACES"""
+    """UNIFIED IMPLEMENTATION"""
 
 
-    def search_type(
-            self, ttype: Literal['interface', 'class'], type_name: str
+    def search_top_level_type(
+            self,
+            ttype: Literal['interface', 'class'],
+            type_name: str
     ) -> Tuple[str, SearchStatus, List[JavaSearchResult]]:
         """Search class or interface in the entire repo.
         NOTE: Not a search API, just a unified implementation of search APIs 'search_class' and 'search_interface'.
@@ -2036,8 +2005,11 @@ class JavaSearchManager(BaseSearchManager):
         return tool_output, SearchStatus.FIND_CODE, all_search_res
 
 
-    def search_type_in_file(
-            self, ttype: Literal['interface', 'class'], type_name: str, file_name: str
+    def search_top_level_type_in_file(
+            self,
+            ttype: Literal['interface', 'class'],
+            type_name: str,
+            file_name: str
     ) -> Tuple[str, SearchStatus, List[JavaSearchResult]]:
         """Search class or interface in the specified file.
         NOTE: Not a search API, just a unified implementation of search APIs
@@ -2100,12 +2072,14 @@ class JavaSearchManager(BaseSearchManager):
 
 
     def search_inclass_type_in_class(
-            self, ttype: Literal['interface', 'class', 'method'], type_name: str, class_name: str
+            self,
+            ttype: Literal['interface', 'class', 'method'],
+            type_name: str,
+            class_name: str
     ) -> Tuple[str, SearchStatus, List[JavaSearchResult]]:
         """Search inclass type in the specified class.
 
-        NOTE 1: Not a search API, just a unified implementation of search APIs
-                'search_iface_in_class', 'search_class_in_class' and 'search_func_in_class'.
+        NOTE 1: Not a search API, just a unified implementation of searching inclass type in class.
         NOTE 2: Inclass type here indicate inclass interface / class / method.
         """
         assert ttype in ['interface', 'class', 'method']
@@ -2163,12 +2137,15 @@ class JavaSearchManager(BaseSearchManager):
 
 
     def search_inclass_type_in_class_in_file(
-            self, ttype: Literal['interface', 'class', 'method'], type_name: str, class_name: str, file_name: str
+            self,
+            ttype: Literal['interface', 'class', 'method'],
+            type_name: str,
+            class_name: str,
+            file_name: str
     ) -> Tuple[str, SearchStatus, List[JavaSearchResult]]:
         """Search inclass type in the specified class and file.
 
-        NOTE 1: Not a search API, just a unified implementation of search APIs
-                'search_iface_in_class_in_file', 'search_class_in_class_in_file' and 'search_func_in_class_in_file'.
+        NOTE 1: Not a search API, just a unified implementation of searching inclass type in class within file.
         NOTE 2: Inclass type here indicate inclass interface / class / method.
         """
         assert ttype in ['interface', 'class', 'method']
@@ -2239,180 +2216,76 @@ class JavaSearchManager(BaseSearchManager):
         return tool_output, SearchStatus.FIND_CODE, all_search_res
 
 
+    """INTERFACES"""
+
+
     def search_code_in_file(self, code_str: str, file_path: str) -> Tuple[str, SearchStatus, List[JavaSearchResult]]:
         # FIXME: Not complete!
         pass
 
 
-    def search_top_level_class(self, class_name: str) -> Tuple[str, SearchStatus, List[JavaSearchResult]]:
-        """Search class in the entire repo.
-
-        Args:
-            class_name (str): Class name.
-        Returns:
-            str: Detailed output of the current search API call.
-            SearchStatus: Status of the search.
-            List[JavaSearchResult]: All search results.
-        """
-        return self.search_type(ttype='class', type_name=class_name)
-
-
-    def search_top_level_iface(self, iface_name: str) -> Tuple[str, SearchStatus, List[JavaSearchResult]]:
-        """Search interface in the entire repo.
-
-        Args:
-            iface_name (str): Interface name.
-        Returns:
-            str: Detailed output of the current search API call.
-            SearchStatus: Status of the search.
-            List[JavaSearchResult]: All search results.
-        """
-        return self.search_type(ttype='interface', type_name=iface_name)
-
-
-    def search_top_level_class_and_iface(self, type_name: str) -> Tuple[str, SearchStatus, List[JavaSearchResult]]:
+    def search_class_or_interface(self, type_name: str) -> Tuple[str, SearchStatus, List[JavaSearchResult]]:
         # FIXME: Not complete!
         pass
 
 
-    def search_top_level_class_in_file(
-            self, class_name: str, file_name: str
-    ) -> Tuple[str, SearchStatus, List[JavaSearchResult]]:
-        """Search class in the specified file.
-
-        Args:
-            class_name (str): Class name.
-            file_name (str): File name.
-        Returns:
-            str: Detailed output of the current search API call.
-            SearchStatus: Status of the search.
-            List[JavaSearchResult]: All search results.
-        """
-        return self.search_type_in_file(ttype='class', type_name=class_name, file_name=file_name)
-
-
-    def search_top_level_iface_in_file(
-            self, iface_name: str, file_name: str
-    ) -> Tuple[str, SearchStatus, List[JavaSearchResult]]:
-        """Search interface in the specified file.
-
-        Args:
-            iface_name (str): Interface name.
-            file_name (str): File name.
-        Returns:
-            str: Detailed output of the current search API call.
-            SearchStatus: Status of the search.
-            List[JavaSearchResult]: All search results.
-        """
-        return self.search_type_in_file(ttype='interface', type_name=iface_name, file_name=file_name)
-
-
-    def search_top_level_class_and_iface_in_file(
-            self, type_name: str, file_name: str
-    ) -> Tuple[str, SearchStatus, List[JavaSearchResult]]:
+    def search_class_or_interface_in_file(self, type_name: str, file_name: str) -> Tuple[str, SearchStatus, List[JavaSearchResult]]:
         # FIXME: Not complete!
         pass
 
 
-    def search_iface_in_class_in_file(
-            self, inclass_iface_name: str, class_name: str, file_name: str
+    def search_interface(
+            self,
+            iface_name: str
     ) -> Tuple[str, SearchStatus, List[JavaSearchResult]]:
-        """Search inclass interface in the specified class and file.
-
-        Args:
-            inclass_iface_name (str): Inclass interface name.
-            class_name (str): Class name.
-            file_name (str): File name.
-        Returns:
-            str: Detailed output of the current search API call.
-            SearchStatus: Status of the search.
-            List[JavaSearchResult]: All search results.
-        """
-        return self.search_inclass_type_in_class_in_file(
-            ttype='interface', type_name=inclass_iface_name, class_name=class_name, file_name=file_name)
+        """Search for an interface in the codebase."""
+        return self.search_top_level_type(ttype='interface', type_name=iface_name)
 
 
-    def search_class_in_class_in_file(
-            self, inclass_class_name: str, class_name: str, file_name: str
+    def search_class(
+            self,
+            class_name: str
     ) -> Tuple[str, SearchStatus, List[JavaSearchResult]]:
-        """Search inclass class in the specified class and file.
-
-        Args:
-            inclass_class_name (str): Inclass class name.
-            class_name (str): Class name.
-            file_name (str): File name.
-        Returns:
-            str: Detailed output of the current search API call.
-            SearchStatus: Status of the search.
-            List[JavaSearchResult]: All search results.
-        """
-        return self.search_inclass_type_in_class_in_file(
-            ttype='class', type_name=inclass_class_name, class_name=class_name, file_name=file_name)
+        """Search for a class in the codebase."""
+        return self.search_top_level_type(ttype='class', type_name=class_name)
 
 
-    def search_method_in_class_in_file(
-            self, inclass_method_name: str, class_name: str, file_name: str
+    def search_interface_in_file(
+            self,
+            iface_name: str,
+            file_name: str
     ) -> Tuple[str, SearchStatus, List[JavaSearchResult]]:
-        """Search inclass method in the specified class and file.
+        """Search for an interface in a given file."""
+        return self.search_top_level_type_in_file(ttype='interface', type_name=iface_name, file_name=file_name)
 
-        Args:
-            inclass_method_name (str): Inclass method name.
-            class_name (str): Class name.
-            file_name (str): File name.
-        Returns:
-            str: Detailed output of the current search API call.
-            SearchStatus: Status of the search.
-            List[JavaSearchResult]: All search results.
-        """
-        return self.search_inclass_type_in_class_in_file(
-            ttype='method', type_name=inclass_method_name, class_name=class_name, file_name=file_name)
+
+    def search_class_in_file(
+            self,
+            class_name: str,
+            file_name: str
+    ) -> Tuple[str, SearchStatus, List[JavaSearchResult]]:
+        """Search for a class in a given file."""
+        return self.search_top_level_type_in_file(ttype='class', type_name=class_name, file_name=file_name)
 
 
     # TODO: Considering the accuracy of the search, should we keep the following search APIs
     #       that do not contain a specified file path parameter?
-    def search_iface_in_class(
-            self, inclass_iface_name: str, class_name: str
+    def search_type_in_class(
+            self,
+            ttype: Literal['interface', 'class', 'method'],
+            type_name: str,
+            class_name: str
     ) -> Tuple[str, SearchStatus, List[JavaSearchResult]]:
-        """Search inclass interface in the specified class.
-
-        Args:
-            inclass_iface_name (str): Inclass interface name.
-            class_name (str): Class name.
-        Returns:
-            str: Detailed output of the current search API call.
-            SearchStatus: Status of the search.
-            List[JavaSearchResult]: All search results.
-        """
-        return self.search_inclass_type_in_class(ttype='interface', type_name=inclass_iface_name, class_name=class_name)
+        """Search for a type in a given class. 'Type' indicates interface or class or method."""
+        return self.search_inclass_type_in_class(ttype, type_name, class_name)
 
 
-    def search_class_in_class(
-            self, inclass_class_name: str, class_name: str
+    def search_type_in_class_in_file(
+            self,
+            ttype: Literal['interface', 'class', 'method'],
+            type_name: str,
+            class_name: str,
+            file_name: str
     ) -> Tuple[str, SearchStatus, List[JavaSearchResult]]:
-        """Search inclass class in the specified class.
-
-        Args:
-            inclass_class_name (str): Inclass class name.
-            class_name (str): Class name.
-        Returns:
-            str: Detailed output of the current search API call.
-            SearchStatus: Status of the search.
-            List[JavaSearchResult]: All search results.
-        """
-        return self.search_inclass_type_in_class(ttype='class', type_name=inclass_class_name, class_name=class_name)
-
-
-    def search_method_in_class(
-            self, inclass_method_name: str, class_name: str
-    ) -> Tuple[str, SearchStatus, List[JavaSearchResult]]:
-        """Search inclass method in the specified class.
-
-        Args:
-            inclass_method_name (str): Inclass method name.
-            class_name (str): Class name.
-        Returns:
-            str: Detailed output of the current search API call.
-            SearchStatus: Status of the search.
-            List[JavaSearchResult]: All search results.
-        """
-        return self.search_inclass_type_in_class(ttype='method', type_name=inclass_method_name, class_name=class_name)
+        """Search for a type in a given class which is in a given file. 'Type' indicate interface or class or method."""
+        return self.search_inclass_type_in_class_in_file(ttype, type_name, class_name, file_name)

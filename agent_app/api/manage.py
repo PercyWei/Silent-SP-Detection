@@ -312,7 +312,7 @@ class PyProcessManager(ProcessManager):
             globals.view_cwe_tree_files
         )
 
-    """SEARCH APIs"""
+    """SEARCH API FUNCTIONS"""
 
     def search_class(
             self,
@@ -320,14 +320,12 @@ class PyProcessManager(ProcessManager):
     ) -> Tuple[str, SearchStatus, List[PySearchResult]]:
         """Search for a class in the codebase.
 
-        Return only the signature of the class. The class signature
-        includes class name, attributes, and signatures for all of its properties and inner methods.
         Args:
             class_name (str): Name of the class to search for.
         Returns:
             str: The searched class signature if success, an error message otherwise.
             SearchStatus: Status of the search.
-            List[PySearchResult]: All search results.
+            List[JavaSearchResult]: All search results.
         """
         return self.search_manager.search_class(class_name)
 
@@ -338,8 +336,6 @@ class PyProcessManager(ProcessManager):
     ) -> Tuple[str, SearchStatus, List[PySearchResult]]:
         """Search for a class in a given file.
 
-        Return only the signature of the class. The class signature
-        includes class name, attributes, and signatures for all of its properties and inner methods.
         Args:
             class_name (str): Name of the class to search for.
             file_name (str): Name of the file to search in. Must be a valid Python file name.
@@ -357,7 +353,6 @@ class PyProcessManager(ProcessManager):
     ) -> Tuple[str, SearchStatus, List[PySearchResult]]:
         """Search for a method in a given file, including top-level function and inclass method.
 
-        Return the entire snippet of the top-level function / inclass method.
         Args:
             method_name (str): Name of the method to search for.
             file_name (str): Name of the file to search in. Must be a valid Python file name.
@@ -375,7 +370,6 @@ class PyProcessManager(ProcessManager):
     ) -> Tuple[str, SearchStatus, List[PySearchResult]]:
         """Search for a method in a given class.
 
-        Return the entire snippet of the inclass method.
         Args:
             method_name (str): Name of the method to search for.
             class_name (str): Name of the class to search in.
@@ -394,7 +388,6 @@ class PyProcessManager(ProcessManager):
     ) -> Tuple[str, SearchStatus, List[PySearchResult]]:
         """Search for a method in a given class which is in a given file.
 
-        Return the entire snippet of the inclass method.
         Args:
             method_name (str): Name of the method to search for.
             class_name (str): Name of the class to search in.
@@ -463,7 +456,7 @@ class JavaProcessManager(ProcessManager):
             globals.view_cwe_tree_files
         )
 
-    """SEARCH APIs"""
+    """SEARCH API FUNCTIONS"""
 
     def search_interface(
             self,
@@ -479,7 +472,7 @@ class JavaProcessManager(ProcessManager):
             SearchStatus: Status of the search.
             List[JavaSearchResult]: All search results.
         """
-        return self.search_manager.search_top_level_iface(iface_name)
+        return self.search_manager.search_interface(iface_name)
 
     def search_class(
             self,
@@ -496,7 +489,7 @@ class JavaProcessManager(ProcessManager):
             SearchStatus: Status of the search.
             List[JavaSearchResult]: All search results.
         """
-        return self.search_manager.search_top_level_class(class_name)
+        return self.search_manager.search_class(class_name)
 
     def search_interface_in_file(
             self,
@@ -514,7 +507,7 @@ class JavaProcessManager(ProcessManager):
             SearchStatus: Status of the search.
             List[JavaSearchResult]: All search results.
         """
-        return self.search_manager.search_top_level_iface_in_file(iface_name, file_name)
+        return self.search_manager.search_interface_in_file(iface_name, file_name)
 
     def search_class_in_file(
             self,
@@ -533,7 +526,7 @@ class JavaProcessManager(ProcessManager):
             SearchStatus: Status of the search.
             List[JavaSearchResult]: All search results.
         """
-        return self.search_manager.search_top_level_class_in_file(class_name, file_name)
+        return self.search_manager.search_class_in_file(class_name, file_name)
 
     def search_type_in_class(
             self,
@@ -541,7 +534,7 @@ class JavaProcessManager(ProcessManager):
             type_name: str,
             class_name: str
     ) -> Tuple[str, SearchStatus, List[JavaSearchResult]]:
-        """Search for a type in a given class. 'Type' indicate interface or class or method.
+        """Search for a type in a given class. 'Type' indicates interface or class or method.
 
         Return the entire snippet of the inclass interface / class / method.
         Args:
@@ -553,13 +546,7 @@ class JavaProcessManager(ProcessManager):
             SearchStatus: Status of the search.
             List[JavaSearchResult]: All search results.
         """
-        if ttype == 'interface':
-            return self.search_manager.search_iface_in_class(type_name, class_name)
-        elif ttype == 'class':
-            return self.search_manager.search_class_in_class(type_name, class_name)
-        else:
-            assert ttype == 'method'
-            return self.search_manager.search_method_in_class(type_name, class_name)
+        return self.search_manager.search_type_in_class(ttype, type_name, class_name)
 
     def search_type_in_class_in_file(
             self,
@@ -581,10 +568,4 @@ class JavaProcessManager(ProcessManager):
             SearchStatus: Status of the search.
             List[JavaSearchResult]: All search results.
         """
-        if ttype == 'interface':
-            return self.search_manager.search_iface_in_class_in_file(type_name, class_name, file_name)
-        elif ttype == 'class':
-            return self.search_manager.search_class_in_class_in_file(type_name, class_name, file_name)
-        else:
-            assert ttype == 'method'
-            return self.search_manager.search_method_in_class_in_file(type_name, class_name, file_name)
+        return self.search_manager.search_type_in_class_in_file(ttype, type_name, class_name, file_name)
