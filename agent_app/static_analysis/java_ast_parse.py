@@ -457,7 +457,7 @@ class ASTParser:
                 for class_name, inclass_interfaces in all_inclass_interfaces.items():
                     for name, line_ranges in inclass_interfaces.items():
                         for lrange in line_ranges:
-                            self.all_inclass_methods[class_name].append((name, LineRange(lrange['start'], lrange['end'])))
+                            self.all_inclass_interfaces[class_name].append((name, LineRange(lrange['start'], lrange['end'])))
 
                 self.all_inclass_classes = defaultdict(list)
                 all_inclass_classes = json_parse_result['fileSearchIndexData']['allInclassClasses']
