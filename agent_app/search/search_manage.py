@@ -5,8 +5,6 @@ import os
 import re
 import sys
 import glob
-import pathlib
-import chardet
 
 from typing import *
 from collections import defaultdict
@@ -1345,36 +1343,43 @@ class JavaSearchManager(BaseSearchManager):
                 self.line_id_new2merge[file_path] = diff_info.line_id_new2merge
 
             ## Search indexes
-            for name, lrange in diff_info.old_iface_index:
-                self.old_iface_index[name].append(CodeRange(file_path, lrange))
-            for name, lrange in diff_info.old_class_index:
-                self.old_class_index[name].append(CodeRange(file_path, lrange))
-            for class_name, inclass_ifaces in diff_info.old_inclass_iface_index.items():
-                for name, lrange in inclass_ifaces:
-                    self.old_inclass_iface_index[class_name][name].append(CodeRange(file_path, lrange))
-            for class_name, inclass_classes in diff_info.old_inclass_class_index.items():
-                for name, lrange in inclass_classes:
-                    self.old_inclass_class_index[class_name][name].append(CodeRange(file_path, lrange))
-            for class_name, inclass_methods in diff_info.old_inclass_method_index.items():
-                for name, lrange in inclass_methods:
-                    self.old_inclass_method_index[class_name][name].append(CodeRange(file_path, lrange))
+            if diff_info.old_code is not None:
+                for name, lrange in diff_info.old_iface_index:
+                    self.old_iface_index[name].append(CodeRange(file_path, lrange))
+                for name, lrange in diff_info.old_class_index:
+                    self.old_class_index[name].append(CodeRange(file_path, lrange))
+                for class_name, inclass_ifaces in diff_info.old_inclass_iface_index.items():
+                    for name, lrange in inclass_ifaces:
+                        self.old_inclass_iface_index[class_name][name].append(CodeRange(file_path, lrange))
+                for class_name, inclass_classes in diff_info.old_inclass_class_index.items():
+                    for name, lrange in inclass_classes:
+                        self.old_inclass_class_index[class_name][name].append(CodeRange(file_path, lrange))
+                for class_name, inclass_methods in diff_info.old_inclass_method_index.items():
+                    for name, lrange in inclass_methods:
+                        self.old_inclass_method_index[class_name][name].append(CodeRange(file_path, lrange))
 
-            for name, lrange in diff_info.new_iface_index:
-                self.new_iface_index[name].append(CodeRange(file_path, lrange))
-            for name, lrange in diff_info.new_class_index:
-                self.new_class_index[name].append(CodeRange(file_path, lrange))
-            for class_name, inclass_ifaces in diff_info.new_inclass_iface_index.items():
-                for name, lrange in inclass_ifaces:
-                    self.new_inclass_iface_index[class_name][name].append(CodeRange(file_path, lrange))
-            for class_name, inclass_classes in diff_info.new_inclass_class_index.items():
-                for name, lrange in inclass_classes:
-                    self.new_inclass_class_index[class_name][name].append(CodeRange(file_path, lrange))
-            for class_name, inclass_methods in diff_info.new_inclass_method_index.items():
-                for name, lrange in inclass_methods:
-                    self.new_inclass_method_index[class_name][name].append(CodeRange(file_path, lrange))
+            if diff_info.new_code is not None:
+                for name, lrange in diff_info.new_iface_index:
+                    self.new_iface_index[name].append(CodeRange(file_path, lrange))
+                for name, lrange in diff_info.new_class_index:
+                    self.new_class_index[name].append(CodeRange(file_path, lrange))
+                for class_name, inclass_ifaces in diff_info.new_inclass_iface_index.items():
+                    for name, lrange in inclass_ifaces:
+                        self.new_inclass_iface_index[class_name][name].append(CodeRange(file_path, lrange))
+                for class_name, inclass_classes in diff_info.new_inclass_class_index.items():
+                    for name, lrange in inclass_classes:
+                        self.new_inclass_class_index[class_name][name].append(CodeRange(file_path, lrange))
+                for class_name, inclass_methods in diff_info.new_inclass_method_index.items():
+                    for name, lrange in inclass_methods:
+                        self.new_inclass_method_index[class_name][name].append(CodeRange(file_path, lrange))
 
             ## Imports
-            self.diff_file_imports[file_path] = list(set(diff_info.old_imports + diff_info.new_imports))
+            file_imports = []
+            if diff_info.old_code is not None:
+                file_imports = diff_info.old_imports
+            if diff_info.new_code is not None:
+                file_imports = list(set(file_imports + diff_info.new_imports))
+            self.diff_file_imports[file_path] = file_imports
 
 
     def _update_nodiff_file_info(self) -> None:

@@ -1496,7 +1496,7 @@ def analyse_added_py_file(ast_parser: PyASTParser, new_code: str, comb_code: str
     diff_file_info.new_func_index = ast_parser.all_funcs
     diff_file_info.new_class_index = ast_parser.all_classes
     diff_file_info.new_inclass_method_index = ast_parser.all_inclass_methods
-    diff_file_info.old_imports = ast_parser.all_imports
+    diff_file_info.new_imports = ast_parser.all_imports
 
     return diff_file_info
 
@@ -1641,7 +1641,7 @@ def analyse_added_java_file(ast_parser: JavaASTParser, new_code: str, merge_code
     diff_file_info.new_inclass_iface_index = ast_parser.all_inclass_interfaces
     diff_file_info.new_inclass_class_index = ast_parser.all_inclass_classes
     diff_file_info.new_inclass_method_index = ast_parser.all_inclass_methods
-    diff_file_info.old_imports = ast_parser.all_imports
+    diff_file_info.new_imports = ast_parser.all_imports
 
     return diff_file_info
 
