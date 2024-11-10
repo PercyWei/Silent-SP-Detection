@@ -5,11 +5,17 @@ import json
 import requests
 
 from typing import *
+from tqdm import tqdm
+
+from agent_app.CWE.cwe_manage import VIEWInfo
 
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import NoSuchElementException
+
+from openai import OpenAI
+from openai.types.chat.completion_create_params import ResponseFormat
 
 from utils import selenium_driver_setup, selenium_driver_close
 
@@ -460,10 +466,215 @@ def update_dataset_by_cwe_depth(dataset_fpath: str, cwe_tree_fpath: str):
         json.dump(updt_dataset, f, indent=4)
 
 
+"""SUMMARIZE CWE INFO"""
+
+
+SYSTEM_PROMPT = """I want you to act as a vulnerability analysis expert and analyse vulnerability knowledge based on the above information. 
+Please summarise two important features of the given vulnerability:
+- 1. Trigger Action: Direct behaviour leading to vulnerability.
+- 2. Key Variables: Conditions, states or parameters directly related to the triggered action.
+
+For trigger action, you should notice:
+1. Consider the environment and context in which the trigger action occurs, such as the user role, whether there are specific inputs, whether there are access restrictions, etc.
+2. Ensure that there is a difference between a trigger action and a normal action. For example, if the trigger action is an API call, the description should include specific parameters and possible exception inputs.
+
+For key variables, you should notice：
+1. Use the noun form wherever possible, making it point to a concretely existing entity or property rather than describing an abstract behaviour or result.
+2. Do not use broad concepts, such as methods, interfaces, but rather more detailed descriptions, such as, variables that store sensitive data, access control list.
+
+NOTE: Do not copy directly from any of the examples or descriptions I have given.
+"""
+
+
+FORMAT_PROMPT = """Provide your answer in JSON structure and consider the following TypeScript Interface for the JSON schema:
+
+interface Attributes {
+    trigger_action: string;
+    key_variables: string[];
+};
+
+Now based on the given context, write a JSON dict that conforms to the Attributes schema.
+"""
+
+
+def summarize_all_weakness_attributes(output_dpath: str, max_depth: int = 3):
+    ## (1) Prepare attribute cwe trees
+    all_categories: Dict[str, str] = {}
+    all_attr_view_info: Dict[str, VIEWInfo] = {}
+
+    # VIEW 699
+    view_699_tree_fpath = "/root/projects/VDTest/data/CWE/VIEW_699/CWE_tree.json"
+    with open(view_699_tree_fpath, "r") as f:
+        view_699_tree = json.load(f)
+    all_attr_view_info["699"] = VIEWInfo("concepts in software development", view_699_tree)
+
+    view_699_entries_fpath = "/root/projects/VDTest/data/CWE/VIEW_699/CWE_entries.json"
+    with open(view_699_entries_fpath, "r") as f:
+        view_699_entries = json.load(f)
+    for data in view_699_entries:
+        if data["Type"] == "category":
+            cwe_id = data["CWE-ID"]
+            assert cwe_id not in all_categories
+            all_categories[cwe_id] = data["Name"]
+
+    # VIEW 888
+    view_888_tree_fpath = "/root/projects/VDTest/data/CWE/VIEW_888/CWE_tree.json"
+    with open(view_888_tree_fpath, "r") as f:
+        view_888_tree = json.load(f)
+    all_attr_view_info["888"] = VIEWInfo("software fault pattern", view_888_tree)
+
+    view_888_entries_fpath = "/root/projects/VDTest/data/CWE/VIEW_888/CWE_entries.json"
+    with open(view_888_entries_fpath, "r") as f:
+        view_888_entries = json.load(f)
+    for data in view_888_entries:
+        if data["Type"] == "category":
+            cwe_id = data["CWE-ID"]
+            assert cwe_id not in all_categories
+            all_categories[cwe_id] = data["Name"]
+
+    # VIEW 1400
+    view_1400_tree_fpath = "/root/projects/VDTest/data/CWE/VIEW_1400/CWE_tree.json"
+    with open(view_1400_tree_fpath, "r") as f:
+        view_1400_tree = json.load(f)
+    all_attr_view_info["1400"] = VIEWInfo("software assurance trends", view_1400_tree)
+
+    view_1400_entries_fpath = "/root/projects/VDTest/data/CWE/VIEW_1400/CWE_entries.json"
+    with open(view_1400_entries_fpath, "r") as f:
+        view_1400_entries = json.load(f)
+    for data in view_1400_entries:
+        if data["Type"] == "category":
+            cwe_id = data["CWE-ID"]
+            assert cwe_id not in all_categories
+            all_categories[cwe_id] = data["Name"]
+
+    ## (2) Prepare GPT
+    api_key = os.getenv("OPENAI_KEY", None)
+    api_base = os.getenv("OPENAI_API_BASE", None)
+    assert api_key is not None and api_base is not None
+    client = OpenAI(api_key=api_key, base_url=api_base)
+
+    ## (3) Main
+    view_1000_tree_fpath = "/root/projects/VDTest/data/CWE/VIEW_1000/CWE_tree.json"
+    with open(view_1000_tree_fpath, "r") as f:
+        view_1000_tree = json.load(f)
+
+    all_weakness_fpath = "/root/projects/VDTest/data/CWE/VIEW_1000/CWE_entries.json"
+    with open(all_weakness_fpath, "r") as f:
+        all_weakness = json.load(f)
+
+    failed_weakness = []
+    all_weakness_attrs: Dict[str, Dict] = {}
+    with tqdm(total=len(all_weakness)) as pb:
+        for weakness_data in all_weakness:
+            weakness_id = weakness_data["CWE-ID"]
+            weakness_name = weakness_data["Name"]
+            basic_desc = weakness_data["Description"]
+            extended_desc = weakness_data["Extended Description"]
+
+            # Filter
+            assert weakness_id in view_1000_tree
+            cwe_paths = view_1000_tree[weakness_id]["cwe_paths"]
+            if min([len(p) for p in cwe_paths]) > max_depth:
+                continue
+
+            # 1. Basic description
+            usr_msg = (f"Now please analyse and summarize the vulnerability CWE-{weakness_id}: {weakness_name}."
+                       f"\nDescription: {basic_desc}")
+
+            # 2. Extended description
+            if extended_desc != "":
+                usr_msg += f"\nExtended Description: {extended_desc}"
+
+            # 3. Attributes under other views
+            all_view_desc: List[str] = []
+            for view_id, view_info in all_attr_view_info.items():
+                cl_basis = view_info.basis
+                cwe_tree = view_info.cwe_tree
+
+                if weakness_id in cwe_tree:
+                    cwe_paths: List[List[str]] = cwe_tree[weakness_id]["cwe_paths"]
+
+                    related_attrs = []
+                    for path in cwe_paths:
+                        for curr_id in reversed(path):
+                            if curr_id in all_categories:
+                                related_attrs.append(all_categories[curr_id])
+                                break
+                    related_attrs_str = ', '.join(related_attrs)
+
+                    view_desc = f"In VIEW-{view_id}, CWEs are clustered according to {cl_basis}, while CWE-{weakness_id} is related to {related_attrs_str}."
+                    all_view_desc.append(view_desc)
+
+            if all_view_desc:
+                entire_view_desc = f"Besides, it has the following attributes:"
+                for i, view_desc in enumerate(all_view_desc):
+                    entire_view_desc += f"\n{i+1}. {view_desc}"
+
+                usr_msg += f"\n{entire_view_desc}"
+
+            # 4. Format
+            usr_msg += f"\n\n{FORMAT_PROMPT}"
+
+            messages = [
+                {
+                    "role": "system",
+                    "content": SYSTEM_PROMPT
+                },
+                {
+                    "role": "user",
+                    "content": usr_msg
+                }
+            ]
+
+            # print("\n" + "=" * 30 + " SYSTEM " + "=" * 30 + "\n")
+            # print(SYSTEM_PROMPT)
+            # print("\n" + "-" * 30 + " USER " + "-" * 30 + "\n")
+            # print(usr_msg)
+
+            response = client.chat.completions.create(
+                model="gpt-4o-2024-05-13",
+                messages=messages,
+                temperature=0.2,
+                response_format=ResponseFormat(type="json_object")
+            ).choices[0].message
+
+            if response.content is None:
+                response = ""
+                failed_weakness.append(weakness_id)
+            else:
+                response = response.content
+
+            json_response = json.loads(response)
+
+            # print("\n" + "-" * 30 + " LLM " + "-" * 30 + "\n")
+            # print(json.dumps(json_response, indent=4))
+
+            if isinstance(json_response, dict) and \
+                    "trigger_action" in json_response and \
+                    "key_variables" in json_response and \
+                    isinstance(json_response["key_variables"], list):
+                all_weakness_attrs[weakness_id] = json_response
+
+            pb.update(1)
+
+    ## (4) Save
+    save_fpath = os.path.join(output_dpath, "all_weakness_attrs.json")
+    with open(save_fpath, "w") as f:
+        json.dump(all_weakness_attrs, f, indent=4)
+
+    failed_weakness_fpath = os.path.join(output_dpath, "failed_weakness.json")
+    with open(failed_weakness_fpath, "w") as f:
+        json.dump(failed_weakness, f, indent=4)
+
+
 if __name__ == '__main__':
     pass
 
-    view_id = "888"
+    output_dir = "/root/projects/VDTest/data/CWE"
+    summarize_all_weakness_attributes(output_dir)
+
+
+    # view_id = "888"
     # crawl_cwe_tree(view_id)
     # count_cwe_tree(view_id)
 
@@ -482,8 +693,8 @@ if __name__ == '__main__':
 
 
     ## CWE Depth
-    cwe_tree_file = "/root/projects/VDTest/data/CWE/VIEW_1000/CWE_tree.json"
-    output_dir = "/root/projects/VDTest/data/CWE/VIEW_1000"
+    # cwe_tree_file = "/root/projects/VDTest/data/CWE/VIEW_1000/CWE_tree.json"
+    # output_dir = "/root/projects/VDTest/data/CWE/VIEW_1000"
 
     # 1. Update CWE tree
     # update_cwe_tree_by_depth(cwe_tree_file, opt=2)
