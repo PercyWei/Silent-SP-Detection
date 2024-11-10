@@ -18,10 +18,8 @@ from agent_app.search.search_manage import (
     PySearchManager, JavaSearchManager,
     PySearchResult, JavaSearchResult
 )
-from agent_app.data_structures import (
-    SearchStatus, FunctionCallIntent, MessageThread,
-    ProcessActionStatus, ProcessSearchStatus
-)
+from agent_app.flow_control.flow_recording import ProcActionStatus, ProcSearchStatus
+from agent_app.data_structures import SearchStatus, FunctionCallIntent, MessageThread
 from agent_app.task import Task
 from agent_app import globals
 
@@ -60,9 +58,9 @@ class ProcessManager:
 
         # Process recording
         # (1) Special action count
-        self.action_status_count: ProcessActionStatus = ProcessActionStatus()
+        self.action_status_count: ProcActionStatus = ProcActionStatus()
         # (2) Search status count
-        self.search_status_count: ProcessSearchStatus = ProcessSearchStatus()
+        self.search_status_count: ProcSearchStatus = ProcSearchStatus()
 
         # Need initialization
         self.commit_manager = None
@@ -207,8 +205,8 @@ class ProcessManager:
     """PROCESS STATUS COUNT"""
 
     def reset_status_count(self):
-        self.action_status_count = ProcessActionStatus()
-        self.search_status_count = ProcessSearchStatus()
+        self.action_status_count = ProcActionStatus()
+        self.search_status_count = ProcSearchStatus()
 
     """TOOL CALLs"""
 

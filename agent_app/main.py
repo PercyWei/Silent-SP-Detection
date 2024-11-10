@@ -15,14 +15,12 @@ from concurrent.futures import ProcessPoolExecutor
 
 from loguru import logger
 
-from agent_app import globals, globals_mut, log
-from agent_app.data_structures import ProcessStatus
+from agent_app import globals, globals_mut, log, inference
 from agent_app.api.manage import PyProcessManager, JavaProcessManager
 from agent_app.model import common
 from agent_app.model.register import register_all_models
 from agent_app.raw_tasks import RawTask, RawLocalTask
 from agent_app.task import Task
-from agent_app.flow_control import inference
 from agent_app.util import create_dir_if_not_exists
 
 
@@ -262,17 +260,7 @@ def run_raw_task(task: RawTask, print_callback: Callable[[dict], None] | None = 
         logger.exception(e)
         run_status_message = f"Task {task_id} failed with exception: {e}."
     finally:
-        if all_proc_status is not None:
-            completion_info = {}
-            for proc_name, status_counts in all_proc_status.items():
-                completion_info[proc_name] = {
-                    status_name: status_count.to_dict()
-                    for status_name, status_count in status_counts.items()
-                }
-        else:
-            completion_info = None
-
-        task.dump_meta_data(task_output_dpath, {"completion_info": completion_info})
+        task.dump_meta_data(task_output_dpath, {"completion_info": all_proc_status})
 
     log.log_and_always_print(run_status_message)
 
@@ -283,7 +271,7 @@ def do_inference(
         task: Task,
         task_output_dir: str,
         print_callback: Callable[[dict], None] | None = None
-) -> Dict[str, Dict[str, ProcessStatus]] | None:
+) -> Dict[str, Dict[str, Dict]] | None:
     create_dir_if_not_exists(task_output_dir)
     current_task_log_path = os.path.join(task_output_dir, "info.log")
 

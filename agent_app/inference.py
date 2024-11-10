@@ -4,7 +4,7 @@ import json
 from typing import *
 
 from agent_app import globals, log
-from agent_app.data_structures import MessageThread, ProcessStatus
+from agent_app.data_structures import MessageThread
 from agent_app.api.manage import ProcessManager
 from agent_app.flow_control.flow_recording import ProcOutPaths
 from agent_app.flow_control.hypothesis import FinalHypothesis
@@ -22,7 +22,7 @@ def start_conversation_round_stratified(
         output_dpath: str,
         manager: ProcessManager,
         print_callback: Callable[[dict], None] | None = None
-) -> Dict[str, Dict[str, ProcessStatus]]:
+) -> Dict[str, Dict[str, Dict]]:
     """
     This version uses json data to process API calls, instead of using the OpenAI function calling.
     Advantage is that multiple API calls can be made in a single round.
@@ -33,7 +33,7 @@ def start_conversation_round_stratified(
     ############################################
 
     # process_name -> status
-    all_proc_status: Dict[str, Dict[str, ProcessStatus]] = {}
+    all_proc_status: Dict[str, Dict[str, Dict]] = {}
 
     for proc_no in range(1, globals.complete_process_limit + 1):
         log.print_banner(f"COMPLETE PROCESS {proc_no}")
@@ -111,8 +111,8 @@ def start_conversation_round_stratified(
 
         # Save
         all_proc_status[curr_proc_name] = {
-            "Action Status Count": manager.action_status_count,
-            "Search Status Count": manager.search_status_count
+            "Action Status Count": manager.action_status_count.to_dict(),
+            "Search Status Count": manager.search_status_count.to_dict()
         }
 
     #####################################
@@ -152,7 +152,7 @@ def run_one_task(
         output_dpath: str,
         manager: ProcessManager,
         print_callback: Callable[[dict], None] | None = None,
-) -> Dict[str, Dict[str, ProcessStatus]]:
+) -> Dict[str, Dict[str, Dict]]:
     """Main entry point to run inference on one task.
 
     Args:
