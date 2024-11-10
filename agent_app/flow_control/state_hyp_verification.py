@@ -19,7 +19,7 @@ from agent_app.flow_control.hypothesis import get_hyp_description, update_hyp_wi
 def run_in_hyp_verification_state(
         process_no: int,
         loop_no: int,
-        proc_all_hypothesis: ProcHypothesis,
+        curr_proc_hyps: ProcHypothesis,
         curr_proc_outs: ProcOutPaths,
         msg_thread: MessageThread,
         manager: ProcessManager,
@@ -31,16 +31,16 @@ def run_in_hyp_verification_state(
     # STEP 1: Verify the hypothesis #
     #################################
 
-    assert proc_all_hypothesis.cur_hyp is not None
+    assert curr_proc_hyps.cur_hyp is not None
 
     # ------------------ 1.1 Prepare the prompt ------------------ #
-    if proc_all_hypothesis.cur_hyp.commit_type == CommitType.NonVulnerabilityPatch:
+    if curr_proc_hyps.cur_hyp.commit_type == CommitType.NonVulnerabilityPatch:
         suffix_prompt = (
             "For each modified code snippet involved in the commit, please complete the following tasks:\n"
             "(1) Analyze the purpose of the modification.\n"
             "(2) Determine whether the modification is unrelated to the vulnerability fix.")
     else:
-        full_cwe_id = proc_all_hypothesis.cur_hyp.vulnerability_type
+        full_cwe_id = curr_proc_hyps.cur_hyp.vulnerability_type
         cwe_id = full_cwe_id.split('-')[-1]
         cwe_description = manager.cwe_manager.get_weakness_description(cwe_id)
         cwe_description_seq = f"The description of {full_cwe_id} is: {cwe_description}\n" if cwe_description else ""
@@ -50,7 +50,7 @@ def run_in_hyp_verification_state(
                          "(1) Analyze the key variables and fix methods commonly involved in this CWE.\n"
                          "(2) Find the corresponding key variables and fix methods in the code snippet involved in this commit.")
 
-    cur_hyp_str = get_hyp_description(proc_all_hypothesis.cur_hyp)
+    cur_hyp_str = get_hyp_description(curr_proc_hyps.cur_hyp)
     hyp_verify_prompt = (
         "Now you have enough context, please re-analyze the correctness of your previous hypothesis.\n"
         f"Your hypothesis is: {cur_hyp_str}.\n"
@@ -67,7 +67,7 @@ def run_in_hyp_verification_state(
     # ------------------ 2.1 Prepare the prompt ------------------ #
     score_prompt = (
         f"Based on the above analysis, please give the confidence score for this hypothesis (0-10). "
-        f"The previous score was {proc_all_hypothesis.cur_hyp.confidence_score}/10.")
+        f"The previous score was {curr_proc_hyps.cur_hyp.confidence_score}/10.")
     _add_usr_msg_and_print(score_prompt, msg_thread, print_desc, print_callback)
 
     # ------------------ 2.2 Ask the LLM ------------------ #
@@ -97,12 +97,12 @@ def run_in_hyp_verification_state(
     #####################################
 
     # (1) Update the confidence score of the current hypothesis
-    proc_all_hypothesis.cur_hyp.confidence_score = json.loads(json_score)["confidence_score"]
+    curr_proc_hyps.cur_hyp.confidence_score = json.loads(json_score)["confidence_score"]
 
     # (2) Update the current hypothesis from unverified to verified
-    ver_hyp = update_hyp_with_analysis(proc_all_hypothesis.cur_hyp, analysis_text)
-    proc_all_hypothesis.verified.append(ver_hyp)
-    proc_all_hypothesis.cur_hyp = None
+    ver_hyp = update_hyp_with_analysis(curr_proc_hyps.cur_hyp, analysis_text)
+    curr_proc_hyps.verified.append(ver_hyp)
+    curr_proc_hyps.cur_hyp = None
 
     ###############################
     # STEP 4: End of current loop #
@@ -113,7 +113,7 @@ def run_in_hyp_verification_state(
     msg_thread.save_to_file(curr_loop_conversation_file)
 
     # ------------------ 4.2 Decide next step ------------------ #
-    if len(proc_all_hypothesis.verified) >= globals.hypothesis_limit:
+    if len(curr_proc_hyps.verified) >= globals.hypothesis_limit:
         log.log_and_print("Too many verified hypothesis. End anyway.")
         return False
 

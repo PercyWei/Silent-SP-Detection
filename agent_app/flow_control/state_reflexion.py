@@ -16,7 +16,7 @@ from agent_app.flow_control.hypothesis import get_hyp_description
 def run_in_reflexion_state(
         process_no: int,
         loop_no: int,
-        proc_all_hypothesis: ProcHypothesis,
+        curr_proc_hyps: ProcHypothesis,
         curr_proc_outs: ProcOutPaths,
         msg_thread: MessageThread,
         manager: ProcessManager,
@@ -48,11 +48,11 @@ def run_in_reflexion_state(
                          f"\n{commit_desc}")
 
         # 2.2 Summary about description and analysis of verified hypothesis
-        proc_all_hypothesis.sort_verified()
+        curr_proc_hyps.sort_verified()
 
         # TODO: Consider how to briefly summarize the analysis of previous hypothesis.
         loop_summary = "In the previous analysis, you have made and analysed the following hypothesis:"
-        for i, hyp in enumerate(proc_all_hypothesis.verified):
+        for i, hyp in enumerate(curr_proc_hyps.verified):
             desc = get_hyp_description(hyp)
             loop_summary += (f"\n\nHypothesis id {i + 1}:"
                              f"\n - Description: {desc}"
@@ -62,7 +62,7 @@ def run_in_reflexion_state(
         # TODO: Consider how to add the patch code snippets.
         code_snippet_desc = (
             "Besides, by calling the search APIs, you have got the following code snippets which help with analysis."
-            f"\n\n{proc_all_hypothesis.context_to_str()}")
+            f"\n\n{curr_proc_hyps.context_to_str()}")
 
         reflexion_prompt = f"{commit_prompt}\n\n{loop_summary}\n\n{code_snippet_desc}"
 
