@@ -21,6 +21,9 @@ from agent_app.flow_control.hypothesis import build_basic_hyp
 from agent_app.util import LanguageNotSupportedError
 
 
+"""ACTION: MAKE INIT HYPOTHESIS"""
+
+
 def make_free_init_hypothesis(
         print_desc: str,
         curr_proc_outs: ProcOutPaths,
@@ -159,6 +162,9 @@ def make_constrained_init_hypothesis(
     return curr_proc_hyps
 
 
+"""ACTION: EXTRACT PATCH LOCATIONS"""
+
+
 def extract_patch_locations(
         print_desc: str,
         curr_proc_outs: ProcOutPaths,
@@ -234,6 +240,9 @@ def extract_patch_locations(
                 raise LanguageNotSupportedError(globals.lang)
 
             curr_proc_hyps.patch.append(snip)
+
+
+"""MAIN STATE"""
 
 
 def run_in_start_state(
