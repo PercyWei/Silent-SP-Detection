@@ -173,7 +173,7 @@ class CWEManager:
             return None
 
 
-    def get_weakness_attr_description(self, cwe_id: str) -> str | None:
+    def get_weakness_view_description(self, cwe_id: str) -> str | None:
         if cwe_id not in self.all_weakness_entries:
             return None
 
@@ -209,6 +209,12 @@ class CWEManager:
                 entire_view_desc += f"\n{i+1}. {view_desc}"
 
         return entire_view_desc
+
+
+    def get_weakness_attrs(self, cwe_id: str) -> WeaknessAttrs | None:
+        if cwe_id in self.weakness_attributes:
+            return self.weakness_attributes[cwe_id]
+        return None
 
 
     def is_too_detailed_weakness(self, cwe_id: str) -> bool:

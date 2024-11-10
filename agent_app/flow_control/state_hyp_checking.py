@@ -144,10 +144,10 @@ def run_in_hyp_checking_state(
                 weakness_desc = f"The definition of {cur_full_cwe_id} is: " + manager.cwe_manager.get_weakness_description(cur_cwe_id)
                 assert weakness_desc is not None
                 # (2) Weakness attributes
-                weakness_attr_desc = manager.cwe_manager.get_weakness_attr_description(cur_cwe_id)
-                assert weakness_attr_desc is not None
+                weakness_view_desc = manager.cwe_manager.get_weakness_view_description(cur_cwe_id)
+                assert weakness_view_desc is not None
 
-                valid_check_prompt += f"\n{weakness_desc}\n{weakness_attr_desc}"
+                valid_check_prompt += f"\n{weakness_desc}\n{weakness_view_desc}"
             elif cur_cwe_id in manager.cwe_manager.all_category_entries:
                 # (1) Category definition
                 category_desc = f"The type of {cur_full_cwe_id} is Category. " + manager.cwe_manager.get_category_description(cur_cwe_id)
