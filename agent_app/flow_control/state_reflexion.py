@@ -1,6 +1,7 @@
 
 from typing import *
 
+from agent_app import globals
 from agent_app.data_structures import MessageThread
 from agent_app.api.manage import ProcessManager
 from agent_app.flow_control.flow_recording import State, ProcOutPaths, ProcHypothesis
@@ -37,7 +38,7 @@ def run_in_reflexion_state(
 
         # ------------------ 1.1 Prepare the prompt ------------------ #
         ## (1) System prompt
-        system_prompt = get_system_prompt()
+        system_prompt = get_system_prompt(globals.lang)
         _add_system_msg_and_print(system_prompt, msg_thread, print_desc, print_callback)
 
         ## (2) Reflexion prompt

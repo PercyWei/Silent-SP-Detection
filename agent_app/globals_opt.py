@@ -16,3 +16,6 @@ opt_to_func_diff_context: int = 2
 ## Strategy for extracting relevant interface snippet while building file diff context
 # NOTE: The same as 'opt_to_func_diff_context'.
 opt_to_iface_diff_context: int = 2
+
+# Strategy for init hypothesis making in start state
+opt_to_start_state_path: int = 2

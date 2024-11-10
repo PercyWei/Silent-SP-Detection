@@ -151,7 +151,7 @@ def run_in_post_process_state(
     if len(pending_hyps) > 1:
         # ------------------ 2.2 Prepare the prompt ------------------ #
         ## (1) System prompt
-        system_prompt = get_system_prompt()
+        system_prompt = get_system_prompt(globals.lang)
         _add_system_msg_and_print(system_prompt, msg_thread, print_desc, print_callback)
 
         ## (2) Summary prompt

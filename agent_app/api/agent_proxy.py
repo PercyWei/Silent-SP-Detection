@@ -19,7 +19,7 @@ def _get_hyp_proposal_prompt() -> str:
     return """You are a helpful assistant to convert text containing the following information into json format.
 1. Are new hypotheses being proposed?
 
-Extract new hypothesis from question 1, leave an empty list if you do not find any valid hypothesis.
+Extract new hypothesis for question 1, leave an empty list if you do not find any valid hypothesis.
 
 interface VulPatchHypothesis {
   commit_type: 'vulnerability_patch';
@@ -43,11 +43,30 @@ Now based on the given context, write a hypothesis_list section that conforms to
 """
 
 
+def _get_init_hyp_completion_prompt() -> str:
+    return """You are a helpful assistant to convert text containing the following information into json format.
+1. What is the content of the masks in the original hypothesis?
+
+The original hypothesis contains three masks ('mask_i', i=1,2,3), as shown below.
+- 1. The given commit does not fix a vulnerability, and the confidence score is [mask_1]/10.
+- 2. The given commit fixes a vulnerability of type [mask_2], and the confidence score is [mask_3]/10.
+Extract the content of the three masks for question 1.
+
+interface Masks {
+    mask_1: number;
+    mask_2: `CWE-${number}`;
+    mask_3: number;
+};
+
+Now based on the given context, write a json dict that conforms to the Masks schema.
+"""
+
+
 def _get_hyp_check_prompt() -> str:
     return """You are a helpful assistant to convert text containing the following information into json format.
 1. What is the modified CWE type?
 
-Extract the CWE type from question 1.
+Extract the CWE type for question 1.
 
 interface CWEType {
     cwe_type: `CWE-${number}`;
@@ -62,7 +81,7 @@ def _get_patch_extraction_prompt(lang: Literal['Python', 'Java']) -> str:
         return """You are a helpful assistant to convert text containing the following information into json format.
 1. Where is the patch located?
 
-Extract the locations of patch code snippet from question 1, and for each location, it at least contains a "file_name" and a "code".
+Extract the locations of patch code snippet for question 1, and for each location, it at least contains a "file_name" and a "code".
 
 interface PatchLocation {
   file_name: string;
@@ -82,7 +101,7 @@ Now based on the given context, write a patch_locations section that conforms to
         return """You are a helpful assistant to convert text containing the following information into json format.
 1. Where is the patch located?
 
-Extract the locations of patch code snippet from question 1, and for each location, it at least contains a "file_name" and a "code".
+Extract the locations of patch code snippet for question 1, and for each location, it at least contains a "file_name" and a "code".
 
 interface PatchLocation {
   file_name: string;
@@ -109,7 +128,7 @@ def _get_context_retrieval_prompt(lang: Literal['Python', 'Java']) -> str:
         return """You are a helpful assistant to convert text containing the following information into json format.
 1. How to construct search API calls to get more context of the project?
 
-Extract API calls from question 1, leave an empty list if you do not find any valid API calls or the text content indicates that no further context is needed.
+Extract API calls for question 1, leave an empty list if you do not find any valid API calls or the text content indicates that no further context is needed.
 
 The API calls include:
 - search_class(class_name: str)
@@ -140,7 +159,7 @@ Now based on the given context, write a api_calls section that conforms to the A
         return """You are a helpful assistant to convert text containing the following information into json format.
 1. How to construct search API calls to get more context of the project?
 
-Extract API calls from question 1, leave an empty list if you do not find any valid API calls or the text content indicates that no further context is needed.
+Extract API calls for question 1, leave an empty list if you do not find any valid API calls or the text content indicates that no further context is needed.
 
 The API calls include:
 - search_interface(iface_name: str)
@@ -179,7 +198,7 @@ def _get_score_prompt() -> str:
     return """You are a helpful assistant to convert text containing the following information into json format.
 1. What confidence score is set for the current hypothesis?
 
-Extract the confidence score from question 1.
+Extract the confidence score for question 1.
 
 The confidence score should be an integer value between 1 and 10.
 
@@ -195,7 +214,7 @@ def _get_rank_prompt() -> str:
     return """You are a helpful assistant to convert text containing the following information into json format.
 1. What is the ranking of the hypothesis?
 
-Extract the ranking from question 1.
+Extract the ranking for question 1.
 
 The ranking should be a list consisting of integers, e.g. [2, 3, 1].
 
@@ -210,6 +229,8 @@ Now based on the given context, write a ranking section that conforms to the Ran
 def get_task_prompt(lang: Literal['Python', 'Java'], task: ProxyTask) -> str:
     if task == ProxyTask.HYP_PROPOSAL:
         return _get_hyp_proposal_prompt()
+    elif task == ProxyTask.INIT_HYP_COMPLETION:
+        return _get_init_hyp_completion_prompt()
     elif task == ProxyTask.HYP_CHECK:
         return _get_hyp_check_prompt()
     elif task == ProxyTask.PATCH_EXTRACTION:
@@ -292,9 +313,9 @@ def is_valid_response(lang: Literal['Python', 'Java'], data: List | Dict, task: 
         {
             "hypothesis_list" : [
                 {
-                    commit_type: 'vulnerability_patch' | 'non_vulnerability_patch',
-                    vulnerability_type: str;
-                    confidence_score: int;  
+                    commit_type: 'vulnerability_patch' | 'non_vulnerability_patch'
+                    vulnerability_type: str
+                    confidence_score: int
                 },
                 ...
             ]
@@ -349,6 +370,29 @@ def is_valid_response(lang: Literal['Python', 'Java'], data: List | Dict, task: 
                 simp_reason = verb_reason = "The 'confidence_score' of a hypothesis is not an integer"
                 verb_reason += f" and the hypothesis is: {hypothesis}"
                 return False, simp_reason, verb_reason
+
+    elif task == ProxyTask.INIT_HYP_COMPLETION:
+        """
+        {
+            "mask_1": int
+            "mask_2": str
+            "mask_3": int
+        }
+        """
+        for mask_i in ["mask_1", "mask_2", "mask_3"]:
+            if mask_i not in data:
+                simp_reason = verb_reason = f"Missing '{mask_i}' key"
+                return False, simp_reason, verb_reason
+
+        for mask_i in ["mask_1", "mask_3"]:
+            conf_score = data[mask_i]
+            if not isinstance(conf_score, int):
+                simp_reason = verb_reason = f"The content of '{mask_i}' is not an integer"
+                return False, simp_reason, verb_reason
+
+        if not re.fullmatch(r"CWE-\d+", data["mask_2"]):
+            simp_reason = verb_reason = f"The content of 'mask_2' is not a valid CWE-ID string"
+            return False, simp_reason, verb_reason
 
     elif task == ProxyTask.HYP_CHECK:
         """

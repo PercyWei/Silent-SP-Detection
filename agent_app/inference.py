@@ -32,15 +32,11 @@ def start_conversation_round_stratified(
     # STEP 1: Perform identification processes #
     ############################################
 
-    # process_name -> status
+    # process name -> {status name -> status data}
     all_proc_status: Dict[str, Dict[str, Dict]] = {}
 
     for proc_no in range(1, globals.complete_process_limit + 1):
         log.print_banner(f"COMPLETE PROCESS {proc_no}")
-
-        # TODO: Consider whether to add Reflexion Module to remind Agent the following info:
-        #  (1) Previous successful process: previous hypothesis and analysis.
-        #  (2) Previous failed process: failed reason.
 
         # ------------------------------------ 1.1 Preparation ------------------------------------ #
         curr_proc_name = f"process_{proc_no}"

@@ -13,15 +13,29 @@ from agent_app.util import LanguageNotSupportedError
 """PROMPT"""
 
 
-def get_system_prompt() -> str:
-    return ("You are a software developer developing based on a large open source project."
-            "\nYou are facing a commit to this open source project."
-            "\nThe commit contains some code changes marked between <commit> and </commit>."
-            "\nThe names of the code files involved are marked between <file> and </file>."
-            "\nIf the code lines are in a class or function, the class name or function name is marked between <class> and </class> or <func> and </func>, respectively."
-            "\nNOTE: A commit may contain multiple changed files, and a changed file may contain multiple changed code lines."
-            "\n\nYour task is to determine whether the commit fixes the vulnerability, and if so, give the most likely type of vulnerability, which is denoted by CWE-ID."
-            "\nTo achieve this, you need to make some reasonable hypothesis, and then use the search API calls to gather relevant context and verify the correctness of them.")
+def get_system_prompt(lang: Literal['Python', 'Java']) -> str:
+    if lang == 'Python':
+        return ("You are a software developer developing based on a large open source project."
+                "\nYou are facing a commit to this open source project."
+                "\nThe commit contains some code changes marked between <commit> and </commit>."
+                "\nThe names of the code files involved are marked between <file> and </file>."
+                "\nIf the code lines are in a top-level function or class, the function name or class name is marked between <func> and </func> or <class> and </class>, respectively."
+                "\nBesides, if the code lines are in a inclass method, the inclass method name is marked between <inclass_func> and </inclass_func>."
+                "\nNOTE: A commit may contain multiple changed files, and a changed file may contain multiple changed code lines."
+                "\n\nYour task is to determine whether the commit fixes the vulnerability, and if so, give the most likely type of vulnerability, which is denoted by CWE-ID."
+                "\nTo achieve this, you need to make some reasonable hypothesis, and then use the search API calls to gather relevant context and verify the correctness of them.")
+    elif lang == 'Java':
+        return ("You are a software developer developing based on a large open source project."
+                "\nYou are facing a commit to this open source project."
+                "\nThe commit contains some code changes marked between <commit> and </commit>."
+                "\nThe names of the code files involved are marked between <file> and </file>."
+                "\nIf the code lines are in a top-level interface or class, the interface name or class name is marked between <iface> and </iface> or <class> and </class>, respectively."
+                "\nBesides, if the code lines are in a inclass type, the inclass type name is marked between <inclass_xxx> and </inclass_xxx>. Here 'type' indicates interface, class or method, and 'xxx' will be replaced by 'iface', 'class' or 'func'."
+                "\nNOTE: A commit may contain multiple changed files, and a changed file may contain multiple changed code lines."
+                "\n\nYour task is to determine whether the commit fixes the vulnerability, and if so, give the most likely type of vulnerability, which is denoted by CWE-ID."
+                "\nTo achieve this, you need to make some reasonable hypothesis, and then use the search API calls to gather relevant context and verify the correctness of them.")
+    else:
+        raise LanguageNotSupportedError(lang)
 
 
 def get_hyp_def_prompt() -> str:

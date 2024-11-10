@@ -39,10 +39,10 @@ class PySearchResult(BaseCodeSnippetLocation):
         class_part = f"<class>{self.class_name}</class> " if self.class_name is not None else ""
         return f"{prefix}\n{class_part}"
 
-    def to_tagged_upto_inclass_func(self) -> str:
+    def to_tagged_upto_inclass_method(self) -> str:
         """Convert the code snippet location to a tagged string, upto inclass method."""
         prefix = self.to_tagged_upto_class()
-        inclass_func_part = f"<func>{self.inclass_method_name}</func>" if self.inclass_method_name is not None else ""
+        inclass_func_part = f"<inclass_func>{self.inclass_method_name}</inclass_func>" if self.inclass_method_name is not None else ""
         return f"{prefix}{inclass_func_part}"
 
     def to_tagged_str(self) -> str:
@@ -53,7 +53,7 @@ class PySearchResult(BaseCodeSnippetLocation):
         if self.func_name is not None:
             prefix = self.to_tagged_upto_func()
         elif self.class_name is not None:
-            prefix = self.to_tagged_upto_inclass_func()
+            prefix = self.to_tagged_upto_inclass_method()
         else:
             prefix = self.to_tagged_upto_file()
         code_part = f"<code>\n{self.code}\n</code>"
@@ -100,11 +100,11 @@ class JavaSearchResult(BaseCodeSnippetLocation):
 
         prefix = self.to_tagged_upto_class()
         if self.inclass_method_name is not None:
-            inclass_type_part = f"<func>{self.inclass_method_name}</func>"
+            inclass_type_part = f"<inclass_func>{self.inclass_method_name}</inclass_func>"
         elif self.inclass_iface_name is not None:
-            inclass_type_part = f"<iface>{self.inclass_iface_name}</iface>"
+            inclass_type_part = f"<inclass_iface>{self.inclass_iface_name}</inclass_iface>"
         elif self.inclass_class_name is not None:
-            inclass_type_part = f"<class>{self.inclass_class_name}</class>"
+            inclass_type_part = f"<inclass_class>{self.inclass_class_name}</inclass_class>"
         else:
             inclass_type_part = ""
         return f"{prefix}{inclass_type_part}"
