@@ -2,20 +2,8 @@ import re
 import json
 
 from typing import *
-from enum import Enum
-from dataclasses import dataclass
 
-
-@dataclass(frozen=True)
-class WeaknessAttrs:
-    trigger_action: str
-    key_variables: List[str]
-
-
-@dataclass(frozen=True)
-class VIEWInfo:
-    basis: str
-    cwe_tree: Dict[str, Dict]
+from agent_app.CWE.cwe_util import WeaknessAttrs, VIEWInfo
 
 
 class CWEManager:
@@ -248,14 +236,3 @@ class CWEManager:
         fathers = list(set(fathers))
 
         return fathers
-
-
-    """CWE MEMORY"""
-    @staticmethod
-    def trigger_action_def() -> str:
-        return "The direct action triggering the vulnerability"
-
-
-    @staticmethod
-    def key_variable_def() -> str:
-        return "Important variables that have a direct or indirect relationship with the triggering action"

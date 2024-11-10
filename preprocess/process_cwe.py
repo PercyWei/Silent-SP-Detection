@@ -2,351 +2,307 @@ from __future__ import annotations
 
 import os
 import json
-import requests
+import csv
 
 from typing import *
 from tqdm import tqdm
+from collections import defaultdict
 
-from agent_app.CWE.cwe_manage import VIEWInfo
-
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import NoSuchElementException
+from agent_app.CWE.cwe_util import VIEWInfo
 
 from openai import OpenAI
 from openai.types.chat.completion_create_params import ResponseFormat
 
-from utils import selenium_driver_setup, selenium_driver_close
+
+"""CWE ENTRIES"""
 
 
-def crawl_cwe_tree(view_id: str):
-    driver = selenium_driver_setup()
+def read_cwe_csv(csv_path: str, save_dpath: str):
+    cwe_entries: List[Dict] = []
 
-    url = f"https://cwe.mitre.org/data/definitions/{view_id}.html"
+    with open(csv_path) as f:
+        reader = csv.reader(f)
+        title = next(reader)
 
+        for i, row in enumerate(reader):
+            cwe_entry = {}
+            for v, attr in zip(row, title):
+                cwe_entry[attr] = v
+            cwe_entries.append(cwe_entry)
 
-    def find_child(father_div) -> Dict:
-        try:
-            father_id = father_div.get_attribute('id')
-
-            div_3 = father_div.find_element(By.XPATH, './div[3]')
-            child_group_divs = div_3.find_elements(By.XPATH, './div[contains(@class, "group")]')
-
-            children_dict = {}
-            for child in child_group_divs:
-                child_id = child.get_attribute('id')
-                assert child_id.startswith(father_id)
-
-                children_dict[child_id[len(father_id):]] = find_child(child)
-
-            return children_dict
-        except NoSuchElementException:
-            return {}
+    cwe_entries_fpath = os.path.join(save_dpath, 'CWE_entries.json')
+    with open(cwe_entries_fpath, "w") as f:
+        f.write(json.dumps(cwe_entries, indent=4))
 
 
-    try:
-        driver.get(url)
-
-        target_div = WebDriverWait(driver, 30).until(
-            EC.presence_of_element_located(
-                (By.XPATH, '/html/body/table/tbody/tr[2]/td/div[3]/div[5]/div[2]/div/div/div/div[2]'))
-        )
-
-        cwe_tree = {}
-        level_1_divs = target_div.find_elements(By.XPATH, './div[contains(@class, "group")]')
-        for div in level_1_divs:
-            div_id = div.get_attribute('id')
-            assert div_id.startswith(view_id)
-            cwe_tree[div_id[len(view_id):]] = find_child(div)
-
-        save_file = f"/root/projects/VDTest/data/CWE/VIEW_{view_id}/raw_cwe_tree.json"
-        with open(save_file, "w") as f:
-            json.dump(cwe_tree, f, indent=4)
+"""CWE TREE"""
+# FIXME: This section is not yet complete
 
 
-    finally:
-        selenium_driver_close(driver)
-
-
-def count_cwe_tree(view_id: str):
-    cwe_tree_file = f"/root/projects/VDTest/data/CWE/VIEW_{view_id}/raw_cwe_tree.json"
-    with open(cwe_tree_file, "r") as f:
-        cwe_tree = json.load(f)
-
-    recorded_cwe_ids: List[str] = []
-    duplicated_cwe_ids: List[str] = []
-
-
-    def count_all_keys(tree):
-        count = 0
-        for father, children in tree.items():
-            assert isinstance(children, dict)
-
-            if father not in recorded_cwe_ids:
-                recorded_cwe_ids.append(father)
-            else:
-                duplicated_cwe_ids.append(father)
-
-            count += 1
-            if children:
-                count += count_all_keys(children)
-
-        return count
-
-
-    appeared_cwe_num = count_all_keys(cwe_tree)
-    unduplicated_cwe_num = len(recorded_cwe_ids)
-
-    print(f"unduplicated cwe num / appeared cwe num: {unduplicated_cwe_num} / {appeared_cwe_num}")
-
-    duplicated_cwe_ids = list(set(duplicated_cwe_ids))
-    print(json.dumps(duplicated_cwe_ids, indent=4))
-    print(len(duplicated_cwe_ids))
-
-
-def build_cwe_entry_from_cwe_tree(view_id: Literal["1400", "699", "888"]):
-    cwe_entry_1000_file = "/root/projects/VDTest/data/CWE/VIEW_1000/CWE_entries.json"
-    with open(cwe_entry_1000_file, "r") as f:
-        all_weaknesses = json.load(f)
-    all_weakness_ids = [entry["CWE-ID"] for entry in all_weaknesses]
-
-    cwe_tree_file = f"/root/projects/VDTest/data/CWE/VIEW_{view_id}/raw_cwe_tree.json"
-    with open(cwe_tree_file, "r") as f:
-        cwe_tree = json.load(f)
-
-    cwe_entries: Dict[str, Dict] = {}
-
-
-    def add_tree_node(tree):
-        for father, children in tree.items():
-            if father not in cwe_entries:
-                if father in all_weakness_ids:
-                    cwe_entries[father] = {"CWE-ID": father, "Type": "weakness"}
-                else:
-                    cwe_entries[father] = {"CWE-ID": father, "Type": "category"}
-
-                assert isinstance(children, dict)
-                if children:
-                    add_tree_node(children)
-
-
-    add_tree_node(cwe_tree)
-
-    print(len(cwe_entries))
-
-    cwe_entry_file = f"/root/projects/VDTest/data/CWE/VIEW_{view_id}/raw_cwe_entries.json"
-    with open(cwe_entry_file, "w") as f:
-        json.dump(list(cwe_entries.values()), f, indent=4)
-
-
-def crawl_view_category_name(view_id: Literal["1400", "699"]):
-    driver = selenium_driver_setup()
-
-    url = f"https://cwe.mitre.org/data/definitions/{view_id}.html"
-
-    try:
-        driver.get(url)
-
-        target_div = WebDriverWait(driver, 30).until(
-            EC.presence_of_element_located(
-                (By.XPATH, '/html/body/table/tbody/tr[2]/td/div[3]/div[5]/div[2]/div/div/div/div[2]'))
-        )
-
-        category_names = {}
-
-        category_divs = target_div.find_elements(By.XPATH, './div[contains(@class, "group")]')
-        for div in category_divs:
-            div_id = div.get_attribute('id')
-            assert div_id.startswith(view_id)
-
-            span_a = div.find_element(By.XPATH, './span[2]/span[2]/a')
-            span_text = span_a.text
-
-            category_names[div_id[len(view_id):]] = span_text
-
-        save_file = f"/root/projects/VDTest/data/CWE/VIEW_{view_id}/category_names.json"
-        with open(save_file, "w") as f:
-            json.dump(category_names, f, indent=4)
-
-
-    finally:
-        selenium_driver_close(driver)
-
-
-def crawl_view_888_category_name(view_id: Literal["888"]):
-    cwe_entry_file = f"/root/projects/VDTest/data/CWE/VIEW_{view_id}/raw_cwe_entries.json"
-    with open(cwe_entry_file, "r") as f:
+def build_cwe_tree(cwe_entries_fpath: str, save_dpath: str):
+    with open(cwe_entries_fpath, "r") as f:
         cwe_entries = json.load(f)
-    cwe_entries = {entry["CWE-ID"]: entry for entry in cwe_entries}
 
+    cwe_tree: Dict[str, Dict] = {}
 
-    def find_all_children(div, father_id):
-        div_id = div.get_attribute('id')
-        assert div_id.startswith(father_id)
-        cwe_id = div_id[len(father_id):]
+    father_children_list = []
+    left_items = []
+    for cwe_entry in cwe_entries:
+        father = None
+        current = str(cwe_entry["CWE-ID"])
+        relations = cwe_entry["Related Weaknesses"]
 
-        try:
-            span_graph_title = div.find_element(By.XPATH, './span[@class="graph_title"]')
-            # span_graph_title = WebDriverWait(driver, 30).until(
-            #     EC.presence_of_element_located((By.XPATH, './span[@class="graph_title"]'))
-            # )
-            span_primary = span_graph_title.find_element(By.XPATH, './span[@class="Primary"]/a')
-            span_text = span_primary.text
-        except Exception:
-            raise RuntimeError
+        diff_view_relations = relations.split("::")
+        for view_relations in diff_view_relations:
+            if "VIEW ID:1003" in view_relations:
+                rels = view_relations.split(':')
+                for i, rel in enumerate(rels):
+                    if rel == "ChildOf":
+                        assert father is None
+                        father = str(rels[i+2])
 
-        if cwe_entries[cwe_id]["Type"] == "category":
-            cwe_entries[cwe_id]["Name"] = span_text
-
-        try:
-            div_3 = div.find_element(By.XPATH, f'./div[@name="block_{div_id}"]')
-            child_divs = div_3.find_elements(By.XPATH, './div[contains(@class, "group")]')
-
-            for child_div in child_divs:
-                find_all_children(child_div, div_id)
-        except NoSuchElementException:
-            pass
-
-
-    url = f"https://cwe.mitre.org/data/definitions/{view_id}.html"
-    driver = selenium_driver_setup()
-
-    try:
-        driver.get(url)
-
-        target_div = WebDriverWait(driver, 30).until(
-            EC.presence_of_element_located(
-                (By.XPATH, '/html/body/table/tbody/tr[2]/td/div[3]/div[5]/div[2]/div/div/div/div[2]'))
-        )
-
-        level_1_divs = target_div.find_elements(By.XPATH, './div[contains(@class, "group")]')
-        for level_1_div in level_1_divs:
-            find_all_children(level_1_div, view_id)
-
-        with open(cwe_entry_file, "w") as f:
-            json.dump(list(cwe_entries.values()), f, indent=4)
-    finally:
-        selenium_driver_close(driver)
-
-
-def process_raw_cwe_tree(view_id: Literal["1400", "699", "888"]):
-    file = f"/root/projects/VDTest/data/CWE/VIEW_{view_id}/raw_cwe_tree.json"
-    with open(file, 'r') as f:
-        raw_cwe_tree = json.load(f)
-
-
-    def iter_tree(tree: Dict, father: str | None = None):
-        for node, children in tree.items():
-            if node not in cwe_tree:
-                cwe_tree[node] = {
-                    "CWE-ID": node,
-                    "father": [father] if father else [],
-                    "children": list(children.keys())
-                }
-            else:
-                if father and father not in cwe_tree[node]["father"]:
-                    cwe_tree[node]["father"].append(father)
-
-            assert isinstance(children, dict)
-            iter_tree(children, node)
-
-    cwe_tree = {}
-    iter_tree(raw_cwe_tree)
-
-
-    def find_cwe_paths(curr) -> List[List[str]]:
-        paths: List[List[str]] = []
-        fathers = cwe_tree[curr]["father"]
-        if fathers:
-            for father in fathers:
-                father_paths = find_cwe_paths(father)
-                paths += [path + [curr] for path in father_paths]
+        if father is not None:
+            left_flag = True
+            for father_children in father_children_list:
+                if father in father_children:
+                    left_flag = False
+                    father_children[father].append(current)
+                    break
+            if left_flag:
+                left_items.append([father, current])
         else:
-            paths.append([curr])
+            for father_children in father_children_list:
+                assert current not in father_children
+
+            father_children_list.append({current: []})
+
+    while left_items:
+        current = left_items.pop()
+        for father_children in father_children_list:
+            if current[0] in father_children:
+                father_children[current[0]].append(current[1])
+                break
+
+    root = "1003"
+    cwe_tree[root] = father_children_list
+
+
+def extract_view_rels_from_csv(csv_path, save_dpath):
+    focus_view_ids = ['1000', '699']
+
+    cwe_items_dict = {}
+    cwe_simple_item_dict = {}
+
+    with open(csv_path) as f:
+        reader = csv.reader(f)
+        title = next(reader)
+
+        for i, row in enumerate(reader):
+            cwe_id = None
+            cwe_item = {}
+            cwe_simple_item = {}
+            for v, attr in zip(row, title):
+                # Full info
+                cwe_item[attr] = v
+
+                # Simplified info
+                if attr == 'CWE-ID':
+                    cwe_simple_item[attr] = v
+                    cwe_id = v
+                elif attr == 'Related Weaknesses':
+                    for view_id in focus_view_ids:
+                        cwe_simple_item['VIEW-' + view_id] = {'father': [],
+                                                              'children': []}
+
+                    rels = v.split("::")
+                    for rel in rels:
+                        if rel == '':
+                            continue
+
+                        rel_items = rel.split(':')
+                        if rel_items[5] in focus_view_ids:
+                            current_view_attr = 'VIEW-' + rel_items[5]
+                            rel_name = rel_items[1]
+                            rel_cwe_id = rel_items[3]
+
+                            if rel_name == 'ChildOf' or rel_name == 'MemberOf':
+                                cwe_simple_item[current_view_attr]['father'].append(rel_cwe_id)
+                            elif rel_name == 'ParentOf' or rel_name == 'HasMember':
+                                cwe_simple_item[current_view_attr]['children'].append(rel_cwe_id)
+                            elif rel_name in cwe_simple_item[current_view_attr]:
+                                cwe_simple_item[current_view_attr][rel_name].append(rel_cwe_id)
+                            else:
+                                cwe_simple_item[current_view_attr][rel_name] = [rel_cwe_id]
+                else:
+                    pass
+
+            assert cwe_id is not None
+            cwe_items_dict[cwe_id] = cwe_item
+            cwe_simple_item_dict[cwe_id] = cwe_simple_item
+
+    for view_id in focus_view_ids:
+        update_full_rels(cwe_simple_item_dict, view_id)
+        break
+
+    # Save
+    if not os.path.exists(save_dpath):
+        os.makedirs(save_dpath, exist_ok=True)
+
+    prefix = csv_path.split('/')[-1][:-4]
+
+    cwe_items_fpath = os.path.join(save_dpath, 'VIEW-' + prefix + '_CWEItems' + '.json')
+    cwe_simple_items_fpath = os.path.join(save_dpath, 'VIEW-' + prefix + '_CWESimpleItems' + '.json')
+
+    with open(cwe_items_fpath, "w") as f:
+        f.write(json.dumps(cwe_items_dict, indent=4))
+
+    with open(cwe_simple_items_fpath, "w") as f:
+        f.write(json.dumps(cwe_simple_item_dict, indent=4))
+
+
+def can_add(fathers: List, qualified_cwe_id_list: List) -> bool:
+    flag = True
+    for father in fathers:
+        if father not in qualified_cwe_id_list:
+            flag = False
+            break
+
+    return flag
+
+
+def update_qualified_cwe_item(
+        child, fathers: List,
+        view_id: str,
+        qualified_cwe_id_list: List,
+        cwe_simple_item_dict: Dict
+):
+    """
+        :param child: CWE-ID of CWE item to be added
+        :param fathers: CWE-ID list of fathers of CWE item to be added
+        :param view_id: VIEW ID
+        :param qualified_cwe_id_list: CWE-ID list of all qualified CWE items
+        :param cwe_simple_item_dict: List of all CWE items with simplified info
+
+        Update a qualified CWE item, including `qualified_cwe_id_list` and `cwe_simple_item_list`
+    """
+    qualified_cwe_id_list.append(child)
+    for father in fathers:
+        # Add info about the child
+        if child not in cwe_simple_item_dict[father]["VIEW-" + view_id]["children"]:
+            cwe_simple_item_dict[father]["VIEW-" + view_id]["children"].append(child)
+
+
+def update_full_rels(cwe_simple_item_dict: Dict, view_id: str = "1000"):
+    """
+        :param cwe_simple_item_dict: Each element is like -> CWE-ID: {attr1: v1, attr2: v2, ...}
+        :param view_id: VIEW ID, by default = "1000"
+
+         CWE items in `cwe_simple_item_list` only have complete father information,
+         need update their children information.
+         Note: VIEW-1000 and VIEW-699 only.
+    """
+    # By default, all item's father information is complete.
+
+    qualified_cwe_id_list = []
+    left_cwe_id_list = []
+
+    for current_id, cwe_simple_item in cwe_simple_item_dict.items():
+
+        if len(cwe_simple_item["VIEW-" + view_id]["father"]) == 0:
+            qualified_cwe_id_list.append(current_id)
+        else:
+            can_add_flag = can_add(cwe_simple_item["VIEW-" + view_id]["father"], qualified_cwe_id_list)
+
+            if can_add_flag:
+                update_qualified_cwe_item(child=current_id, fathers=cwe_simple_item["VIEW-" + view_id]["father"],
+                                          view_id=view_id,
+                                          qualified_cwe_id_list=qualified_cwe_id_list,
+                                          cwe_simple_item_dict=cwe_simple_item_dict)
+            else:
+                left_cwe_id_list.append(current_id)
+
+    while left_cwe_id_list:
+        current_id = left_cwe_id_list.pop(0)
+        can_add_flag = can_add(cwe_simple_item_dict[current_id]["VIEW-" + view_id]["father"], qualified_cwe_id_list)
+
+        if can_add_flag:
+            update_qualified_cwe_item(child=current_id, fathers=cwe_simple_item_dict[current_id]["VIEW-" + view_id]["father"],
+                                      view_id=view_id,
+                                      qualified_cwe_id_list=qualified_cwe_id_list,
+                                      cwe_simple_item_dict=cwe_simple_item_dict)
+        else:
+            left_cwe_id_list.append(current_id)
+
+
+"""CWE PATH"""
+
+
+def find_cwe_paths(cwe_id: str, cwe_tree: Dict[str, Dict]) -> List[List[str]]:
+    if len(cwe_tree[cwe_id]["father"]) == 0:
+        return [[cwe_id]]
+    else:
+        paths: List[List[str]] = []
+        for father_id in cwe_tree[cwe_id]["father"]:
+            father_paths = find_cwe_paths(father_id, cwe_tree)
+            for father_path in father_paths:
+                path = father_path + [cwe_id]
+                paths.append(path)
         return paths
 
 
-    updt_cwe_tree = {}
-    for cwe_id, info in cwe_tree.items():
-        cwe_paths = find_cwe_paths(cwe_id)
-        info["cwe_paths"] = cwe_paths
-        updt_cwe_tree[cwe_id] = info
+def refine_cwe_tree_with_paths(cwe_tree_fpath: str) -> None:
+    with open(cwe_tree_fpath, "r") as f:
+        cwe_tree = json.load(f)
 
-    save_file = f"/root/projects/VDTest/data/CWE/VIEW_{view_id}/CWE_tree.json"
-    with open(save_file, "w") as f:
-        json.dump(updt_cwe_tree, f, indent=4)
+    for cwe_id, data in cwe_tree.items():
+        cwe_paths = find_cwe_paths(cwe_id, cwe_tree)
+        cwe_tree[cwe_id]["cwe_paths"] = cwe_paths
 
-
-def compare_cwe_collected_with_treevul():
-    """
-    Compare CWE paths collected and in baseline TreeVul.
-    """
-    ## (1) Get CWE paths in TreeVul
-    # NOTE: Only include CWE paths that appear in the TreeVul dataset
-    treevul_cwe_paths_fpath = "/root/projects/TreeVul/data/cwe_path.json"
-    with open(treevul_cwe_paths_fpath, "r") as f:
-        treevul_full_cwe_paths = json.load(f)
-
-    treevul_cwe_paths: Dict[str, List[str]] = {}
-    for full_cwe_id, full_cwe_path in treevul_full_cwe_paths.items():
-        cwe_id = full_cwe_id.split("-")[-1]
-        cwe_path = [c.split("-")[-1] for c in full_cwe_path]
-        treevul_cwe_paths[cwe_id] = cwe_path
-
-    print(len(treevul_cwe_paths))
-
-    ## (2) Get CWE paths collected
-    coll_cwe_tree_fpath = "/root/projects/VDTest/data/CWE/VIEW_1000/CWE_tree.json"
-    with open(coll_cwe_tree_fpath, "r") as f:
-        coll_cwe_tree = json.load(f)
-
-    coll_cwe_paths: Dict[str, List[List[str]]] = {}
-    for cwe_id, data in coll_cwe_tree.items():
-        coll_cwe_paths[cwe_id] = data["cwe_paths"]
-
-    print(len(coll_cwe_paths))
-
-    ## (3) Compare
-    for cwe_id, cwe_path in treevul_cwe_paths.items():
-        coll_paths = coll_cwe_paths[cwe_id]
-        if cwe_path not in coll_paths:
-            print(f"CWE-{cwe_id}:" 
-                  f"\n - Collected: {json.dumps([' '.join(path) for path in coll_paths], indent=4)}"
-                  f"\n - In TreeVul: {cwe_path}"
-                  f"\n\n")
+    with open(cwe_tree_fpath, "w") as f:
+        json.dump(cwe_tree, f, indent=4)
 
 
-def check_dataset_cwe_depth():
+def check_cwe_paths_and_print(cwe_tree_fpath: str) -> None:
+    with open(cwe_tree_fpath, "r") as f:
+        cwe_tree = json.load(f)
 
-    treevul_cwe_paths_fpath = "/root/projects/TreeVul/data/cwe_path.json"
+    for cwe_id, data in cwe_tree.items():
+        # Find CWE with multiple paths with different length (< 3)
+        if len(data["cwe_paths"]) > 1:
+            depth_3_flag = False
+            depth_2_flag = False
+            for path in data["cwe_paths"]:
+                if len(path) == 3:
+                    depth_3_flag = True
+                if len(path) <= 2:
+                    depth_2_flag = True
+            if depth_3_flag and depth_2_flag:
+                print(cwe_id)
 
-    with open(treevul_cwe_paths_fpath, "r") as f:
-        treevul_cwe_paths = json.load(f)
 
-    treevul_invalid_cwes_fpath = "/root/projects/VDTest/data/CWE/treevul_invalid_cwes.json"
-    with open(treevul_invalid_cwes_fpath, "r") as f:
-        treevul_invalid_cwes = json.load(f)
+def find_diff_depth_cwe(cwe_tree_fpath: str, save_dpath: str, max_depth: int = 3) -> None:
+    with open(cwe_tree_fpath, "r") as f:
+        cwe_tree = json.load(f)
 
-    dataset_fpaths = [
-        "/root/projects/VDTest/dataset/Final/VIEW_1000/py_vul_tasks_nvdvul_v1.json",
-        "/root/projects/VDTest/dataset/Final/VIEW_1000/py_vul_tasks_vulfix.json",
-        "/root/projects/VDTest/dataset/Final/VIEW_1000/py_vul_tasks_treevul.json"
-    ]
+    # depth -> [cwe_id]
+    diff_depth_cwe_ids: Dict[int, List[str]] = defaultdict(list)
+    depths = list(range(1, max_depth + 1))
 
-    for dataset_fpath in dataset_fpaths:
-        with open(dataset_fpath, "r") as f:
-            dataset = json.load(f)
+    for cwe_id, data in cwe_tree.items():
+        # TODO: For CWE with multiple paths, we only focus on one of those paths, i.e. the one with the shortest length
+        #       This problem exists under VIEW-1000 (not under view VIEW-1003)
+        min_path = min(data["cwe_paths"], key=len)
+        if len(min_path) in depths:
+            diff_depth_cwe_ids[len(min_path)].append(cwe_id)
 
-        for data in dataset:
-            cwe_id = data["cwe_id"]
+    for depth, cwe_ids in diff_depth_cwe_ids.items():
+        if len(cwe_ids) > 0:
+            save_fpath = os.path.join(save_dpath, f"CWE_depth_{depth}.json")
+            with open(save_fpath, "w") as f:
+                json.dump(cwe_ids, f, indent=4)
 
-            if cwe_id in treevul_invalid_cwes:
-                continue
 
-            if cwe_id in treevul_cwe_paths:
-                if len(treevul_cwe_paths[cwe_id]) != data["cwe_depth"]:
-                    print(data["source"] + " " + data["commit_hash"])
+"""COMPARISON WITH TREEVUL"""
 
 
 def check_original_treevul_cwe_paths():
@@ -405,68 +361,7 @@ def group_cwe_by_depth(cwe_tree_fpath: str, output_dpath: str):
         json.dump(multi_path_cwes, f, indent=4)
 
 
-def update_cwe_tree_by_depth(cwe_tree_fpath: str, ref_depth: int = 3, opt: int = 1):
-    with open(cwe_tree_fpath, "r") as f:
-        cwe_tree = json.load(f)
-
-    updt_cwe_tree = {}
-
-    for cwe_id, data in cwe_tree.items():
-
-        depths = []
-        for path in data["cwe_paths"]:
-            depths.append(len(path))
-        depths = sorted(set(depths))
-
-        if opt == 1:
-            # Strategy 1: Choose the deepest path
-            cwe_depth = depths[-1]
-        elif opt == 2:
-            # Strategy 2: Based on reference depth
-            if len(depths) == 1:
-                cwe_depth = depths[0]
-            else:
-                more_than_ref_depths = [d for d in depths if d > 3]
-                less_than_ref_depths = [d for d in depths if d < 3]
-
-                if ref_depth in depths:
-                    cwe_depth = ref_depth
-                elif len(more_than_ref_depths) == len(depths):
-                    cwe_depth = min(depths)
-                elif len(less_than_ref_depths) == len(depths):
-                    cwe_depth = max(depths)
-                else:
-                    cwe_depth = min(more_than_ref_depths)
-        else:
-            raise RuntimeError(f"Option {opt} is not supported yet.")
-
-        data["cwe_depth"] = cwe_depth
-        updt_cwe_tree[cwe_id] = data
-
-    with open(cwe_tree_fpath, "w") as f:
-        json.dump(updt_cwe_tree, f, indent=4)
-
-
-def update_dataset_by_cwe_depth(dataset_fpath: str, cwe_tree_fpath: str):
-    with open(cwe_tree_fpath, "r") as f:
-        cwe_tree = json.load(f)
-
-    with open(dataset_fpath, "r") as f:
-        dataset = json.load(f)
-
-    updt_dataset = []
-    for data in dataset:
-        cwe_id = data["cwe_id"].split("-")[-1]
-        assert cwe_id in cwe_tree
-
-        data["cwe_depth"] = cwe_tree[cwe_id]["cwe_depth"]
-        updt_dataset.append(data)
-
-    with open(dataset_fpath, "w") as f:
-        json.dump(updt_dataset, f, indent=4)
-
-
-"""SUMMARIZE CWE INFO"""
+"""SUMMARIZE CWE ATTRIBUTES"""
 
 
 SYSTEM_PROMPT = """I want you to act as a vulnerability analysis expert and analyse vulnerability knowledge based on the above information. 
@@ -668,43 +563,22 @@ def summarize_all_weakness_attributes(output_dpath: str, max_depth: int = 3):
 
 
 if __name__ == '__main__':
-    pass
+    save_dir = "/root/projects/VDTest/data/CWE/VIEW_1000"
+    # save_dir = "/root/projects/VDTest/data/CWE/VIEW_1003"
 
+    ## Build CWE entries file
+    csv_file = "/root/projects/VDTest/data/CWE/1000.csv"
+    # csv_file = "/root/projects/VDTest/data/CWE/1003.csv"
+    # read_cwe_csv(csv_file, save_dir)
+
+    ## Refine CWE tree
+    cwe_tree_file = os.path.join(save_dir, "CWE_tree.json")
+    # refine_cwe_tree_with_paths(cwe_tree_file)
+    # check_cwe_paths_and_print(cwe_tree_file)
+
+    ## Extract CWE ids in different depths
+    # find_diff_depth_cwe(cwe_tree_file, save_dir)
+
+    ## Summarize weakness attributes (depth <= 3)
     output_dir = "/root/projects/VDTest/data/CWE"
     summarize_all_weakness_attributes(output_dir)
-
-
-    # view_id = "888"
-    # crawl_cwe_tree(view_id)
-    # count_cwe_tree(view_id)
-
-    # build_cwe_entry_from_cwe_tree(view_id)
-
-    # crawl_view_category_name(view_id)
-    # crawl_view_888_category_name(view_id)
-
-    # process_raw_cwe_tree(view_id)
-
-    # compare_cwe_collected_with_treevul()
-
-    # check_dataset_cwe_depth()
-
-    # check_original_treevul_cwe_paths()
-
-
-    ## CWE Depth
-    # cwe_tree_file = "/root/projects/VDTest/data/CWE/VIEW_1000/CWE_tree.json"
-    # output_dir = "/root/projects/VDTest/data/CWE/VIEW_1000"
-
-    # 1. Update CWE tree
-    # update_cwe_tree_by_depth(cwe_tree_file, opt=2)
-
-    # 2. Update dataset
-    # dataset_files = [
-    #     # "/root/projects/VDTest/dataset/Final/VIEW_1000/py_vul_tasks_nvdvul_v1.json",
-    #     # "/root/projects/VDTest/dataset/Final/VIEW_1000/py_vul_tasks_vulfix.json",
-    #     # "/root/projects/VDTest/dataset/Final/VIEW_1000/py_vul_tasks_treevul.json",
-    #     "/root/projects/VDTest/dataset/Final/VIEW_1000/java_vul_tasks_treevul.json"
-    # ]
-    # for dataset_file in dataset_files:
-    #     update_dataset_by_cwe_depth(dataset_file, cwe_tree_file)
