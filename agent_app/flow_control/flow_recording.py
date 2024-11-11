@@ -121,9 +121,13 @@ class ProcessStatus:
 @dataclass
 class ProcActionStatus(ProcessStatus):
     """Dataclass to hold status of some actions during the identification processes."""
+    # [success number, failure number]
     _patch_extraction: List[int] = field(default_factory=lambda: [0, 0])
+    # [none result number, same result number, unsupported result number, good result number]
     _unsupported_hyp_modification: List[int] = field(default_factory=lambda: [0, 0, 0, 0])
+    # modification number
     _too_detailed_hyp_modification: int = 0
+    # [success number, failure number]
     _post_process_rank: List[int] = field(default_factory=lambda: [0, 0])
     _finish: bool = False
 
