@@ -16,7 +16,7 @@ from concurrent.futures import ProcessPoolExecutor
 from loguru import logger
 
 from agent_app import globals, globals_mut, log, inference
-from agent_app.api.manage import PyProcessManager, JavaProcessManager
+from agent_app.api.manage import PyFlowManager, JavaFlowManager
 from agent_app.model import common
 from agent_app.model.register import register_all_models
 from agent_app.raw_tasks import RawTask, RawLocalTask
@@ -294,9 +294,9 @@ def do_inference(
     start_time = datetime.now()
 
     if globals.lang == 'Python':
-        manager = PyProcessManager(task, task_output_dir)
+        manager = PyFlowManager(task, task_output_dir)
     elif globals.lang == 'Java':
-        manager = JavaProcessManager(task, task_output_dir)
+        manager = JavaFlowManager(task, task_output_dir)
     else:
         raise RuntimeError(f"Language {globals.lang} not supported yet.")
 
@@ -377,6 +377,9 @@ def construct_tasks(tasks_map_file: str, local_repos_dpath: str) -> List[RawLoca
 
             # Filter 3
             if task_info["file_count"] == "NOT COUNT" or task_info["file_count"] > 5:
+                continue
+
+            if task_id != "treevul-vul-15":
                 continue
 
             task = RawLocalTask(

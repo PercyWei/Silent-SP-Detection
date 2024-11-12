@@ -5,7 +5,7 @@ from typing import *
 
 from agent_app import globals, log
 from agent_app.data_structures import CommitType, ProxyTask, MessageThread
-from agent_app.api.manage import ProcessManager
+from agent_app.api.manage import FlowManager
 from agent_app.CWE.cwe_util import WeaknessAttrs
 from agent_app.flow_control.flow_recording import State, ProcOutPaths, ProcHypothesis
 from agent_app.flow_control.flow_util import (
@@ -21,7 +21,7 @@ def verify_current_hypothesis(
         print_desc: str,
         curr_proc_hyps: ProcHypothesis,
         msg_thread: MessageThread,
-        manager: ProcessManager,
+        manager: FlowManager,
         print_callback: Callable[[dict], None] | None = None
 ) -> str:
     assert curr_proc_hyps.cur_hyp is not None
@@ -29,9 +29,9 @@ def verify_current_hypothesis(
     # ------------------ (1) Prepare the prompt ------------------ #
     if curr_proc_hyps.cur_hyp.commit_type == CommitType.NonVulnerabilityPatch:
         # For hypothesis of non vulnerability patch
-        task_prompt = ("For each modified code snippet involved in the commit, please complete the following tasks:"
-                       "\n(1) Analyze the purpose of the modification."
-                       "\n(2) Determine whether the modification is unrelated to the vulnerability fix.")
+        task_prompt = ("For each modified file involved in the commit, please complete the following tasks:"
+                       "\n1. Analyze the purpose of the each modification."
+                       "\n2. Analyse the confidence scores (1-10) that each modification is a non-vulnerability patch.")
     else:
         # For hypothesis of vulnerability patch
         full_cwe_id = curr_proc_hyps.cur_hyp.vulnerability_type
@@ -78,7 +78,7 @@ def rescore_current_hypothesis(
         curr_proc_hyps: ProcHypothesis,
         curr_proc_outs: ProcOutPaths,
         msg_thread: MessageThread,
-        manager: ProcessManager,
+        manager: FlowManager,
         print_callback: Callable[[dict], None] | None = None
 ) -> int:
     # ------------------ 1. Prepare the prompt ------------------ #
@@ -135,7 +135,7 @@ def run_in_hyp_verification_state(
         curr_proc_hyps: ProcHypothesis,
         curr_proc_outs: ProcOutPaths,
         msg_thread: MessageThread,
-        manager: ProcessManager,
+        manager: FlowManager,
         print_callback: Callable[[dict], None] | None = None
 ) -> bool:
     print_desc = f"process {process_no} | state {State.HYPOTHESIS_VERIFY_STATE} | loop {loop_no}"

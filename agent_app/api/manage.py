@@ -19,7 +19,7 @@ from agent_app.search.search_manage import (
     PySearchResult, JavaSearchResult
 )
 from agent_app.flow_control.flow_recording import ProcActionStatus, ProcSearchStatus
-from agent_app.data_structures import SearchStatus, FunctionCallIntent, MessageThread
+from agent_app.data_structures import SearchStatus, ToolCallIntent, MessageThread
 from agent_app.task import Task
 from agent_app import globals
 
@@ -27,7 +27,7 @@ from agent_app import globals
 """BASE MANAGER"""
 
 
-class ProcessManager:
+class FlowManager:
 
     def __init__(self, task: Task, output_dpath: str):
         # All valid search APIs
@@ -42,32 +42,34 @@ class ProcessManager:
         # Prepare the repo environment
         self.task.setup_project()
 
-        # Keep track which tools is currently being used
-        self.curr_tool: Optional[str] = None
+        ## Tool calls (search API)
+        # NOTE: 1 process = m * loop
+        # 1. Record the tool currently being used
+        self.curr_tool_call: str | None = None
+        # 2. Record the sequence of tool calls used in current loop
+        self.loop_tool_call_sequence: List[Dict] = []
+        # 3. Record the layers of tool calls used in current loop
+        self.loop_tool_call_layers: List[List[Dict]] = []
+        # 4. Record the executable tool calls used in current process
+        self.process_executable_tool_calls: Dict[str, List[Dict]] = {}
 
-        # Record the sequence of tools used, and their return status
-        self.tool_call_sequence: List[Mapping] = []
-
-        # Record layered API calls (different rounds)
-        self.tool_call_layers: List[List[Mapping]] = []
-
-        # Record cost and token information
+        ## Record cost and token information
         self.cost: float = 0.0
         self.input_tokens: int = 0
         self.output_tokens: int = 0
 
-        # Process recording
-        # (1) Special action count
-        self.action_status_count: ProcActionStatus = ProcActionStatus()
-        # (2) Search status count
-        self.search_status_count: ProcSearchStatus = ProcSearchStatus()
+        ## Record status of current process
+        # 1. Action status
+        self.action_status_records: ProcActionStatus = ProcActionStatus()
+        # 2. Search status
+        self.search_status_records: ProcSearchStatus = ProcSearchStatus()
 
-        # Need initialization
+        ## Need initialization
         self.commit_manager = None
         self.search_manager = None
         self.cwe_manager = None
 
-    """ABSTRACT METHODs"""
+    """INITIALIZATION"""
 
     @abstractmethod
     def init_search_api_functions(self, *args, **kwargs):
@@ -89,7 +91,7 @@ class ProcessManager:
         method_name = inspect.currentframe().f_code.co_name
         raise NotImplementedError(f"Method '{method_name}' not implemented yet")
 
-    """UTILs"""
+    """UTILS"""
 
     @classmethod
     def get_full_funcs_for_openai(cls, tool_list: List[str]) -> List[Dict]:
@@ -122,12 +124,6 @@ class ProcessManager:
             tool_obj = deepcopy(tool_template)
             tool_obj["function"]["name"] = func_name
             func_obj = getattr(cls, func_name)
-            # TODO: we only parse docstring now
-            #   There are two sources of information:
-            #   1. the docstring
-            #   2. the function signature
-            #   Docstring is where we get most of the textual descriptions; for accurate
-            #   info about parameters (whether optional), we check signature.
 
             ## parse docstring
             doc = parse(func_obj.__doc__)
@@ -155,81 +151,112 @@ class ProcessManager:
 
         return all_tool_objs
 
+    def is_duplicate_tool_call(self, intent: ToolCallIntent) -> Dict | None:
+        if intent.tool_name in self.process_executable_tool_calls:
+            for tool_call in self.process_executable_tool_calls[intent.tool_name]:
+                if intent.call_arg2values == tool_call["call_arg2values"]:
+                    return tool_call
+        return None
+
+    @abstractmethod
+    def response_to_duplicate_tool_call(self, intent: ToolCallIntent, old_tool_call: Dict) -> str:
+        method_name = inspect.currentframe().f_code.co_name
+        raise NotImplementedError(f"Method '{method_name}' not implemented yet")
+
     def dispatch_intent(
             self,
-            intent: FunctionCallIntent
+            intent: ToolCallIntent
     ) -> Tuple[str, SearchStatus, List[PySearchResult | JavaSearchResult]]:
-        """Dispatch a function call intent to actually perform its action.
+        """Dispatch a tool call intent to actually perform its action.
 
         Args:
-            intent (FunctionCallIntent): The intent to dispatch.
+            intent (ToolCallIntent): The intent to dispatch.
         Returns:
-            str: Detailed output of the current search API call.
+            str: Detailed output of the current tool call.
             SearchStatus: Status of the search.
             List[PySearchResult | JavaSearchResult]: All search results.
         """
-        if intent.func_name not in self.search_api_functions:
-            error = f"Unknown function name {intent.func_name}. You called a tool that does not exist."
-            return error, SearchStatus.UNKNOWN_SEARCH_API, []
+        ## Condition 1: Unknown search API
+        if intent.tool_name not in self.search_api_functions:
+            error_msg = f"You called a search API that does not exist: search API name '{intent.tool_name}' is unknown."
+            call_res = (error_msg, SearchStatus.UNKNOWN_SEARCH_API, [])
 
-        try:
-            # Call a function
-            func_obj = getattr(self, intent.func_name)
-            self.curr_tool = intent.func_name
-            call_res = func_obj(**intent.call_arg_values)
-        except TypeError as e:
-            # TypeError can happen when the function is called with wrong parameters
-            log.log_exception(e)
-            error = str(e)
-            call_res = (error, SearchStatus.DISPATCH_ERROR, [])
-        except Exception as e:
-            log.log_exception(e)
-            error = str(e)
-            call_res = (error, SearchStatus.DISPATCH_ERROR, [])
+        ## Condition 2: Wrong parameters
+        elif len(intent.tool_args) != len(intent.call_arg2values):
+            tool_args_str = ', '.join([f'{arg_name}' for arg_name in intent.tool_args])
+            error_msg = ("You called a search API with wrong parameters: "
+                         f"search API '{intent.tool_name}' has {len(intent.tool_args)} parameters ({tool_args_str}), "
+                         f"while you provided {len(intent.call_arg2values)} values.")
+            call_res = (error_msg, SearchStatus.WRONG_ARGUMENT, [])
+
+        ## Condition 3: Duplicate call
+        elif (old_tool_call := self.is_duplicate_tool_call(intent)) is not None:
+            error_msg = self.response_to_duplicate_tool_call(intent, old_tool_call)
+            call_res = (error_msg, SearchStatus.DUPLICATE_CALL, [])
+
+        else:
+            try:
+                func_obj = getattr(self, intent.tool_name)
+                self.curr_tool_call = intent.tool_name
+                call_res = func_obj(**intent.call_arg2values)
+            except Exception as e:
+                ## BAD CONDITION!
+                log.log_exception(e)
+                error_msg = "An error occurred while executing the search api."
+                call_res = (error_msg, SearchStatus.DISPATCH_ERROR, [])
 
         log.log_debug(f"Result of {intent.call_stmt}: {call_res}")
 
-        # Record this call and its result separately
+        # Update with search status
         _, search_status, _ = call_res
 
-        self.search_status_count.update_by_search_status(search_status)
-
-        self.tool_call_sequence.append(intent.to_dict_with_result(search_status))
-
-        if not self.tool_call_layers:
-            self.tool_call_layers.append([])
-        self.tool_call_layers[-1].append(intent.to_dict_with_result(search_status))
+        # 1. Tool call intent
+        intent.update_with_search_status(search_status)
+        # 2. Search status records
+        self.search_status_records.update_with_search_status(search_status)
 
         return call_res
 
-    """PROCESS STATUS COUNT"""
+    """PROCESS STATUS RECORDS"""
 
-    def reset_status_count(self):
-        self.action_status_count = ProcActionStatus()
-        self.search_status_count = ProcSearchStatus()
+    def reset_process_status_records(self):
+        self.action_status_records = ProcActionStatus()
+        self.search_status_records = ProcSearchStatus()
 
-    """TOOL CALLs"""
+    """TOOL CALL RECORDS"""
 
     def start_new_tool_call_layer(self):
-        self.tool_call_layers.append([])
+        self.loop_tool_call_layers.append([])
 
-    def reset_too_call_recordings(self):
-        self.tool_call_sequence = []
-        self.tool_call_layers = []
+    def reset_loop_tool_call_records(self):
+        self.loop_tool_call_sequence = []
+        self.loop_tool_call_layers = []
 
-    def dump_tool_call_sequence_to_file(self, tool_call_output_dpath: str, prefix_fname: str = ""):
-        """Dump the sequence of tool calls to a file."""
-        fname = f"{prefix_fname}_tool_call_sequence.json" if prefix_fname != "" else "tool_call_sequence.json"
-        tool_call_file = os.path.join(tool_call_output_dpath, fname)
-        with open(tool_call_file, "w") as f:
-            json.dump(self.tool_call_sequence, f, indent=4)
+    def reset_process_exec_tool_calls(self):
+        self.process_executable_tool_calls = {}
 
-    def dump_tool_call_layers_to_file(self, tool_call_output_dpath: str, prefix_fname: str = ""):
-        """Dump the layers of tool calls to a file."""
-        fname = f"{prefix_fname}_tool_call_layers.json" if prefix_fname != "" else "tool_call_layers.json"
-        tool_call_file = os.path.join(tool_call_output_dpath, fname)
-        with open(tool_call_file, "w") as f:
-            json.dump(self.tool_call_layers, f, indent=4)
+    def update_loop_tool_call_records(self, intent: ToolCallIntent):
+        self.loop_tool_call_sequence.append(intent.to_dict_with_result())
+        if not self.loop_tool_call_layers:
+            self.loop_tool_call_layers.append([])
+        self.loop_tool_call_layers[-1].append(intent.to_dict_with_result())
+
+    def update_process_exec_tool_calls(self, intent: ToolCallIntent):
+        if intent.tool_name not in self.process_executable_tool_calls:
+            self.process_executable_tool_calls[intent.tool_name] = []
+        self.process_executable_tool_calls[intent.tool_name].append(intent.to_dict_with_result())
+
+    def dump_loop_tool_call_sequence_to_file(self, output_dpath: str, loop_no: str):
+        """Dump the sequence of tool calls used in current loop to a file."""
+        save_file = os.path.join(output_dpath, f"loop_{loop_no}_tool_call_sequence.json")
+        with open(save_file, "w") as f:
+            json.dump(self.loop_tool_call_sequence, f, indent=4)
+
+    def dump_loop_tool_call_layers_to_file(self, output_dpath: str, loop_no: str):
+        """Dump the layers of tool calls used in current loop to a file."""
+        save_file = os.path.join(output_dpath, f"loop_{loop_no}_tool_call_layers.json")
+        with open(save_file, "w") as f:
+            json.dump(self.loop_tool_call_layers, f, indent=4)
 
     """PROXY AGENT"""
 
@@ -256,7 +283,7 @@ class ProcessManager:
 """PYTHON MANAGER"""
 
 
-class PyProcessManager(ProcessManager):
+class PyFlowManager(FlowManager):
 
     def __init__(self, task: Task, output_dpath: str):
         super().__init__(task, output_dpath)
@@ -275,9 +302,10 @@ class PyProcessManager(ProcessManager):
 
     def init_search_api_functions(self):
         self.search_api_functions = [
+            "search_top_level_function",
             "search_class",
-            "search_class_in_file",
             "search_method_in_file",
+            "search_class_in_file",
             "search_method_in_class",
             "search_method_in_class_in_file"
         ]
@@ -310,7 +338,64 @@ class PyProcessManager(ProcessManager):
             view_cwe_tree_fpaths=globals.view_cwe_tree_files
         )
 
+    """TOOL CALL"""
+
+    @staticmethod
+    def tool_call_pre_check(tool_name: str, **kwargs) -> str:
+        # (1) Check parameters
+        # Check if the parameter value is an empty string
+        empty_args = [arg_name for arg_name, value in kwargs.items() if not isinstance(value, str) or value == ""]
+
+        # (2) Prepare the error msg
+        error_msg = ""
+        if empty_args:
+            if len(empty_args) == 1:
+                error_msg += f"All parameters of search API {tool_name} must be specified, however, '{empty_args[0]}' is an empty string."
+            else:
+                empty_args_str = ", ".join([f'{arg_name}' for arg_name in empty_args])
+                error_msg += f"All parameters of search API {tool_name} must be specified, however, {empty_args_str} are empty strings."
+        return error_msg
+
+    def response_to_duplicate_tool_call(self, intent: ToolCallIntent, old_tool_call: Dict) -> str:
+
+        # (1) tool name + arguments + values
+        arg2values_str_list: List[str] = []
+        for arg_name, value in intent.call_arg2values.items():
+            arg2values_str_list.append(f"{arg_name}={value}")
+        arg2values_str = ", ".join(arg2values_str_list)
+
+        response = f"You have called tool {intent.tool_name} with arguments {arg2values_str}. Please review our previous conversation to look carefully."
+
+        # (2) search status of old tool call
+        # TODO: HOW TO CONSTRUCT RESPONSE?
+
+        # (3) advice according to tool name
+        # TODO: HOW TO CONSTRUCT RESPONSE?
+
+        return response
+
     """SEARCH API FUNCTIONS"""
+
+    def search_top_level_function(
+            self,
+            func_name: str
+    ) -> Tuple[str, SearchStatus, List[PySearchResult]]:
+        """Search for a top-level function in the codebase.
+
+        Definition of top-level function: a function defined directly in the module, not as an internal definition
+        of another function or method.
+        Args:
+            func_name (str): Name of the top level function to search for.
+        Returns:
+            str: The searched function snippet if success, an error message otherwise.
+            SearchStatus: Status of the search.
+            List[PySearchResult]: All search results.
+        """
+        error_msg = self.tool_call_pre_check(tool_name="search_top_level_function", func_name=func_name)
+        if error_msg:
+            return error_msg, SearchStatus.INVALID_ARGUMENT, []
+
+        return self.search_manager.search_top_level_function(func_name)
 
     def search_class(
             self,
@@ -323,26 +408,13 @@ class PyProcessManager(ProcessManager):
         Returns:
             str: The searched class signature if success, an error message otherwise.
             SearchStatus: Status of the search.
-            List[JavaSearchResult]: All search results.
-        """
-        return self.search_manager.search_class(class_name)
-
-    def search_class_in_file(
-            self,
-            class_name: str,
-            file_name: str
-    ) -> Tuple[str, SearchStatus, List[PySearchResult]]:
-        """Search for a class in a given file.
-
-        Args:
-            class_name (str): Name of the class to search for.
-            file_name (str): Name of the file to search in. Must be a valid Python file name.
-        Returns:
-            str: The searched class signature if success, an error message otherwise.
-            SearchStatus: Status of the search.
             List[PySearchResult]: All search results.
         """
-        return self.search_manager.search_class_in_file(class_name, file_name)
+        error_msg = self.tool_call_pre_check(tool_name="search_class", class_name=class_name)
+        if error_msg:
+            return error_msg, SearchStatus.INVALID_ARGUMENT, []
+
+        return self.search_manager.search_class(class_name)
 
     def search_method_in_file(
             self,
@@ -359,7 +431,40 @@ class PyProcessManager(ProcessManager):
             SearchStatus: Status of the search.
             List[PySearchResult]: All search results.
         """
+        error_msg = self.tool_call_pre_check(
+            tool_name="search_method_in_file",
+            method_name=method_name,
+            file_name=file_name
+        )
+        if error_msg:
+            return error_msg, SearchStatus.INVALID_ARGUMENT, []
+
         return self.search_manager.search_method_in_file(method_name, file_name)
+
+    def search_class_in_file(
+            self,
+            class_name: str,
+            file_name: str
+    ) -> Tuple[str, SearchStatus, List[PySearchResult]]:
+        """Search for a class in a given file.
+
+        Args:
+            class_name (str): Name of the class to search for.
+            file_name (str): Name of the file to search in. Must be a valid Python file name.
+        Returns:
+            str: The searched class signature if success, an error message otherwise.
+            SearchStatus: Status of the search.
+            List[PySearchResult]: All search results.
+        """
+        error_msg = self.tool_call_pre_check(
+            tool_name="search_class_in_file",
+            class_name=class_name,
+            file_name=file_name
+        )
+        if error_msg:
+            return error_msg, SearchStatus.INVALID_ARGUMENT, []
+
+        return self.search_manager.search_class_in_file(class_name, file_name)
 
     def search_method_in_class(
             self,
@@ -376,6 +481,14 @@ class PyProcessManager(ProcessManager):
             SearchStatus: Status of the search.
             List[PySearchResult]: All search results.
         """
+        error_msg = self.tool_call_pre_check(
+            tool_name="search_method_in_class",
+            method_name=method_name,
+            class_name=class_name
+        )
+        if error_msg:
+            return error_msg, SearchStatus.INVALID_ARGUMENT, []
+
         return self.search_manager.search_method_in_class(method_name, class_name)
 
     def search_method_in_class_in_file(
@@ -395,13 +508,22 @@ class PyProcessManager(ProcessManager):
             SearchStatus: Status of the search.
             List[PySearchResult]: All search results.
         """
+        error_msg = self.tool_call_pre_check(
+            tool_name="search_method_in_class_in_file",
+            method_name=method_name,
+            class_name=class_name,
+            file_name=file_name
+        )
+        if error_msg:
+            return error_msg, SearchStatus.INVALID_ARGUMENT, []
+
         return self.search_manager.search_method_in_class_in_file(method_name, class_name, file_name)
 
 
 """JAVA MANAGER"""
 
 
-class JavaProcessManager(ProcessManager):
+class JavaFlowManager(FlowManager):
 
     def __init__(self, task: Task, output_dpath: str):
         super().__init__(task, output_dpath)
@@ -456,6 +578,61 @@ class JavaProcessManager(ProcessManager):
             view_cwe_tree_fpaths=globals.view_cwe_tree_files
         )
 
+    """TOOL CALL"""
+
+    @staticmethod
+    def tool_call_pre_check(tool_name: str, **kwargs) -> str:
+        # (1) Check parameters
+        empty_args = []
+        wrong_ttype_value = None
+
+        for arg_name, value in kwargs.items():
+            # 1. Check if the parameter value is an empty string
+            if not isinstance(value, str) or value == "":
+                empty_args.append(arg_name)
+
+            # 2. Check parameter 'ttype' for tool 'search_type_in_class' and 'search_type_in_class_in_file'
+            if (tool_name == 'search_type_in_class' or tool_name == 'search_type_in_class_in_file') and \
+                    arg_name == 'ttype' and value not in ['interface', 'class', 'method']:
+                # Permitted special cases
+                if value.lower() in ['annotation', 'enum', 'record']:
+                    continue
+                wrong_ttype_value = value
+
+        # (2) Prepare the error msg
+        error_msg = ""
+        if empty_args:
+            if len(empty_args) == 1:
+                error_msg += f"For search API '{tool_name}', all parameters must be specified, while the value of '{empty_args[0]}' is an empty string."
+            else:
+                empty_args_str = ", ".join([f'{arg_name}' for arg_name in empty_args])
+                error_msg += f"For search API '{tool_name}', all parameters must be specified, while the values of {empty_args_str} are empty strings."
+        if wrong_ttype_value:
+            if error_msg:
+                error_msg += "\nBesides, the value of 'ttype' can only be 'interface' or 'class' or 'method'."
+            else:
+                error_msg += f"For search API '{tool_name}', the value of 'ttype' can only be 'interface' or 'class' or 'method'."
+
+        return error_msg
+
+    def response_to_duplicate_tool_call(self, intent: ToolCallIntent, old_tool_call: Dict) -> str:
+
+        # (1) tool name + arguments + values
+        arg2values_str_list: List[str] = []
+        for arg_name, value in intent.call_arg2values.items():
+            arg2values_str_list.append(f"{arg_name}={value}")
+        arg2values_str = ", ".join(arg2values_str_list)
+
+        response = f"You have called tool {intent.tool_name} with arguments {arg2values_str}. Please review our previous conversation to look carefully."
+
+        # (2) search status of old tool call
+        # TODO: HOW TO CONSTRUCT RESPONSE?
+
+        # (3) advice according to tool name
+        # TODO: HOW TO CONSTRUCT RESPONSE?
+
+        return response
+
     """SEARCH API FUNCTIONS"""
 
     def search_interface(
@@ -472,6 +649,10 @@ class JavaProcessManager(ProcessManager):
             SearchStatus: Status of the search.
             List[JavaSearchResult]: All search results.
         """
+        error_msg = self.tool_call_pre_check(tool_name="search_interface", iface_name=iface_name)
+        if error_msg:
+            return error_msg, SearchStatus.INVALID_ARGUMENT, []
+
         return self.search_manager.search_interface(iface_name)
 
     def search_class(
@@ -489,6 +670,10 @@ class JavaProcessManager(ProcessManager):
             SearchStatus: Status of the search.
             List[JavaSearchResult]: All search results.
         """
+        error_msg = self.tool_call_pre_check(tool_name="search_class", class_name=class_name)
+        if error_msg:
+            return error_msg, SearchStatus.INVALID_ARGUMENT, []
+
         return self.search_manager.search_class(class_name)
 
     def search_interface_in_file(
@@ -507,6 +692,14 @@ class JavaProcessManager(ProcessManager):
             SearchStatus: Status of the search.
             List[JavaSearchResult]: All search results.
         """
+        error_msg = self.tool_call_pre_check(
+            tool_name="search_interface_in_file",
+            iface_name=iface_name,
+            file_name=file_name
+        )
+        if error_msg:
+            return error_msg, SearchStatus.INVALID_ARGUMENT, []
+
         return self.search_manager.search_interface_in_file(iface_name, file_name)
 
     def search_class_in_file(
@@ -526,6 +719,14 @@ class JavaProcessManager(ProcessManager):
             SearchStatus: Status of the search.
             List[JavaSearchResult]: All search results.
         """
+        error_msg = self.tool_call_pre_check(
+            tool_name="search_class_in_file",
+            class_name=class_name,
+            file_name=file_name
+        )
+        if error_msg:
+            return error_msg, SearchStatus.INVALID_ARGUMENT, []
+
         return self.search_manager.search_class_in_file(class_name, file_name)
 
     def search_type_in_class(
@@ -546,6 +747,15 @@ class JavaProcessManager(ProcessManager):
             SearchStatus: Status of the search.
             List[JavaSearchResult]: All search results.
         """
+        error_msg = self.tool_call_pre_check(
+            tool_name="search_type_in_class",
+            ttype=ttype,
+            type_name=type_name,
+            class_name=class_name
+        )
+        if error_msg:
+            return error_msg, SearchStatus.INVALID_ARGUMENT, []
+
         return self.search_manager.search_type_in_class(ttype, type_name, class_name)
 
     def search_type_in_class_in_file(
@@ -568,4 +778,14 @@ class JavaProcessManager(ProcessManager):
             SearchStatus: Status of the search.
             List[JavaSearchResult]: All search results.
         """
+        error_msg = self.tool_call_pre_check(
+            tool_name="search_type_in_class_in_file",
+            ttype=ttype,
+            type_name=type_name,
+            class_name=class_name,
+            file_name=file_name
+        )
+        if error_msg:
+            return error_msg, SearchStatus.INVALID_ARGUMENT, []
+
         return self.search_manager.search_type_in_class_in_file(ttype, type_name, class_name, file_name)

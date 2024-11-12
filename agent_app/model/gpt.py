@@ -21,7 +21,7 @@ from openai.types.chat.chat_completion_tool_choice_option_param import (
 from openai.types.chat.completion_create_params import ResponseFormat
 from tenacity import retry, stop_after_attempt, wait_random_exponential
 
-from agent_app.data_structures import FunctionCallIntent
+from agent_app.data_structures import ToolCallIntent
 from agent_app.model import common
 from agent_app.model.common import Model
 from agent_app.log import log_and_print
@@ -91,13 +91,13 @@ class OpenaiModel(Model):
             return content
 
     @staticmethod
-    def extract_resp_func_calls(chat_completion_message: ChatCompletionMessage) -> List[FunctionCallIntent]:
+    def extract_resp_func_calls(chat_completion_message: ChatCompletionMessage) -> List[ToolCallIntent]:
         """
         Given a chat completion message, extract the function calls from it.
         Args:
             chat_completion_message (ChatCompletionMessage): The chat completion message.
         Returns:
-            List[FunctionCallIntent]: A list of function calls.
+            List[ToolCallIntent]: A list of function calls.
         """
         result = []
         tool_calls = chat_completion_message.tool_calls
@@ -117,7 +117,7 @@ class OpenaiModel(Model):
                     args_dict = json.loads(func_args_str, strict=False)
                 except json.decoder.JSONDecodeError:
                     args_dict = {}
-            func_call_intent = FunctionCallIntent(func_name, [], "", args_dict, called_func)
+            func_call_intent = ToolCallIntent(func_name, [], "", args_dict, called_func)
             result.append(func_call_intent)
 
         return result
@@ -133,7 +133,7 @@ class OpenaiModel(Model):
     ) -> Tuple[
         str,
         Optional[List[ChatCompletionMessageToolCall]],
-        List[FunctionCallIntent],
+        List[ToolCallIntent],
         float,
         int,
         int

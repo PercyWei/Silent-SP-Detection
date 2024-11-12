@@ -5,7 +5,7 @@ from typing import *
 
 from agent_app import globals
 from agent_app.data_structures import CommitType, ProxyTask, MessageThread
-from agent_app.api.manage import ProcessManager
+from agent_app.api.manage import FlowManager
 from agent_app.flow_control.flow_recording import State, ProcOutPaths, ProcHypothesis
 from agent_app.flow_control.flow_util import (
     _add_usr_msg_and_print,
@@ -23,7 +23,7 @@ def run_in_hyp_checking_state(
         curr_proc_hyps: ProcHypothesis,
         curr_proc_outs: ProcOutPaths,
         msg_thread: MessageThread,
-        manager: ProcessManager,
+        manager: FlowManager,
         print_callback: Callable[[dict], None] | None = None
 ) -> bool:
     print_desc = f"process {process_no} | state {State.HYPOTHESIS_CHECK_STATE} | loop {loop_no}"
@@ -176,7 +176,7 @@ def run_in_hyp_checking_state(
             if json_full_cwe_id is None:
                 # TODO: Bad result. This should not happen. (Require Verification)
                 # Bad case 1: modification failed <- invalid response
-                manager.action_status_count.add_unsupported_hyp_modification_case(
+                manager.action_status_records.add_unsupported_hyp_modification_case(
                     none_result=True, same_result=False, uns_result=False, good_result=False
                 )
 
@@ -188,7 +188,7 @@ def run_in_hyp_checking_state(
                 if mod_cwe_id == cur_cwe_id:
                     # TODO: Bad result. This should not happen. (Require Verification)
                     # Bad case 2: modification failed <- modified CWE-ID is the same as before
-                    manager.action_status_count.add_unsupported_hyp_modification_case(
+                    manager.action_status_records.add_unsupported_hyp_modification_case(
                         none_result=False, same_result=True, uns_result=False, good_result=False
                     )
 
@@ -201,7 +201,7 @@ def run_in_hyp_checking_state(
                     # We follow the strict condition: keep the hypothesis only if the modified CWE-ID is within the consideration.
                     if mod_cwe_id not in manager.cwe_manager.cwe_ids:
                         # Bad case 3: modification failed <- modified CWE-ID is still unsupported
-                        manager.action_status_count.add_unsupported_hyp_modification_case(
+                        manager.action_status_records.add_unsupported_hyp_modification_case(
                             none_result=False, same_result=False, uns_result=True, good_result=False
                         )
 
@@ -209,7 +209,7 @@ def run_in_hyp_checking_state(
 
                     else:
                         # Good case 3: modification successful <- modified CWE-ID is supported.
-                        manager.action_status_count.add_unsupported_hyp_modification_case(
+                        manager.action_status_records.add_unsupported_hyp_modification_case(
                             none_result=False, same_result=False, uns_result=False, good_result=True
                         )
 
@@ -239,7 +239,7 @@ def run_in_hyp_checking_state(
                          "\nBesides, this CWE-ID is moderately detailed, so it needs no more modification.")
 
     else:
-        manager.action_status_count.update_too_detailed_hyp_modification_case()
+        manager.action_status_records.update_too_detailed_hyp_modification_case()
 
         # ------------------ 2.1 Get father CWEs at the specified depth ------------------ #
         fathers = manager.cwe_manager.get_depth_k_fathers_of_weakness(cur_cwe_id)

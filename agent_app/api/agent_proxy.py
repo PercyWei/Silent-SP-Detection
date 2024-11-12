@@ -39,7 +39,7 @@ interface HypothesisList {
     hypothesis_list: Hypothesis[];
 };
 
-Now based on the given context, write a hypothesis_list section that conforms to the HypothesisList schema.
+Now based on the given context, write a JSON dict that conforms to the HypothesisList schema.
 """
 
 
@@ -58,7 +58,7 @@ interface Masks {
     mask_3: number;
 };
 
-Now based on the given context, write a json dict that conforms to the Masks schema.
+Now based on the given context, write a JSON dict that conforms to the Masks schema.
 """
 
 
@@ -72,7 +72,7 @@ interface CWEType {
     cwe_type: `CWE-${number}`;
 };
 
-Now based on the given context, write a cwe_type section that conforms to the CWEType schema.
+Now based on the given context, write a JSON dict that conforms to the CWEType schema.
 """
 
 
@@ -95,7 +95,7 @@ interface PatchLocations {
   patch_locations: PatchLocation[];
 }
 
-Now based on the given context, write a patch_locations section that conforms to the PatchLocations schema.
+Now based on the given context, write a JSON dict that conforms to the PatchLocations schema.
 """
     elif lang == 'Java':
         return """You are a helpful assistant to convert text containing the following information into json format.
@@ -128,7 +128,8 @@ def _get_context_retrieval_prompt(lang: Literal['Python', 'Java']) -> str:
         return """You are a helpful assistant to convert text containing the following information into json format.
 1. How to construct search API calls to get more context of the project?
 
-Extract API calls for question 1, leave an empty list if you do not find any valid API calls or the text content indicates that no further context is needed.
+Extract API calls and corresponding reasons for using to answer question 1. The extracted reason should be clear and concise, or leave it blank if the reason is not mentioned in the text.
+Besides, if you do not find any valid API calls or the text indicates that no further context is needed, leave blank for question 1.
 
 The API calls include:
 - search_class(class_name: str)
@@ -137,29 +138,30 @@ The API calls include:
 - search_method_in_class(method_name: str, class_name: str)
 - search_method_in_class_in_file(method_name: str, class_name: str, file_name: str)
 
-Provide your answer in JSON structure like this, you should ignore the argument placeholders in api calls.
+You should ignore the argument placeholders in API calls.
 For example, search_method(method_name="str") should be search_method("str"), search_method_in_file("method_name", "path.to.file") should be search_method_in_file("method_name", "path/to/file")
 Make sure each API call is written as a valid python expression.
 Provide your answer in JSON structure and consider the following TypeScript Interface for the JSON schema:
 
-type ApiCall = 
+type APICall = 
   | `search_class(${string})`
   | `search_class_in_file(${string}, ${string})`
   | `search_method_in_file(${string}, ${string})`
   | `search_method_in_class(${string}, ${string})`
   | `search_method_in_class_in_file(${string}, ${string}, ${string})`;
 
-interface ApiCalls {
-    api_calls: ApiCall[];
+interface APICalls {
+    api_calls: [APICall, string][];
 };
 
-Now based on the given context, write a api_calls section that conforms to the ApiCalls schema.
+Now based on the given context, write a JSON dict that conforms to the APICalls schema.
 """
     elif lang == 'Java':
         return """You are a helpful assistant to convert text containing the following information into json format.
 1. How to construct search API calls to get more context of the project?
 
-Extract API calls for question 1, leave an empty list if you do not find any valid API calls or the text content indicates that no further context is needed.
+Extract API calls and corresponding reasons for using to answer question 1. The extracted reason should be clear and concise, or leave it blank if the reason is not mentioned in the text.
+Besides, if you do not find any valid API calls or the text indicates that no further context is needed, leave blank for question 1.
 
 The API calls include:
 - search_interface(iface_name: str)
@@ -169,14 +171,14 @@ The API calls include:
 - search_type_in_class(ttype: ['interface', 'class', 'method'], type_name: str, class_name: str)
 - search_type_in_class_in_file(ttype: ['interface', 'class', 'method'], type_name: str, class_name: str, file_name: str)
 
-Provide your answer in JSON structure like this, you should ignore the argument placeholders in api calls.
+You should ignore the argument placeholders in API calls.
 For example, search_interface(iface_name="str") should be search_interface("str"), search_class_in_file("class_name", "path.to.file") should be search_class_in_file("class_name", "path/to/file")
 Make sure each API call is written as a valid python expression.
 Provide your answer in JSON structure and consider the following TypeScript Interface for the JSON schema:
 
 type SearchType = 'interface' | 'class' | 'method';
 
-type ApiCall = 
+type APICall = 
   | `search_interface(${string})`
   | `search_class(${string})`
   | `search_interface_in_file(${string}, ${string})`
@@ -184,11 +186,11 @@ type ApiCall =
   | `search_type_in_class(${SearchType}, ${string}, ${string})`
   | `search_type_in_class_in_file(${SearchType}, ${string}, ${string}, ${string})`;
 
-interface ApiCalls {
-    api_calls: ApiCall[];
+interface APICalls {
+    api_calls: [APICall, string][];
 };
 
-Now based on the given context, write a api_calls section that conforms to the ApiCalls schema.
+Now based on the given context, write a JSON dict that conforms to the APICalls schema.
 """
     else:
         raise LanguageNotSupportedError(lang)
@@ -206,7 +208,7 @@ interface Score {
     confidence_score: number;
 };
 
-Now based on the given context, write a confidence_score section that conforms to the Score schema.
+Now based on the given context, write a JSON dict that conforms to the Score schema.
 """
 
 
@@ -222,7 +224,7 @@ interface Ranking {
     ranking: number[];
 };
 
-Now based on the given context, write a ranking section that conforms to the Ranking schema.
+Now based on the given context, write a JSON dict that conforms to the Ranking schema.
 """
 
 
@@ -443,8 +445,8 @@ def is_valid_response(lang: Literal['Python', 'Java'], data: List | Dict, task: 
         """
         {
             "api_calls" : [
-                "api_call_1(arg)", 
-                "api_call_2(arg1, arg2)", 
+                ["api_call_1(arg)", str], 
+                ["api_call_2(arg1, arg2)", str], 
                 ...
             ]
         }
@@ -454,7 +456,7 @@ def is_valid_response(lang: Literal['Python', 'Java'], data: List | Dict, task: 
             return False, simp_reason, verb_reason
 
         api_calls = data["api_calls"]
-        for api_call in api_calls:
+        for api_call, call_reason in api_calls:
             if not isinstance(api_call, str):
                 simp_reason = verb_reason = "An API call is not a string"
                 verb_reason += f" and the API call is: {api_call}"

@@ -5,7 +5,7 @@ from typing import *
 
 from agent_app import globals, log
 from agent_app.data_structures import MessageThread
-from agent_app.api.manage import ProcessManager
+from agent_app.api.manage import FlowManager
 from agent_app.flow_control.flow_recording import ProcOutPaths
 from agent_app.flow_control.hypothesis import FinalHypothesis
 from agent_app.flow_control.state_start import run_in_start_state
@@ -20,7 +20,7 @@ from utils import make_hie_dirs
 
 def start_conversation_round_stratified(
         output_dpath: str,
-        manager: ProcessManager,
+        manager: FlowManager,
         print_callback: Callable[[dict], None] | None = None
 ) -> Dict[str, Dict[str, Dict]]:
     """
@@ -56,7 +56,7 @@ def start_conversation_round_stratified(
         )
 
         # Process status count
-        manager.reset_status_count()
+        manager.reset_process_status_records()
         all_proc_status[curr_proc_name] = {}
 
         # Message thread
@@ -103,12 +103,12 @@ def start_conversation_round_stratified(
 
         # ------------------------------------ 1.3 Update and save ------------------------------------ #
         # Update action status count
-        manager.action_status_count.update_finish_status(success_flag=finish)
+        manager.action_status_records.update_finish_status(success_flag=finish)
 
         # Save
         all_proc_status[curr_proc_name] = {
-            "Action Status Count": manager.action_status_count.to_dict(),
-            "Search Status Count": manager.search_status_count.to_dict()
+            "Action Status Count": manager.action_status_records.to_dict(),
+            "Search Status Count": manager.search_status_records.to_dict()
         }
 
     #####################################
@@ -146,7 +146,7 @@ def start_conversation_round_stratified(
 def run_one_task(
         raw_commit_content: str,
         output_dpath: str,
-        manager: ProcessManager,
+        manager: FlowManager,
         print_callback: Callable[[dict], None] | None = None,
 ) -> Dict[str, Dict[str, Dict]]:
     """Main entry point to run inference on one task.
@@ -154,7 +154,7 @@ def run_one_task(
     Args:
         raw_commit_content (str): The original commit content submitted to the task.
         output_dpath (str): Path to the output directory.
-        manager (ProcessManager): The already-initialized process manager.
+        manager (FlowManager): The already-initialized process manager.
         print_callback:
     """
     log.print_banner("Starting Silent Patch Identification on the following commit")

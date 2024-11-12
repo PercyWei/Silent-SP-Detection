@@ -3,7 +3,7 @@ from typing import *
 
 from agent_app import globals
 from agent_app.data_structures import MessageThread
-from agent_app.api.manage import ProcessManager
+from agent_app.api.manage import FlowManager
 from agent_app.flow_control.flow_recording import State, ProcOutPaths, ProcHypothesis
 from agent_app.flow_control.flow_util import (
     _add_system_msg_and_print,
@@ -19,7 +19,7 @@ def run_in_reflexion_state(
         curr_proc_hyps: ProcHypothesis,
         curr_proc_outs: ProcOutPaths,
         msg_thread: MessageThread,
-        manager: ProcessManager,
+        manager: FlowManager,
         print_callback: Callable[[dict], None] | None = None
 ):
     """

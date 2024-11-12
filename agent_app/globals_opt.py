@@ -17,5 +17,13 @@ opt_to_func_diff_context: int = 2
 # NOTE: The same as 'opt_to_func_diff_context'.
 opt_to_iface_diff_context: int = 2
 
-# Strategy for init hypothesis making in start state
+## State Start
+# Strategy for making init hypothesis
 opt_to_start_state_path: int = 2
+
+## State Context Retrieval
+# Strategy for tools 'search_function' / 'search_class' / 'search_interface'
+opt_to_ctx_retrieval_detailed_search_struct_tool: bool = False
+
+# Strategy for analysing context
+opt_to_ctx_retrieval_analysis: bool = False

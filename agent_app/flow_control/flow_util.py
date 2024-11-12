@@ -6,7 +6,7 @@ from typing import *
 from agent_app import globals, log
 from agent_app.data_structures import ProxyTask, MessageThread
 from agent_app.model import common
-from agent_app.api.manage import ProcessManager
+from agent_app.api.manage import FlowManager
 from agent_app.util import LanguageNotSupportedError
 
 
@@ -49,12 +49,14 @@ def get_hyp_def_prompt() -> str:
 def get_api_calls_prompt(lang: Literal['Python', 'Java']) -> str:
     if lang == 'Python':
         return ("You can use the following search APIs to get more context."
+                "\n- search_top_level_function(func_name: str): Search for a top-level function in the repo"
                 "\n- search_class(class_name: str): Search for a class in the repo"
+                "\n- search_method_in_file(method_name: str, file_name: str): Search for a method in the given file, including top-level functions and class methods"
                 "\n- search_class_in_file(class_name: str, file_name: str): Search for a class in the given file"
-                "\n- search_method_in_file(method_name: str, file_name: str): Search for a method in the given file, including regular functions and class methods"
                 "\n- search_method_in_class(method_name: str, class_name: str): Search for a method in the given class, i,e. class methods only"
                 "\n- search_method_in_class_in_file(method_name: str, class_name: str, file_name: str): Search for a method in the given class of the given file, i,e. class methods only"
-                "\n\nNOTE: You can use MULTIPLE search APIs in one round.")
+                "\n\nNOTE 1: Top-level function is a function defined directly in the module, not as an internal definition of another function or method."
+                "\nNOTE 2: You can use MULTIPLE search APIs in one round.")
     elif lang == 'Java':
         return ("You can use the following search APIs to get more context."
                 "\n- search_interface(iface_name: str): Search for an interface in the repo"
@@ -63,7 +65,9 @@ def get_api_calls_prompt(lang: Literal['Python', 'Java']) -> str:
                 "\n- search_class_in_file(class_name: str, file_name: str): Search for a class in the given file"
                 "\n- search_type_in_class(ttype: ['interface', 'class', 'method'], type_name: str, class_name: str): Search for a type in the given class, while type indicates interface, class or method."
                 "\n- search_type_in_class_in_file(ttype: ['interface', 'class', 'method'], type_name: str, class_name: str, file_name: str): Search for a type in the given class of the given file, while type indicates interface, class or method."
-                "\n\nNOTE: You can use MULTIPLE search APIs in one round.")
+                "\n\nNOTE 1: Here we treat 'annotation' as 'interface', 'enum' and 'record' as 'class'."
+                "For example, use search_class('enum_name') to search for an enum, and use search_type_in_class('class', 'enum_name', 'class_name') to search for an enum in the class."
+                "\nNOTE 2: You can use MULTIPLE search APIs in one round.")
     else:
         raise LanguageNotSupportedError(lang)
 
@@ -105,7 +109,7 @@ def _ask_actor_agent_and_print(
 def _ask_proxy_agent_and_print(
         task: ProxyTask,
         text: str,
-        manager: ProcessManager,
+        manager: FlowManager,
         print_desc: str = "",
         print_callback: Callable[[dict], None] | None = None
 ) -> Tuple[str | None, str | None, List[MessageThread]]:

@@ -7,7 +7,7 @@ from collections import defaultdict
 
 from agent_app import globals
 from agent_app.data_structures import CommitType, ProxyTask, MessageThread
-from agent_app.api.manage import ProcessManager
+from agent_app.api.manage import FlowManager
 from agent_app.flow_control.flow_recording import State, ProcHypothesis
 from agent_app.flow_control.flow_util import (
     _add_system_msg_and_print,
@@ -115,7 +115,7 @@ def run_in_post_process_state(
         final_hyps: List[FinalHypothesis],
         proc_all_hypothesis: ProcHypothesis,
         post_output_dpath: str,
-        manager: ProcessManager,
+        manager: FlowManager,
         print_callback: Callable[[dict], None] | None = None
 ) -> List[FinalHypothesis]:
     print_desc = f"state {State.POST_PROCESS_STATE}"
@@ -224,7 +224,7 @@ def run_in_post_process_state(
 
         # ------------------ 2.4 Rank the final hypothesis ------------------ #
         if json_ranking is None:
-            manager.action_status_count.update_post_process_rank_status(success_flag=False)
+            manager.action_status_records.update_post_process_rank_status(success_flag=False)
 
             # TODO: Heuristic: 1) more occurrences -> higher ranking; 2) vulnerability fix > non-vulnerability fix
             commit_type_priority = {CommitType.VulnerabilityPatch: 1, CommitType.NonVulnerabilityPatch: 0}
@@ -234,7 +234,7 @@ def run_in_post_process_state(
                 reverse=True
             )
         else:
-            manager.action_status_count.update_post_process_rank_status(success_flag=True)
+            manager.action_status_records.update_post_process_rank_status(success_flag=True)
 
             raw_ranking = json.loads(json_ranking)["ranking"]
             ranking_hyps = [pending_hyps[i - 1] for i in raw_ranking]

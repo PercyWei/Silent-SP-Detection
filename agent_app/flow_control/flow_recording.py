@@ -120,15 +120,24 @@ class ProcessStatus:
 
 @dataclass
 class ProcActionStatus(ProcessStatus):
-    """Dataclass to hold status of some actions during the identification processes."""
+    """Dataclass to hold status of some actions during the process."""
+    ## STATE: start
     # [success number, failure number]
     _patch_extraction: List[int] = field(default_factory=lambda: [0, 0])
+
+    ## STATE: hypothesis checking
     # [none result number, same result number, unsupported result number, good result number]
     _unsupported_hyp_modification: List[int] = field(default_factory=lambda: [0, 0, 0, 0])
     # modification number
     _too_detailed_hyp_modification: int = 0
+
+    ## STATE: context retrieval
+    _tool_call_extraction: List[int] = field(default_factory=lambda: [0, 0])
+
+    ## STATE: post process
     # [success number, failure number]
     _post_process_rank: List[int] = field(default_factory=lambda: [0, 0])
+
     _finish: bool = False
 
 
@@ -155,6 +164,13 @@ class ProcActionStatus(ProcessStatus):
         self._too_detailed_hyp_modification += 1
 
 
+    def update_tool_call_extraction_status(self, success_flag: bool):
+        if success_flag:
+            self._tool_call_extraction[0] += 1
+        else:
+            self._tool_call_extraction[1] += 1
+
+
     def update_post_process_rank_status(self, success_flag: bool):
         if success_flag:
             self._post_process_rank[0] += 1
@@ -172,20 +188,20 @@ class ProcActionStatus(ProcessStatus):
 @dataclass
 class ProcSearchStatus(ProcessStatus):
     """Dataclass to hold search status of called search APIs during the identification processes."""
-    _unknown_search_api_count: int = 0
     _dispatch_error_count: int = 0
+    _unknown_search_api_count: int = 0
+    _wrong_argument_count: int = 0
     _invalid_argument_count: int = 0
-    _non_unique_file_count: int = 0
+    _duplicate_call_count: int = 0
+    _wide_search_range_count: int = 0
     _find_none_count: int = 0
     _find_import_count: int = 0
     _find_code_count: int = 0
 
-
-    def update_by_search_status(self, search_status: SearchStatus):
+    def update_with_search_status(self, search_status: SearchStatus):
         attr_name = f"_{search_status}_count"
         count = getattr(self, attr_name, None)
         if count is not None:
             setattr(self, attr_name, count + 1)
         else:
             raise ValueError(f"Unknown attr {attr_name}")
-

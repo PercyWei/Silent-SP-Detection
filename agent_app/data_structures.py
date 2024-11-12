@@ -268,16 +268,21 @@ class JavaDiffFileInfo(DiffFileInfo):
 
 
 class SearchStatus(str, Enum):
-    UNKNOWN_SEARCH_API = "unknown_search_api"
+    # Special condition (should not happen)
     DISPATCH_ERROR = "dispatch_error"
+    # Bad conditions
+    UNKNOWN_SEARCH_API = "unknown_search_api"
+    WRONG_ARGUMENT = "wrong_argument"
     INVALID_ARGUMENT = "invalid_argument"
-    NON_UNIQUE_FILE = "non_unique_file"
+    DUPLICATE_CALL = "duplicate_call"
+    WIDE_SEARCH_RANGE = "wide_search_range"
     FIND_NONE = "find_none"
+    # Good conditions
     FIND_IMPORT = "find_import"
     FIND_CODE = "find_code"
 
 
-class FunctionCallIntent:
+class ToolCallIntent:
     """An intent to call a tool function.
 
     This object created from OpenAI API response.
@@ -285,36 +290,41 @@ class FunctionCallIntent:
 
     def __init__(
             self,
-            func_name: str,
-            func_args: List[str],
+            tool_name: str,
+            tool_args: List[str],
             call_stmt: str,
-            call_arg_values: Mapping[str, str],
+            call_arg2values: Dict[str, str],
             openai_func: Optional[OpenaiFunction]
     ):
-        self.func_name = func_name
-        self.func_args = func_args
-        self.call_stmt = call_stmt
-        self.call_arg_values: Dict = {}
-        self.call_arg_values.update(call_arg_values)
+        self.tool_name = tool_name                              # ex: search_class
+        self.tool_args = tool_args                              # ex: class_name
+        self.call_stmt = call_stmt                              # ex: search_class("class_1")
+        self.call_arg2values: Dict[str, str] = call_arg2values  # ex: {"class_name": "class_1"}
         # Record the original openai function object,
         # which is used when we want to tell the model that it has previously called this function/tool
-        self.openai_func = openai_func or OpenaiFunction(arguments=json.dumps(call_arg_values), name=func_name)
+        self.openai_func = openai_func or OpenaiFunction(arguments=json.dumps(call_arg2values), name=tool_name)
+
+        self.status: SearchStatus | None = None
 
 
     def __str__(self):
-        return f"Call function `{self.func_name}` with arguments {self.call_arg_values}."
+        return f"Call tool function `{self.tool_name}` with arguments {self.call_arg2values}."
+
+
+    def update_with_search_status(self, search_status: SearchStatus):
+        self.status = search_status
 
 
     def to_dict(self):
-        return {"func_name": self.func_name, "call_arg_values": self.call_arg_values}
+        return {"tool_name": self.tool_name, "call_arg2values": self.call_arg2values}
 
 
-    def to_dict_with_result(self, search_status: SearchStatus):
+    def to_dict_with_result(self):
         return {
-            "func_name": self.func_name,
-            "func_args": self.func_args,
-            "call_arg_values": self.call_arg_values,
-            "search_status": search_status,
+            "tool_name": self.tool_name,
+            "tool_args": self.tool_args,
+            "call_arg2values": self.call_arg2values,
+            "search_status": self.status,
         }
 
 

@@ -5,7 +5,7 @@ from typing import *
 
 from agent_app import globals, globals_opt
 from agent_app.data_structures import CommitType, ProxyTask, MessageThread
-from agent_app.api.manage import ProcessManager
+from agent_app.api.manage import FlowManager
 from agent_app.search.search_manage import PySearchResult, JavaSearchResult
 from agent_app.flow_control.flow_recording import State, ProcOutPaths, ProcHypothesis
 from agent_app.flow_control.flow_util import (
@@ -28,7 +28,7 @@ def make_free_init_hypothesis(
         print_desc: str,
         curr_proc_outs: ProcOutPaths,
         msg_thread: MessageThread,
-        manager: ProcessManager,
+        manager: FlowManager,
         print_callback: Callable[[dict], None] | None = None
 ) -> ProcHypothesis | None:
     # ------------------ 1. Prepare the prompt ------------------ #
@@ -92,7 +92,7 @@ def make_constrained_init_hypothesis(
         print_desc: str,
         curr_proc_outs: ProcOutPaths,
         msg_thread: MessageThread,
-        manager: ProcessManager,
+        manager: FlowManager,
         print_callback: Callable[[dict], None] | None = None
 ) -> ProcHypothesis | None:
     # ------------------ 1. Prepare the prompt ------------------ #
@@ -170,7 +170,7 @@ def extract_patch_locations(
         curr_proc_outs: ProcOutPaths,
         curr_proc_hyps: ProcHypothesis,
         msg_thread: MessageThread,
-        manager: ProcessManager,
+        manager: FlowManager,
         print_callback: Callable[[dict], None] | None = None
 ):
     # TODO: We believe that the extracted patch locations is not very closely related to the predicted
@@ -210,9 +210,9 @@ def extract_patch_locations(
 
     # ------------------ 3. Collect patch locations ------------------ #
     if json_patches is None:
-        manager.action_status_count.update_patch_extraction_status(success_flag=False)
+        manager.action_status_records.update_patch_extraction_status(success_flag=False)
     else:
-        manager.action_status_count.update_patch_extraction_status(success_flag=True)
+        manager.action_status_records.update_patch_extraction_status(success_flag=True)
 
         raw_patches = json.loads(json_patches)["patch_locations"]
 
@@ -249,7 +249,7 @@ def run_in_start_state(
         process_no: int,
         curr_proc_outs: ProcOutPaths,
         msg_thread: MessageThread,
-        manager: ProcessManager,
+        manager: FlowManager,
         print_callback: Callable[[dict], None] | None = None
 ) -> ProcHypothesis | None:
     print_desc = f"process {process_no} | state {State.START_STATE}"

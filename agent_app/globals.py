@@ -71,7 +71,7 @@ complete_process_limit: int = 3
 state_retry_limit: int = 3
 
 # Conversation round
-state_round_limit: int = 6
+state_round_limit: int = 10
 
 # Hypothesis to be verified
 hypothesis_limit: int = 3

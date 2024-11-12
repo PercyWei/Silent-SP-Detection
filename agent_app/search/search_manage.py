@@ -11,7 +11,7 @@ from collections import defaultdict
 from collections.abc import MutableMapping
 from abc import abstractmethod
 
-from agent_app import globals
+from agent_app import globals, globals_opt
 from agent_app.search import search_util
 from agent_app.search.search_util import PySearchResult, JavaSearchResult
 from agent_app.static_analysis.py_ast_parse import ASTParser as PyASTParser
@@ -96,46 +96,33 @@ class BaseSearchManager:
     """PRE-CHECK"""
 
 
-    @staticmethod
-    def _search_arg_pre_check(**kwargs) -> Tuple[bool, str]:
-        empty_args = [arg_name for arg_name, value in kwargs.items() if isinstance(value, str) and value == ""]
-
-        if empty_args:
-            if len(empty_args) == 1:
-                tool_output = f"All parameters must be specified, however, {empty_args[0]} is an empty string."
-            else:
-                args = ", ".join(empty_args)
-                tool_output = f"All parameters must be specified, however, {args} are empty strings."
-            return False, tool_output
-
-        return True, ""
-
-
-    def _search_file_pre_check(self, file_name: str) -> Tuple[bool, str, str | None]:
+    def file_name_pre_check(self, tool_name: str, file_name: str) -> Tuple[str, SearchStatus | None, str | None]:
         """Determine if the given file name is detailed enough to specify a unique file.
 
-        This function should be called before calling a search Interface which requires a file name.
+        This function should be called before calling a tool which requires a file name.
         Args:
+            tool_name (str): Name of the tool to check.
             file_name (str): File name.
         Returns:
-            bool: Whether the file name is detailed enough.
             str: Tool output.
+            SearchStatus | None: Search status.
             str | None: Unique file path (RELATIVE).
         """
-        candidate_rel_paths = [f for f in self.parsed_files if f.endswith(file_name)]
+        cand_fpaths = [f for f in self.parsed_files if f.endswith(file_name)]
 
-        if len(candidate_rel_paths) == 0:
-            return True, "", None
+        if len(cand_fpaths) == 0:
+            return f"Could not find file '{file_name}' in the repo.", SearchStatus.FIND_NONE, None
 
-        elif len(candidate_rel_paths) == 1:
-            return True, "", candidate_rel_paths[0]
+        elif len(cand_fpaths) == 1:
+            return "", None, cand_fpaths[0]
 
         else:
-            tool_output = f"Found {len(candidate_rel_paths)} files with name '{file_name}':\n\n"
-            for idx, fpath in enumerate(candidate_rel_paths):
-                tool_output += f"- file {idx + 1}: {fpath}\n"
+            tool_output = f"Found {len(cand_fpaths)} files with name '{file_name}':\n"
+            for idx, fpath in enumerate(cand_fpaths):
+                tool_output += f"\n- file {idx + 1}: {fpath}"
+            tool_output += f"\nPlease specify a detailed file name and call the search API '{tool_name}' again."
 
-            return False, tool_output, None
+            return tool_output, SearchStatus.WIDE_SEARCH_RANGE, None
 
 
 """PYTHON SEARCH MANAGER"""
@@ -962,56 +949,127 @@ class PySearchManager(BaseSearchManager):
         pass
 
 
+    def search_top_level_function(self, func_name: str) -> Tuple[str, SearchStatus, List[PySearchResult]]:
+        """Search for a top-level function in the codebase."""
+        # ----------------- (1) Search the function in the repo ----------------- #
+        if func_name not in self.old_func_index and func_name not in self.new_func_index \
+                and func_name not in self.nodiff_func_index:
+            tool_output = f"Could not find top-level function '{func_name}' in the repo."
+            return tool_output, SearchStatus.FIND_NONE, []
+
+        # ----------------- (2) Get the entire snippet of the function ----------------- #
+        all_search_res = self._search_top_level_func(func_name)
+
+        # ----------------- (3) Prepare the response ----------------- #
+        tool_output = f"Found {len(all_search_res)} top-level functions with name '{func_name}' in the repo:\n"
+
+        if globals_opt.opt_to_ctx_retrieval_detailed_search_struct_tool:
+            if len(all_search_res) > RESULT_SHOW_LIMIT:
+                # Too much functions, simplified representation
+                tool_output += "\nThey appeared in the following files:\n"
+                tool_output += PySearchResult.collapse_to_file_level(all_search_res)
+            else:
+                # Several functions, verbose representation
+                for idx, res in enumerate(all_search_res):
+                    res_str = res.to_tagged_str()
+                    tool_output += (f"\n- Search result {idx + 1}:"
+                                    f"\n```"
+                                    f"\n{res_str}"
+                                    f"\n```")
+        else:
+            tool_output += "\nThey appeared in the following files:\n"
+            tool_output += JavaSearchResult.collapse_to_file_level(all_search_res)
+
+        return tool_output, SearchStatus.FIND_CODE, all_search_res
+
+
     def search_class(self, class_name: str) -> Tuple[str, SearchStatus, List[PySearchResult]]:
         """Search for a class in the codebase."""
-        # ----------------- (1) Check if the arg is an empty str ----------------- #
-        cont_search, tool_output = self._search_arg_pre_check(class_name=class_name)
-
-        if not cont_search:
-            return tool_output, SearchStatus.INVALID_ARGUMENT, []
-
-        # ----------------- (2) Search the class in the repo ----------------- #
+        # ----------------- (1) Search the class in the repo ----------------- #
         if class_name not in self.old_class_index and class_name not in self.new_class_index \
                 and class_name not in self.nodiff_class_index:
             tool_output = f"Could not find class '{class_name}' in the repo."
             return tool_output, SearchStatus.FIND_NONE, []
 
-        # ----------------- (3) Get the signature of the class ----------------- #
+        # ----------------- (2) Get the signature of the class ----------------- #
         all_search_res = self._search_class(class_name)
 
-        # ----------------- (4) Prepare the response ----------------- #
+        # ----------------- (3) Prepare the response ----------------- #
         tool_output = f"Found {len(all_search_res)} classes with name '{class_name}' in the repo:\n"
-        if len(all_search_res) > RESULT_SHOW_LIMIT:
-            # Too much classes, simplified representation
-            tool_output += "\nThey appeared in the following files:\n"
-            tool_output += PySearchResult.collapse_to_file_level(all_search_res)
+
+        if globals_opt.opt_to_ctx_retrieval_detailed_search_struct_tool:
+            if len(all_search_res) > RESULT_SHOW_LIMIT:
+                # Too much classes, simplified representation
+                tool_output += "\nThey appeared in the following files:\n"
+                tool_output += PySearchResult.collapse_to_file_level(all_search_res)
+            else:
+                # Several classes, verbose representation
+                for idx, res in enumerate(all_search_res):
+                    res_str = res.to_tagged_str()
+                    tool_output += (f"\n- Search result {idx + 1}:"
+                                    f"\n```"
+                                    f"\n{res_str}"
+                                    f"\n```")
         else:
-            # Several classes, verbose representation
-            for idx, res in enumerate(all_search_res):
-                res_str = res.to_tagged_str()
-                tool_output += f"\n- Search result {idx + 1}:\n```\n{res_str}\n```"
+            tool_output += "\nThey appeared in the following files:\n"
+            tool_output += JavaSearchResult.collapse_to_file_level(all_search_res)
+
+        return tool_output, SearchStatus.FIND_CODE, all_search_res
+
+
+    def search_method_in_file(self, method_name: str, file_name: str) -> Tuple[str, SearchStatus, List[PySearchResult]]:
+        """Search for a method in a given file, including top-level function and inclass method."""
+        # ----------------- (1) Check whether the file is valid and unique ----------------- #
+        tool_output, search_status, file_path = self.file_name_pre_check(
+            tool_name="search_method_in_file",
+            file_name=file_name
+        )
+        if file_path is None:
+            assert tool_output and search_status
+            return tool_output, search_status, []
+
+        # ----------------- (2) Search the function in the specified file ----------------- #
+        # 3.1 Search among the function definitions in the specified file
+        all_search_res: List[PySearchResult] = self._search_func(method_name, file_path)
+
+        if not all_search_res:
+            ## 3.2 Search among the imports in the specified file
+            res = self._search_class_or_func_in_file_imports(method_name, file_path)
+
+            if res:
+                import_desc, search_res = res
+
+                tool_output = (f"Found method '{method_name}' is imported in file '{file_path}'."
+                               f"\n{import_desc}")
+
+                return tool_output, SearchStatus.FIND_IMPORT, [search_res]
+            else:
+                tool_output = f"Could not find method '{method_name}' in file '{file_path}'."
+                return tool_output, SearchStatus.FIND_NONE, []
+
+        # ----------------- (3) Prepare the response ----------------- #
+        tool_output = f"Found {len(all_search_res)} methods with name '{method_name}' in file '{file_path}':\n"
+
+        # NOTE: When searching for a method in one file, it's rare that there are many candidates,
+        #       so we do not trim the result
+        for idx, res in enumerate(all_search_res):
+            res_str = res.to_tagged_str()
+            tool_output += f"\n- Search result {idx + 1}:\n```\n{res_str}\n```"
         return tool_output, SearchStatus.FIND_CODE, all_search_res
 
 
     def search_class_in_file(self, class_name: str, file_name: str) -> Tuple[str, SearchStatus, List[PySearchResult]]:
         """Search for a class in a given file."""
-        # ----------------- (1) Check if the arg is an empty str ----------------- #
-        cont_search, tool_output = self._search_arg_pre_check(class_name=class_name, file_name=file_name)
-
-        if not cont_search:
-            return tool_output, SearchStatus.INVALID_ARGUMENT, []
-
-        # ----------------- (2) Check whether the file is valid and unique ----------------- #
-        cont_search, tool_output, file_path = self._search_file_pre_check(file_name)
-
-        if not cont_search:
-            return tool_output, SearchStatus.NON_UNIQUE_FILE, []
-
+        # ----------------- (1) Check whether the file is valid and unique ----------------- #
+        tool_output, search_status, file_path = self.file_name_pre_check(
+            tool_name="search_class_in_file",
+            file_name=file_name
+        )
         if file_path is None:
-            tool_output = f"Could not find file '{file_name}' in the repo."
-            return tool_output, SearchStatus.FIND_NONE, []
+            assert tool_output and search_status
+            return tool_output, search_status, []
 
-        # ----------------- (3) Search the class in the specified file  ----------------- #
+        # ----------------- (2) Search the class in the specified file  ----------------- #
         ## 3.1 Search among the class definitions in the specified file
         if file_path in self.nodiff_files:
             all_search_res = self._search_nodiff_class(class_name, file_path)
@@ -1033,7 +1091,7 @@ class PySearchManager(BaseSearchManager):
                 tool_output = f"Could not find class '{class_name}' in file '{file_path}'."
                 return tool_output, SearchStatus.FIND_NONE, []
 
-        # ----------------- (4) Prepare the response ----------------- #
+        # ----------------- (3) Prepare the response ----------------- #
         tool_output = f"Found {len(all_search_res)} classes with name '{class_name}' in file '{file_path}':\n"
         for idx, res in enumerate(all_search_res):
             res_str = res.to_tagged_str()
@@ -1041,75 +1099,19 @@ class PySearchManager(BaseSearchManager):
         return tool_output, SearchStatus.FIND_CODE, all_search_res
 
 
-    def search_method_in_file(self, method_name: str, file_name: str) -> Tuple[str, SearchStatus, List[PySearchResult]]:
-        """Search for a method in a given file, including top-level function and inclass method."""
-        # ----------------- (1) Check if the arg is an empty str ----------------- #
-        cont_search, tool_output = self._search_arg_pre_check(method_name=method_name, file_name=file_name)
-
-        if not cont_search:
-            return tool_output, SearchStatus.INVALID_ARGUMENT, []
-
-        # ----------------- (2) Check whether the file is valid and unique ----------------- #
-        cont_search, tool_output, file_path = self._search_file_pre_check(file_name)
-
-        if not cont_search:
-            return tool_output, SearchStatus.NON_UNIQUE_FILE, []
-
-        if file_path is None:
-            tool_output = f"Could not find file '{file_name}' in the repo."
-            return tool_output, SearchStatus.FIND_NONE, []
-
-        # ----------------- (3) Search the function in the specified file ----------------- #
-        # 3.1 Search among the function definitions in the specified file
-        all_search_res: List[PySearchResult] = self._search_func(method_name, file_path)
-
-        if not all_search_res:
-            ## 3.2 Search among the imports in the specified file
-            res = self._search_class_or_func_in_file_imports(method_name, file_path)
-
-            if res:
-                import_desc, search_res = res
-
-                tool_output = (f"Found method '{method_name}' is imported in file '{file_path}'."
-                               f"\n{import_desc}")
-
-                return tool_output, SearchStatus.FIND_IMPORT, [search_res]
-            else:
-                tool_output = f"Could not find method '{method_name}' in file '{file_path}'."
-                return tool_output, SearchStatus.FIND_NONE, []
-
-        # ----------------- (4) Prepare the response ----------------- #
-        tool_output = f"Found {len(all_search_res)} methods with name '{method_name}' in file '{file_path}':\n"
-
-        # NOTE: When searching for a method in one file, it's rare that there are many candidates,
-        #       so we do not trim the result
-        for idx, res in enumerate(all_search_res):
-            res_str = res.to_tagged_str()
-            tool_output += f"\n- Search result {idx + 1}:\n```\n{res_str}\n```"
-        return tool_output, SearchStatus.FIND_CODE, all_search_res
-
-
-    # TODO: Considering the accuracy of the search, should we keep the search API calls that
-    #        do not contain file path and the related index?
     def search_method_in_class(
             self,
             method_name: str,
             class_name: str
     ) -> Tuple[str, SearchStatus, List[PySearchResult]]:
         """Search for a method in a given class."""
-        # ----------------- (1) Check if the arg is an empty str ----------------- #
-        cont_search, tool_output = self._search_arg_pre_check(method_name=method_name, class_name=class_name)
-
-        if not cont_search:
-            return tool_output, SearchStatus.INVALID_ARGUMENT, []
-
-        # ----------------- (2) Check whether the class exists ----------------- #
+        # ----------------- (1) Check whether the class exists ----------------- #
         if class_name not in self.old_class_index and class_name not in self.new_class_index \
                 and class_name not in self.nodiff_class_index:
             tool_output = f"Could not find class '{class_name}' in the repo."
             return tool_output, SearchStatus.FIND_NONE, []
 
-        # ----------------- (3) Search the function in the specified classes ----------------- #
+        # ----------------- (2) Search the function in the specified classes ----------------- #
         all_search_res: List[PySearchResult] = self._search_method_in_class(method_name, class_name)
 
         if not all_search_res:
@@ -1117,7 +1119,7 @@ class PySearchManager(BaseSearchManager):
             tool_output = f"Could not find method '{method_name}' in class '{class_name}'."
             return tool_output, SearchStatus.FIND_NONE, []
 
-        # ----------------- (4) Prepare the response ----------------- #
+        # ----------------- (3) Prepare the response ----------------- #
         tool_output = f"Found {len(all_search_res)} methods with name '{method_name}' in class '{class_name}':\n"
 
         # NOTE: There can be multiple classes defined in multiple files, which contain the same method,
@@ -1145,25 +1147,17 @@ class PySearchManager(BaseSearchManager):
             file_name: str
     ) -> Tuple[str, SearchStatus, List[PySearchResult]]:
         """Search for a method in a given class which is in a given file."""
-        # ----------------- (1) Check if the arg is an empty str ----------------- #
-        cont_search, tool_output = \
-            self._search_arg_pre_check(method_name=method_name, class_name=class_name, file_name=file_name)
-
-        if not cont_search:
-            return tool_output, SearchStatus.INVALID_ARGUMENT, []
-
-        # ----------------- (2) Check whether the file is valid and unique ----------------- #
-        cont_search, tool_output, file_path = self._search_file_pre_check(file_name)
-
-        if not cont_search:
-            return tool_output, SearchStatus.NON_UNIQUE_FILE, []
-
+        # ----------------- (1) Check whether the file is valid and unique ----------------- #
+        tool_output, search_status, file_path = self.file_name_pre_check(
+            tool_name="search_method_in_class_in_file",
+            file_name=file_name
+        )
         if file_path is None:
-            tool_output = f"Could not find file '{file_name}' in the repo."
-            return tool_output, SearchStatus.FIND_NONE, []
+            assert tool_output and search_status
+            return tool_output, SearchStatus.WIDE_SEARCH_RANGE, []
 
         # TODO: Consider whether to search class first.
-        # ----------------- (3) Search the class in the specified file ----------------- #
+        # ----------------- (2) Search the class in the specified file ----------------- #
         # if not class_exist:
         #     ## 3.2 Search class among the imports of the specified file
         #     res = self._search_class_or_func_in_file_import_libs(class_name, file_path)
@@ -1187,10 +1181,13 @@ class PySearchManager(BaseSearchManager):
             return tool_output, SearchStatus.FIND_NONE, []
 
         # ----------------- (4) Prepare the response ----------------- #
-        tool_output = f"Found {len(all_search_res)} methods with name '{method_name}' in class '{class_name}' in file '{file_path}':\n"
+        tool_output = f"In class '{class_name}' of file '{file_path}', found {len(all_search_res)} methods named '{method_name}':\n"
         for idx, res in enumerate(all_search_res):
             res_str = res.to_tagged_str()
-            tool_output += f"\n- Search result {idx + 1}:\n```\n{res_str}\n```"
+            tool_output += (f"\n- Search result {idx + 1}:"
+                            f"\n```"
+                            f"\n{res_str}"
+                            f"\n```")
         return tool_output, SearchStatus.FIND_CODE, all_search_res
 
 
@@ -1968,16 +1965,7 @@ class JavaSearchManager(BaseSearchManager):
         """
         assert ttype in ['interface', 'class']
 
-        # ----------------- (1) Check if the arg is an empty str ----------------- #
-        if ttype == 'interface':
-            cont_search, tool_output = self._search_arg_pre_check(iface_name=type_name)
-        else:
-            cont_search, tool_output = self._search_arg_pre_check(class_name=type_name)
-
-        if not cont_search:
-            return tool_output, SearchStatus.INVALID_ARGUMENT, []
-
-        # ----------------- (2) Search the class / interface in the repo ----------------- #
+        # ----------------- (1) Search the class / interface in the repo ----------------- #
         if ttype == 'interface':
             ttypes = 'interfaces'
             old_type_index = self.old_iface_index
@@ -1993,20 +1981,34 @@ class JavaSearchManager(BaseSearchManager):
             tool_output = f"Could not find {ttype} '{type_name}' in the repo."
             return tool_output, SearchStatus.FIND_NONE, []
 
-        # ----------------- (3) Get the signature of the classes / interfaces ----------------- #
+        # ----------------- (2) Get the signature of the classes / interfaces ----------------- #
         all_search_res = self._search_top_level_type(ttype, type_name)
 
-        # ----------------- (4) Prepare the response ----------------- #
+        # ----------------- (3) Prepare the response ----------------- #
         tool_output = f"Found {len(all_search_res)} {ttypes} with name '{type_name}' in the repo:\n"
-        if len(all_search_res) > RESULT_SHOW_LIMIT:
-            # Too much classes / interfaces, simplified representation
+
+        if globals_opt.opt_to_ctx_retrieval_detailed_search_struct_tool:
+            if len(all_search_res) > RESULT_SHOW_LIMIT:
+                # Too much classes / interfaces, simplified representation
+                tool_output += "\nThey appeared in the following files:\n"
+                tool_output += JavaSearchResult.collapse_to_file_level(all_search_res)
+            else:
+                # Several classes / interfaces, verbose representation
+                for idx, res in enumerate(all_search_res):
+                    res_str = res.to_tagged_str()
+                    tool_output += (f"\n- Search result {idx + 1}:"
+                                    f"\n```"
+                                    f"\n{res_str}"
+                                    f"\n```")
+        else:
+            # TODO: Since there may be cases where, 'search_type' and 'search_type_in_file' appear at the same time,
+            #       in order to avoid presenting the same code snippet repeatedly, we set the responsibilities of
+            #       these two types of search APIs as follow:
+            #       1. search_type: provide the file locations of the type;
+            #       2. search_type_in_file: provide more detailed code snippets of the type.
             tool_output += "\nThey appeared in the following files:\n"
             tool_output += JavaSearchResult.collapse_to_file_level(all_search_res)
-        else:
-            # Several classes / interfaces, verbose representation
-            for idx, res in enumerate(all_search_res):
-                res_str = res.to_tagged_str()
-                tool_output += f"\n- Search result {idx + 1}:\n```\n{res_str}\n```"
+
         return tool_output, SearchStatus.FIND_CODE, all_search_res
 
 
@@ -2022,54 +2024,35 @@ class JavaSearchManager(BaseSearchManager):
         """
         assert ttype in ['interface', 'class']
 
-        # ----------------- (1) Check if the arg is an empty str ----------------- #
-        if ttype == 'interface':
-            cont_search, tool_output = self._search_arg_pre_check(iface_name=type_name, file_name=file_name)
-        else:
-            cont_search, tool_output = self._search_arg_pre_check(class_name=type_name, file_name=file_name)
-
-        if not cont_search:
-            return tool_output, SearchStatus.INVALID_ARGUMENT, []
-
-        # ----------------- (2) Check whether the file is valid and unique ----------------- #
-        cont_search, tool_output, file_path = self._search_file_pre_check(file_name)
-
-        if not cont_search:
-            return tool_output, SearchStatus.NON_UNIQUE_FILE, []
-
-        if file_path is None:
-            tool_output = f"Could not find file '{file_name}' in the repo."
-            return tool_output, SearchStatus.FIND_NONE, []
-
-        # ----------------- (3) Search the class / interface in the specified file  ----------------- #
+        # ----------------- (1) Search the class / interface in the specified file  ----------------- #
         ## 3.1 Search among the class / interface definitions in the specified file
-        if file_path in self.nodiff_files:
-            all_search_res = self._search_top_level_type_of_nodiff_file(ttype, type_name, file_path)
+        if file_name in self.nodiff_files:
+            all_search_res = self._search_top_level_type_of_nodiff_file(ttype, type_name, file_name)
         else:
-            all_search_res = self._search_top_level_type_of_diff_file(ttype, type_name, file_path)
+            all_search_res = self._search_top_level_type_of_diff_file(ttype, type_name, file_name)
 
         if not all_search_res:
             ## 3.2 Search among the imports of the specified file
-            res = self._search_type_in_file_imports(type_name, file_path)
+            res = self._search_type_in_file_imports(type_name, file_name)
 
             if res:
                 import_desc, search_res = res
 
-                tool_output = (f"Found {ttype} '{type_name}' is imported in file '{file_path}'."
+                tool_output = (f"Found {ttype} '{type_name}' is imported in file '{file_name}'."
                                f"\n{import_desc}")
 
                 return tool_output, SearchStatus.FIND_IMPORT, [search_res]
             else:
-                tool_output = f"Could not find {ttype} '{type_name}' in file '{file_path}'."
+                tool_output = f"Could not find {ttype} '{type_name}' in file '{file_name}'."
                 return tool_output, SearchStatus.FIND_NONE, []
 
-        # ----------------- (4) Prepare the response ----------------- #
+        # ----------------- (2) Prepare the response ----------------- #
         if ttype == "interface":
             ttypes = 'interfaces'
         else:
             ttypes = 'classes'
 
-        tool_output = f"Found {len(all_search_res)} {ttypes} with name '{type_name}' in file '{file_path}':\n"
+        tool_output = f"Found {len(all_search_res)} {ttypes} with name '{type_name}' in file '{file_name}':\n"
         for idx, res in enumerate(all_search_res):
             res_str = res.to_tagged_str()
             tool_output += f"\n- Search result {idx + 1}:\n```\n{res_str}\n```"
@@ -2087,41 +2070,33 @@ class JavaSearchManager(BaseSearchManager):
         NOTE 1: Not a search API, just a unified implementation of searching inclass type in class.
         NOTE 2: Inclass type here indicate inclass interface / class / method.
         """
-        assert ttype in ['interface', 'class', 'method']
+        tool_output = ""
+        if ttype not in ['interface', 'class', 'method']:
+            old_ttype = ttype
+            assert old_ttype.lower() in ['annotation', 'enum', 'record']
+            ttype = 'interface' if old_ttype.lower() == 'annotation' else 'class'
+            tool_output = f"NOTE: You called 'search_inclass_type_in_class' with 'ttype={old_ttype}', please use '{ttype}' next time.\n"
 
-        # ----------------- (1) Check if the arg is an empty str ----------------- #
-        if ttype == 'interface':
-            cont_search, tool_output = self._search_arg_pre_check(inclass_iface_name=type_name, class_name=class_name)
-        elif ttype == 'class':
-            cont_search, tool_output = self._search_arg_pre_check(inclass_class_name=type_name, class_name=class_name)
-        else:
-            cont_search, tool_output = self._search_arg_pre_check(inclass_func_name=type_name, class_name=class_name)
-
-        if not cont_search:
-            return tool_output, SearchStatus.INVALID_ARGUMENT, []
-
-        # ----------------- (2) Check whether the class exists ----------------- #
+        # ----------------- (1) Check whether the class exists ----------------- #
         if all(class_name not in c for c in [self.old_class_index, self.new_class_index, self.nodiff_class_index]):
-            tool_output = f"Could not find class '{class_name}' in the repo."
+            tool_output += f"Could not find class '{class_name}' in the repo."
             return tool_output, SearchStatus.FIND_NONE, []
 
-        # ----------------- (3) Search the inclass type in the specified classes ----------------- #
+        # ----------------- (2) Search the inclass type in the specified classes ----------------- #
         all_search_res: List[JavaSearchResult] = self._search_type_in_class(ttype, type_name, class_name)
 
         if not all_search_res:
             # TODO: Consider whether to search among imports when no type definition is found.
-            tool_output = f"Could not find {ttype} '{type_name}' in class '{class_name}'."
+            tool_output += f"Could not find {ttype} '{type_name}' in class '{class_name}'."
             return tool_output, SearchStatus.FIND_NONE, []
 
-        # ----------------- (4) Prepare the response ----------------- #
+        # ----------------- (3) Prepare the response ----------------- #
         if ttype == 'interface':
-            ttypes = 'interfaces'
+            tool_output += f"Found {len(all_search_res)} interfaces with name '{type_name}' in class '{class_name}':\n"
         elif ttype == 'class':
-            ttypes = 'classes'
+            tool_output += f"Found {len(all_search_res)} classes with name '{type_name}' in class '{class_name}':\n"
         else:
-            ttypes = 'methods'
-
-        tool_output = f"Found {len(all_search_res)} {ttypes} with name '{type_name}' in class '{class_name}':\n"
+            tool_output += f"Found {len(all_search_res)} methods with name '{type_name}' in class '{class_name}':\n"
 
         # NOTE: There can be multiple classes defined in multiple files, which contain the types with the same name,
         #       so we still trim the result, just in case
@@ -2153,37 +2128,15 @@ class JavaSearchManager(BaseSearchManager):
         NOTE 1: Not a search API, just a unified implementation of searching inclass type in class within file.
         NOTE 2: Inclass type here indicate inclass interface / class / method.
         """
-        assert ttype in ['interface', 'class', 'method']
-
-        # ----------------- (1) Check if the arg is an empty str ----------------- #
-        if ttype == 'interface':
-            cont_search, tool_output = self._search_arg_pre_check(
-                inclass_iface_name=type_name, class_name=class_name, file_name=file_name
-            )
-        elif ttype == 'class':
-            cont_search, tool_output = self._search_arg_pre_check(
-                inclass_class_name=type_name, class_name=class_name, file_name=file_name
-            )
-        else:
-            cont_search, tool_output = self._search_arg_pre_check(
-                inclass_func_name=type_name, class_name=class_name, file_name=file_name
-            )
-
-        if not cont_search:
-            return tool_output, SearchStatus.INVALID_ARGUMENT, []
-
-        # ----------------- (2) Check whether the file is valid and unique ----------------- #
-        cont_search, tool_output, file_path = self._search_file_pre_check(file_name)
-
-        if not cont_search:
-            return tool_output, SearchStatus.NON_UNIQUE_FILE, []
-
-        if file_path is None:
-            tool_output = f"Could not find file '{file_name}' in the repo."
-            return tool_output, SearchStatus.FIND_NONE, []
+        tool_output = ""
+        if ttype not in ['interface', 'class', 'method']:
+            old_ttype = ttype
+            assert old_ttype.lower() in ['annotation', 'enum', 'record']
+            ttype = 'interface' if old_ttype.lower() == 'annotation' else 'class'
+            tool_output = f"NOTE: You called 'search_inclass_type_in_class_in_file' with 'ttype={old_ttype}', please use '{ttype}' next time.\n"
 
         # TODO: Consider whether to search class first.
-        # ----------------- (3) Search the class in the specified file ----------------- #
+        # ----------------- (1) Search the class in the specified file ----------------- #
         # if not class_exist:
         #     ## 3.2 Search class among the imports of the specified file
         #     res = self._search_class_or_func_in_file_import_libs(class_name, file_path)
@@ -2199,25 +2152,27 @@ class JavaSearchManager(BaseSearchManager):
         #         tool_output = f"Could not find class '{class_name}' in file '{file_path}'."
         #         return tool_output, SearchStatus.FIND_NONE, []
 
-        # --------- (3) Search the interface / class / method in the specified class and file --------- #
-        all_search_res: List[JavaSearchResult] = self._search_type_in_class(ttype, type_name, class_name, file_path)
+        # --------- (2) Search the interface / class / method in the specified class and file --------- #
+        all_search_res: List[JavaSearchResult] = self._search_type_in_class(ttype, type_name, class_name, file_name)
 
         if not all_search_res:
-            tool_output = f"Could not find {ttype} '{type_name}' in class '{class_name}' in file '{file_path}'."
+            tool_output += f"In class '{class_name}' of file '{file_name}', found no inclass {ttype} named '{type_name}'."
             return tool_output, SearchStatus.FIND_NONE, []
 
-        # ----------------- (4) Prepare the response ----------------- #
-        if ttype == "interface":
-            ttypes = 'interfaces'
-        elif ttype == "class":
-            ttypes = 'classes'
+        # ----------------- (3) Prepare the response ----------------- #
+        if ttype == 'interface':
+            tool_output += f"In class '{class_name}' of file '{file_name}', found {len(all_search_res)} inclass interfaces named '{type_name}':\n"
+        elif ttype == 'class':
+            tool_output += f"In class '{class_name}' of file '{file_name}', found {len(all_search_res)} inclass classes named '{type_name}':\n"
         else:
-            ttypes = 'methods'
+            tool_output += f"In class '{class_name}' of file '{file_name}', found {len(all_search_res)} inclass methods named '{type_name}':\n"
 
-        tool_output = f"Found {len(all_search_res)} {ttypes} with name '{type_name}' in class '{class_name}' in file '{file_path}':\n"
         for idx, res in enumerate(all_search_res):
             res_str = res.to_tagged_str()
-            tool_output += f"\n- Search result {idx + 1}:\n```\n{res_str}\n```"
+            tool_output += (f"\n- Search result {idx + 1}:"
+                            f"\n```"
+                            f"\n{res_str}"
+                            f"\n```")
         return tool_output, SearchStatus.FIND_CODE, all_search_res
 
 
@@ -2261,7 +2216,15 @@ class JavaSearchManager(BaseSearchManager):
             file_name: str
     ) -> Tuple[str, SearchStatus, List[JavaSearchResult]]:
         """Search for an interface in a given file."""
-        return self.search_top_level_type_in_file(ttype='interface', type_name=iface_name, file_name=file_name)
+        tool_output, search_status, file_path = self.file_name_pre_check(
+            tool_name="search_interface_in_file",
+            file_name=file_name
+        )
+        if file_path is None:
+            assert tool_output and search_status
+            return tool_output, search_status, []
+
+        return self.search_top_level_type_in_file(ttype='interface', type_name=iface_name, file_name=file_path)
 
 
     def search_class_in_file(
@@ -2270,11 +2233,17 @@ class JavaSearchManager(BaseSearchManager):
             file_name: str
     ) -> Tuple[str, SearchStatus, List[JavaSearchResult]]:
         """Search for a class in a given file."""
-        return self.search_top_level_type_in_file(ttype='class', type_name=class_name, file_name=file_name)
+        tool_output, search_status, file_path = self.file_name_pre_check(
+            tool_name="search_class_in_file",
+            file_name=file_name
+        )
+        if file_path is None:
+            assert tool_output and search_status
+            return tool_output, search_status, []
+
+        return self.search_top_level_type_in_file(ttype='class', type_name=class_name, file_name=file_path)
 
 
-    # TODO: Considering the accuracy of the search, should we keep the following search APIs
-    #       that do not contain a specified file path parameter?
     def search_type_in_class(
             self,
             ttype: Literal['interface', 'class', 'method'],
@@ -2293,4 +2262,12 @@ class JavaSearchManager(BaseSearchManager):
             file_name: str
     ) -> Tuple[str, SearchStatus, List[JavaSearchResult]]:
         """Search for a type in a given class which is in a given file. 'Type' indicate interface or class or method."""
-        return self.search_inclass_type_in_class_in_file(ttype, type_name, class_name, file_name)
+        tool_output, search_status, file_path = self.file_name_pre_check(
+            tool_name="search_type_in_class_in_file",
+            file_name=file_name
+        )
+        if file_path is None:
+            assert tool_output and search_status
+            return tool_output, search_status, []
+
+        return self.search_inclass_type_in_class_in_file(ttype, type_name, class_name, file_path)
