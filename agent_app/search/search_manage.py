@@ -979,6 +979,7 @@ class PySearchManager(BaseSearchManager):
         else:
             tool_output += "\nThey appeared in the following files:\n"
             tool_output += JavaSearchResult.collapse_to_file_level(all_search_res)
+            tool_output += "\nIf you want to get the detailed content of a function, please use the search API 'search_method_in_file(method_name, file_name)'"
 
         return tool_output, SearchStatus.FIND_CODE, all_search_res
 
@@ -1013,6 +1014,7 @@ class PySearchManager(BaseSearchManager):
         else:
             tool_output += "\nThey appeared in the following files:\n"
             tool_output += JavaSearchResult.collapse_to_file_level(all_search_res)
+            tool_output += "\nIf you want to get the detailed content of a class, please use the search API 'search_class_in_file(class_name, file_name)'"
 
         return tool_output, SearchStatus.FIND_CODE, all_search_res
 
@@ -1029,11 +1031,11 @@ class PySearchManager(BaseSearchManager):
             return tool_output, search_status, []
 
         # ----------------- (2) Search the function in the specified file ----------------- #
-        # 3.1 Search among the function definitions in the specified file
+        ## 1. Search among the definitions in the specified file
         all_search_res: List[PySearchResult] = self._search_func(method_name, file_path)
 
+        ## 2. Search among the imports in the specified file
         if not all_search_res:
-            ## 3.2 Search among the imports in the specified file
             res = self._search_class_or_func_in_file_imports(method_name, file_path)
 
             if res:
@@ -1054,7 +1056,11 @@ class PySearchManager(BaseSearchManager):
         #       so we do not trim the result
         for idx, res in enumerate(all_search_res):
             res_str = res.to_tagged_str()
-            tool_output += f"\n- Search result {idx + 1}:\n```\n{res_str}\n```"
+            tool_output += (f"\n- Search result {idx + 1}:"
+                            f"\n```"
+                            f"\n{res_str}"
+                            f"\n```")
+
         return tool_output, SearchStatus.FIND_CODE, all_search_res
 
 
@@ -1093,17 +1099,18 @@ class PySearchManager(BaseSearchManager):
 
         # ----------------- (3) Prepare the response ----------------- #
         tool_output = f"Found {len(all_search_res)} classes with name '{class_name}' in file '{file_path}':\n"
+
         for idx, res in enumerate(all_search_res):
             res_str = res.to_tagged_str()
-            tool_output += f"\n- Search result {idx + 1}:\n```\n{res_str}\n```"
+            tool_output += (f"\n- Search result {idx + 1}:"
+                            f"\n```"
+                            f"\n{res_str}"
+                            f"\n```")
+
         return tool_output, SearchStatus.FIND_CODE, all_search_res
 
 
-    def search_method_in_class(
-            self,
-            method_name: str,
-            class_name: str
-    ) -> Tuple[str, SearchStatus, List[PySearchResult]]:
+    def search_method_in_class(self, method_name: str, class_name: str) -> Tuple[str, SearchStatus, List[PySearchResult]]:
         """Search for a method in a given class."""
         # ----------------- (1) Check whether the class exists ----------------- #
         if class_name not in self.old_class_index and class_name not in self.new_class_index \
@@ -1131,7 +1138,11 @@ class PySearchManager(BaseSearchManager):
         top_k_res = all_search_res[:RESULT_SHOW_LIMIT]
         for idx, res in enumerate(top_k_res):
             res_str = res.to_tagged_str()
-            tool_output += f"\n- Search result {idx + 1}:\n```\n{res_str}\n```"
+            tool_output += (f"\n- Search result {idx + 1}:"
+                            f"\n```"
+                            f"\n{res_str}"
+                            f"\n```")
+
         # (2) For the rest, collect the file names into a set
         if rest := all_search_res[RESULT_SHOW_LIMIT:]:
             tool_output += "\nOther results are in these files:\n"
@@ -1140,12 +1151,7 @@ class PySearchManager(BaseSearchManager):
         return tool_output, SearchStatus.FIND_CODE, all_search_res
 
 
-    def search_method_in_class_in_file(
-            self,
-            method_name: str,
-            class_name: str,
-            file_name: str
-    ) -> Tuple[str, SearchStatus, List[PySearchResult]]:
+    def search_method_in_class_in_file(self, method_name: str, class_name: str, file_name: str) -> Tuple[str, SearchStatus, List[PySearchResult]]:
         """Search for a method in a given class which is in a given file."""
         # ----------------- (1) Check whether the file is valid and unique ----------------- #
         tool_output, search_status, file_path = self.file_name_pre_check(
@@ -1182,12 +1188,14 @@ class PySearchManager(BaseSearchManager):
 
         # ----------------- (4) Prepare the response ----------------- #
         tool_output = f"In class '{class_name}' of file '{file_path}', found {len(all_search_res)} methods named '{method_name}':\n"
+
         for idx, res in enumerate(all_search_res):
             res_str = res.to_tagged_str()
             tool_output += (f"\n- Search result {idx + 1}:"
                             f"\n```"
                             f"\n{res_str}"
                             f"\n```")
+
         return tool_output, SearchStatus.FIND_CODE, all_search_res
 
 
@@ -1967,12 +1975,10 @@ class JavaSearchManager(BaseSearchManager):
 
         # ----------------- (1) Search the class / interface in the repo ----------------- #
         if ttype == 'interface':
-            ttypes = 'interfaces'
             old_type_index = self.old_iface_index
             new_type_index = self.new_iface_index
             nodiff_type_index = self.nodiff_iface_index
         else:
-            ttypes = 'classes'
             old_type_index = self.old_class_index
             new_type_index = self.new_class_index
             nodiff_type_index = self.nodiff_class_index
@@ -1985,7 +1991,10 @@ class JavaSearchManager(BaseSearchManager):
         all_search_res = self._search_top_level_type(ttype, type_name)
 
         # ----------------- (3) Prepare the response ----------------- #
-        tool_output = f"Found {len(all_search_res)} {ttypes} with name '{type_name}' in the repo:\n"
+        if ttype == 'interface':
+            tool_output = f"Found {len(all_search_res)} interfaces with name '{type_name}' in the repo:\n"
+        else:
+            tool_output = f"Found {len(all_search_res)} classes with name '{type_name}' in the repo:\n"
 
         if globals_opt.opt_to_ctx_retrieval_detailed_search_struct_tool:
             if len(all_search_res) > RESULT_SHOW_LIMIT:
@@ -2008,6 +2017,10 @@ class JavaSearchManager(BaseSearchManager):
             #       2. search_type_in_file: provide more detailed code snippets of the type.
             tool_output += "\nThey appeared in the following files:\n"
             tool_output += JavaSearchResult.collapse_to_file_level(all_search_res)
+            if ttype == 'interface':
+                tool_output += "\nIf you want to get the detailed content of an interface, please use the search API 'search_interface_in_file(iface_name, file_name)'"
+            else:
+                tool_output += "\nIf you want to get the detailed content of a class, please use the search API 'search_class_in_file(class_name, file_name)'"
 
         return tool_output, SearchStatus.FIND_CODE, all_search_res
 
@@ -2025,14 +2038,14 @@ class JavaSearchManager(BaseSearchManager):
         assert ttype in ['interface', 'class']
 
         # ----------------- (1) Search the class / interface in the specified file  ----------------- #
-        ## 3.1 Search among the class / interface definitions in the specified file
+        ## 1. Search among the definitions in the specified file
         if file_name in self.nodiff_files:
             all_search_res = self._search_top_level_type_of_nodiff_file(ttype, type_name, file_name)
         else:
             all_search_res = self._search_top_level_type_of_diff_file(ttype, type_name, file_name)
 
+        ## 2. Search among the imports of the specified file
         if not all_search_res:
-            ## 3.2 Search among the imports of the specified file
             res = self._search_type_in_file_imports(type_name, file_name)
 
             if res:
@@ -2048,14 +2061,17 @@ class JavaSearchManager(BaseSearchManager):
 
         # ----------------- (2) Prepare the response ----------------- #
         if ttype == "interface":
-            ttypes = 'interfaces'
+            tool_output = f"Found {len(all_search_res)} interfaces with name '{type_name}' in file '{file_name}':\n"
         else:
-            ttypes = 'classes'
+            tool_output = f"Found {len(all_search_res)} classes with name '{type_name}' in file '{file_name}':\n"
 
-        tool_output = f"Found {len(all_search_res)} {ttypes} with name '{type_name}' in file '{file_name}':\n"
         for idx, res in enumerate(all_search_res):
             res_str = res.to_tagged_str()
-            tool_output += f"\n- Search result {idx + 1}:\n```\n{res_str}\n```"
+            tool_output += (f"\n- Search result {idx + 1}:"
+                            f"\n```"
+                            f"\n{res_str}"
+                            f"\n```")
+
         return tool_output, SearchStatus.FIND_CODE, all_search_res
 
 
@@ -2107,7 +2123,11 @@ class JavaSearchManager(BaseSearchManager):
         top_k_res = all_search_res[:RESULT_SHOW_LIMIT]
         for idx, res in enumerate(top_k_res):
             res_str = res.to_tagged_str()
-            tool_output += f"\n- Search result {idx + 1}:\n```\n{res_str}\n```"
+            tool_output += (f"\n- Search result {idx + 1}:"
+                            f"\n```"
+                            f"\n{res_str}"
+                            f"\n```")
+
         # 2. For the rest, collect the file names into a set
         if rest := all_search_res[RESULT_SHOW_LIMIT:]:
             tool_output += "\nOther results are in these files:\n"
@@ -2173,6 +2193,7 @@ class JavaSearchManager(BaseSearchManager):
                             f"\n```"
                             f"\n{res_str}"
                             f"\n```")
+
         return tool_output, SearchStatus.FIND_CODE, all_search_res
 
 
