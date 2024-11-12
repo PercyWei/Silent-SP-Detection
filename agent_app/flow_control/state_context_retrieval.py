@@ -144,7 +144,9 @@ def call_search_apis(
                                    f"\n\n{tool_output}\n\n")
 
         # Extracted code snippet
-        proc_all_hypothesis.code_context.extend(all_search_res)
+        if intent.tool_name in ['search_top_level_function', 'search_class', 'search_interface'] and \
+                globals_opt.opt_to_ctx_retrieval_detailed_search_struct_tool:
+            proc_all_hypothesis.code_context.extend(all_search_res)
 
     collated_tool_response.rstrip()
 
