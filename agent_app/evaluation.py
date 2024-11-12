@@ -10,10 +10,8 @@ from enum import Enum
 from dataclasses import dataclass, field
 from sklearn.metrics import f1_score, matthews_corrcoef
 
-from agent_app.inference import FinalHypothesis, vote_on_result
+from backup.inference import vote_on_result
 from agent_app.CWE.cwe_util import get_cwe_depth
-from utils import insert_key_value
-
 
 """F1 CALCULATION"""
 

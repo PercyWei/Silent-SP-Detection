@@ -6,7 +6,7 @@ from agent_app.util import (
     get_commit_content
 )
 from agent_app.raw_tasks import RawLocalTask
-from agent_app.api.manage import ProcessManager
+from agent_app.api.manage import FlowManager
 
 
 # Need modify
@@ -18,7 +18,7 @@ output_dpath = "/root/projects/VDTest/agent_app/test/output"
 globals.view_id = "1000"
 globals.cwe_entry_file = "data/CWE/VIEW_1000/CWE_entries.json"
 globals.cwe_tree_file = "data/CWE/VIEW_1000/CWE_tree.json"
-globals.all_weakness_entry_file = "data/CWE/VIEW_1000/CWE_entries.json"
+globals.all_weakness_entries_file = "data/CWE/VIEW_1000/CWE_entries.json"
 globals.view_cwe_tree_files = [
     ("699", "data/CWE/VIEW_699/CWE_tree.json"),
     ("888", "data/CWE/VIEW_888/CWE_tree.json"),
@@ -38,13 +38,13 @@ try:
         task_id="",
         cve_id=None,
         commit_type=1,
-        cwe_id=None,
+        cwe_list=None,
         cwe_depth=None,
-        repo_name=repo,
+        auth_repo=repo,
         commit_hash=commit_hash,
         local_repo_dpath=local_repo_path
     )
-    manager = ProcessManager(raw_task.to_task(), output_dpath)
+    manager = FlowManager(raw_task.to_task(), output_dpath)
     print(manager.commit_manager.describe_commit_files())
 
     # method_name = "_set_headers"
