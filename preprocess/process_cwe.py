@@ -5,6 +5,8 @@ import json
 import csv
 
 from typing import *
+
+from scipy.stats import bernoulli
 from tqdm import tqdm
 from collections import defaultdict
 
@@ -364,7 +366,7 @@ def group_cwe_by_depth(cwe_tree_fpath: str, output_dpath: str):
 """SUMMARIZE CWE ATTRIBUTES"""
 
 
-SYSTEM_PROMPT = """I want you to act as a vulnerability analysis expert and analyse vulnerability knowledge based on the above information. 
+WEAKNESS_ATTRS_EXTRACTION_SYSTEM_PROMPT = """I want you to act as a vulnerability analysis expert and analyse vulnerability knowledge based on the above information. 
 Please summarise two important features of the given vulnerability:
 - 1. Trigger Action: Direct behaviour leading to vulnerability.
 - 2. Key Variables: Conditions, states or parameters directly related to the triggered action.
@@ -381,7 +383,7 @@ NOTE: Do not copy directly from any of the examples or descriptions I have given
 """
 
 
-FORMAT_PROMPT = """Provide your answer in JSON structure and consider the following TypeScript Interface for the JSON schema:
+WEAKNESS_ATTRS_FORMAT_PROMPT = """Provide your answer in JSON structure and consider the following TypeScript Interface for the JSON schema:
 
 interface Attributes {
     trigger_action: string;
@@ -508,12 +510,12 @@ def summarize_all_weakness_attributes(output_dpath: str, max_depth: int = 3):
                 usr_msg += f"\n{entire_view_desc}"
 
             # 4. Format
-            usr_msg += f"\n\n{FORMAT_PROMPT}"
+            usr_msg += f"\n\n{WEAKNESS_ATTRS_FORMAT_PROMPT}"
 
             messages = [
                 {
                     "role": "system",
-                    "content": SYSTEM_PROMPT
+                    "content": WEAKNESS_ATTRS_EXTRACTION_SYSTEM_PROMPT
                 },
                 {
                     "role": "user",
@@ -562,6 +564,170 @@ def summarize_all_weakness_attributes(output_dpath: str, max_depth: int = 3):
         json.dump(failed_weakness, f, indent=4)
 
 
+WEAKNESS_ATTRS_SUMMARY_SYSTEM_PROMPT = """I want you to act as a vulnerability analysis expert and analyse vulnerability knowledge based on the above information. 
+For each weakness, we have summarized its two important attributes:
+- 1. Trigger Action: Direct behaviour leading to vulnerability.
+- 2. Key Variables: Conditions, states or parameters directly related to the triggered action.
+
+Now for the given weakness, since it is abstract, we cannot extract its attributes by analysing its description directly, therefore, we also give the description and attributes of all its child CWE.
+Your task is to summarize the attributes of the weakness based on the information provided, satisfying the following requirements:
+1. For key variables, their characteristics must not be too broad, but it can also cover the characteristics of the key variables of all child CWEs. 
+2. DO NOT COPY key variables of child CWEs, you need to abstract them.
+
+For trigger action, you should notice:
+1. Consider the environment and context in which the trigger action occurs, such as the user role, whether there are specific inputs, whether there are access restrictions, etc.
+2. Ensure that there is a difference between a trigger action and a normal action. For example, if the trigger action is an API call, the description should include specific parameters and possible exception inputs.
+
+For key variables, you should notice：
+1. Use the noun form wherever possible, making it point to a concretely existing entity or property rather than describing an abstract behaviour or result.
+2. Do not use broad concepts, such as methods, interfaces, but rather more detailed descriptions, such as, variables that store sensitive data, access control list.
+
+NOTE: Do not copy directly from any of the examples or descriptions I have given.
+"""
+
+
+def recap_all_weakness_attributes(output_dpath: str):
+
+    ## (1) Prepare GPT
+    api_key = os.getenv("OPENAI_KEY", None)
+    api_base = os.getenv("OPENAI_API_BASE", None)
+    assert api_key is not None and api_base is not None
+    client = OpenAI(api_key=api_key, base_url=api_base)
+
+    ## (2) Main
+    view_1000_tree_fpath = "/root/projects/VDTest/data/CWE/VIEW_1000/CWE_tree.json"
+    with open(view_1000_tree_fpath, "r") as f:
+        view_1000_tree = json.load(f)
+
+    all_weakness_fpath = "/root/projects/VDTest/data/CWE/VIEW_1000/CWE_entries.json"
+    with open(all_weakness_fpath, "r") as f:
+        all_weakness = json.load(f)
+    all_weakness_dict = {weakness_data["CWE-ID"]: weakness_data for weakness_data in all_weakness}
+
+    weakness_attrs_fpath = os.path.join(output_dpath, "all_weakness_attrs.json")
+    with open(weakness_attrs_fpath, "r") as f:
+        all_weakness_attrs = json.load(f)
+
+    # Process weakness with depth = 2
+    failed_weakness = []
+    recap_weakness_attrs: Dict[str, Dict] = {}
+
+    with tqdm(total=len(all_weakness_attrs)) as pb:
+        for weakness_id, weakness_attrs in all_weakness_attrs.items():
+            cwe_paths = view_1000_tree[weakness_id]["cwe_paths"]
+
+            process_flag = False
+            for cwe_path in cwe_paths:
+                if len(cwe_path) == 2:
+                    process_flag = True
+                    break
+
+            if process_flag:
+                weakness_name = all_weakness_dict[weakness_id]["Name"]
+                basic_desc = all_weakness_dict[weakness_id]["Description"]
+                extended_desc = all_weakness_dict[weakness_id]["Extended Description"]
+
+                # 1. Basic information
+                usr_msg = (f"Now please analyse and summarize the vulnerability CWE-{weakness_id}: {weakness_name}."
+                           f"\nDescription: {basic_desc}")
+
+                # 2. Extended description
+                if extended_desc != "":
+                    usr_msg += f"\nExtended Description: {extended_desc}"
+
+                # 3. Children information
+                children_desc = ""
+                for i, child in enumerate(view_1000_tree[weakness_id]["children"]):
+                    child_name = all_weakness_dict[child]["Name"]
+                    child_desc = all_weakness_dict[child]["Description"]
+                    trigger_action = all_weakness_attrs[child]["trigger_action"]
+                    key_variables_str = ', '.join(all_weakness_attrs[child]["key_variables"])
+                    children_desc += (f"\n\nChild {i + 1}: CWE-{child} ({child_name})"
+                                      f"\n- Description: {child_desc}"
+                                      f"\n- Trigger Action: {trigger_action}"
+                                      f"\n- Key Variables: {key_variables_str}")
+
+                usr_msg += ("It has the following child CWEs:"
+                            f"{children_desc}")
+
+                # 4. Format
+                usr_msg += f"\n\n{WEAKNESS_ATTRS_FORMAT_PROMPT}"
+
+                messages = [
+                    {
+                        "role": "system",
+                        "content": WEAKNESS_ATTRS_SUMMARY_SYSTEM_PROMPT
+                    },
+                    {
+                        "role": "user",
+                        "content": usr_msg
+                    }
+                ]
+
+                # print("\n" + "=" * 30 + " SYSTEM " + "=" * 30 + "\n")
+                # print(WEAKNESS_ATTRS_FORMAT_PROMPT)
+                # print("\n" + "-" * 30 + " USER " + "-" * 30 + "\n")
+                # print(usr_msg)
+
+                response = client.chat.completions.create(
+                    model="gpt-4o-2024-05-13",
+                    messages=messages,
+                    temperature=0.2,
+                    response_format=ResponseFormat(type="json_object")
+                ).choices[0].message
+
+                if response.content is None:
+                    response = ""
+                    failed_weakness.append(weakness_id)
+                else:
+                    response = response.content
+
+                json_response = json.loads(response)
+
+                # print("\n" + "-" * 30 + " LLM " + "-" * 30 + "\n")
+                # print(json.dumps(json_response, indent=4))
+
+                if isinstance(json_response, dict) and \
+                        "trigger_action" in json_response and \
+                        "key_variables" in json_response and \
+                        isinstance(json_response["key_variables"], list):
+                    recap_weakness_attrs[weakness_id] = json_response
+
+            pb.update(1)
+
+    ## (4) Save
+    save_fpath = os.path.join(output_dpath, "recap_weakness_attrs.json")
+    with open(save_fpath, "w") as f:
+        json.dump(recap_weakness_attrs, f, indent=4)
+
+    failed_weakness_fpath = os.path.join(output_dpath, "failed_weakness.json")
+    with open(failed_weakness_fpath, "w") as f:
+        json.dump(failed_weakness, f, indent=4)
+
+
+def update_all_weakness_attrs_with_recap_attrs(output_dpath: str):
+    old_weakness_attrs_fpath = os.path.join(output_dpath, "all_weakness_attrs.json")
+    with open(old_weakness_attrs_fpath, "r") as f:
+        all_weakness_attrs = json.load(f)
+
+    recap_weakness_attrs_fpath = os.path.join(output_dpath, "recap_weakness_attrs.json")
+    with open(recap_weakness_attrs_fpath, "r") as f:
+        recap_weakness_attrs = json.load(f)
+
+    # Update
+    old_weakness_attrs_fpath = old_weakness_attrs_fpath.replace("all_weakness_attrs.json", "old_all_weakness_attrs.json")
+    with open(old_weakness_attrs_fpath, "w") as f:
+        json.dump(all_weakness_attrs, f, indent=4)
+
+    for weakness_id, _ in all_weakness_attrs.items():
+        if weakness_id in recap_weakness_attrs:
+            all_weakness_attrs[weakness_id] = recap_weakness_attrs[weakness_id]
+
+    new_weakness_attrs_fpath = old_weakness_attrs_fpath
+    with open(new_weakness_attrs_fpath, "w") as f:
+        json.dump(all_weakness_attrs, f, indent=4)
+
+
 if __name__ == '__main__':
     save_dir = "/root/projects/VDTest/data/CWE/VIEW_1000"
     # save_dir = "/root/projects/VDTest/data/CWE/VIEW_1003"
@@ -581,4 +747,6 @@ if __name__ == '__main__':
 
     ## Summarize weakness attributes (depth <= 3)
     output_dir = "/root/projects/VDTest/data/CWE"
-    summarize_all_weakness_attributes(output_dir)
+    # summarize_all_weakness_attributes(output_dir)
+    # recap_all_weakness_attributes(output_dir)
+    update_all_weakness_attrs_with_recap_attrs(output_dir)
