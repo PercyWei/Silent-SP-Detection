@@ -706,8 +706,8 @@ def recap_all_weakness_attributes(output_dpath: str):
 
 
 def update_all_weakness_attrs_with_recap_attrs(output_dpath: str):
-    old_weakness_attrs_fpath = os.path.join(output_dpath, "all_weakness_attrs.json")
-    with open(old_weakness_attrs_fpath, "r") as f:
+    weakness_attrs_fpath = os.path.join(output_dpath, "all_weakness_attrs.json")
+    with open(weakness_attrs_fpath, "r") as f:
         all_weakness_attrs = json.load(f)
 
     recap_weakness_attrs_fpath = os.path.join(output_dpath, "recap_weakness_attrs.json")
@@ -715,7 +715,7 @@ def update_all_weakness_attrs_with_recap_attrs(output_dpath: str):
         recap_weakness_attrs = json.load(f)
 
     # Update
-    old_weakness_attrs_fpath = old_weakness_attrs_fpath.replace("all_weakness_attrs.json", "old_all_weakness_attrs.json")
+    old_weakness_attrs_fpath = weakness_attrs_fpath.replace("all_weakness_attrs.json", "old_all_weakness_attrs.json")
     with open(old_weakness_attrs_fpath, "w") as f:
         json.dump(all_weakness_attrs, f, indent=4)
 
@@ -723,7 +723,7 @@ def update_all_weakness_attrs_with_recap_attrs(output_dpath: str):
         if weakness_id in recap_weakness_attrs:
             all_weakness_attrs[weakness_id] = recap_weakness_attrs[weakness_id]
 
-    new_weakness_attrs_fpath = old_weakness_attrs_fpath
+    new_weakness_attrs_fpath = weakness_attrs_fpath
     with open(new_weakness_attrs_fpath, "w") as f:
         json.dump(all_weakness_attrs, f, indent=4)
 
