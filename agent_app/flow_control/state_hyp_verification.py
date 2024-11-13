@@ -14,24 +14,38 @@ from agent_app.flow_control.flow_util import (
     _ask_proxy_agent_and_print,
     _save_proxy_msg
 )
-from agent_app.flow_control.hypothesis import get_hyp_description, update_hyp_with_analysis
+from agent_app.flow_control.hypothesis import VulAnalysis, get_hyp_description, update_hyp_with_analysis
 
 
 def verify_current_hypothesis(
         print_desc: str,
+        loop_no: int,
         curr_proc_hyps: ProcHypothesis,
+        curr_proc_outs: ProcOutPaths,
         msg_thread: MessageThread,
         manager: FlowManager,
         print_callback: Callable[[dict], None] | None = None
-) -> str:
+) -> VulAnalysis | str:
     assert curr_proc_hyps.cur_hyp is not None
 
-    # ------------------ (1) Prepare the prompt ------------------ #
+    cur_hyp_desc = get_hyp_description(curr_proc_hyps.cur_hyp)
+    hyp_verify_prompt = ("Now you have enough context, please re-analyse your previous hypothesis."
+                         f"\nThe hypothesis is: {cur_hyp_desc}.")
+
     if curr_proc_hyps.cur_hyp.commit_type == CommitType.NonVulnerabilityPatch:
         # For hypothesis of non vulnerability patch
         task_prompt = ("For each modified file involved in the commit, please complete the following tasks:"
                        "\n1. Analyze the purpose of the each modification."
                        "\n2. Analyse the confidence scores (1-10) that each modification is a non-vulnerability patch.")
+
+        hyp_verify_prompt += "\n" + task_prompt
+
+        _add_usr_msg_and_print(hyp_verify_prompt, msg_thread, print_desc, print_callback)
+
+        response = _ask_actor_agent_and_print(msg_thread, print_desc, print_callback)
+
+        return response
+
     else:
         # For hypothesis of vulnerability patch
         full_cwe_id = curr_proc_hyps.cur_hyp.vulnerability_type
@@ -54,22 +68,35 @@ def verify_current_hypothesis(
                        f"\n - Trigger Action: {trigger_action_str}"
                        f"\n - Key Variables: {key_variables_str}."
                        "\n\nPlease refer to the above and complete the following tasks:"
-                       "\n1. Find the corresponding key variables in the collected code snippet."
-                       "\n2. Analyze the corresponding trigger action in the collected code snippet."
+                       "\n1. Find the corresponding key variables in the commit."
+                       "\n2. Analyze the corresponding trigger action in the commit."
                        "\n3. Summarize the fix method in this commit."
                        "\n4. Analyze how the fix method prevent the trigger action, i.e. establish the relationship between fix method, trigger action and key variables."
                        "\n\nNOTE: For a vulnerability, NOT all key variables will be present at the same time.")
 
-    cur_hyp_str = get_hyp_description(curr_proc_hyps.cur_hyp)
-    hyp_verify_prompt = ("Now you have enough context, please re-analyze the correctness of your previous hypothesis."
-                         f"\nYour hypothesis is: {cur_hyp_str}."
-                         f"\n{task_prompt}")
-    _add_usr_msg_and_print(hyp_verify_prompt, msg_thread, print_desc, print_callback)
+        hyp_verify_prompt += "\n" + task_prompt
+        _add_usr_msg_and_print(hyp_verify_prompt, msg_thread, print_desc, print_callback)
 
-    # ------------------ (2) Ask the LLM ------------------ #
-    analysis_text = _ask_actor_agent_and_print(msg_thread, print_desc, print_callback)
+        response = _ask_actor_agent_and_print(msg_thread, print_desc, print_callback)
 
-    return analysis_text
+        json_vul_analysis, _, proxy_msg_threads = _ask_proxy_agent_and_print(
+            ProxyTask.VUL_ANALYSIS, response, manager, print_desc, print_callback
+        )
+
+        proxy_conv_fpath = os.path.join(curr_proc_outs.proxy_dpath, f"loop_{loop_no}_vul_analysis.json")
+        _save_proxy_msg(proxy_msg_threads, proxy_conv_fpath)
+
+        vul_analysis_dict = json.loads(json_vul_analysis)
+
+        vul_analysis = VulAnalysis(
+            cwe_id=int(cwe_id),
+            key_variables=vul_analysis_dict['key_variables'],
+            trigger_action=vul_analysis_dict['trigger_action'],
+            fix_method=vul_analysis_dict['fix_method'],
+            relationship=vul_analysis_dict['relationship']
+        )
+
+        return vul_analysis
 
 
 def rescore_current_hypothesis(
@@ -114,14 +141,17 @@ def rescore_current_hypothesis(
 
 def update_current_hypothesis(
         conf_score: int,
-        analysis_text: str,
+        novul_analysis: str | None,
+        vul_analysis: VulAnalysis | None,
         curr_proc_hyps: ProcHypothesis
 ) -> None:
+    assert (curr_proc_hyps.cur_hyp is not None) ^ (novul_analysis is not None)
+
     # (1) Update the confidence score of the current hypothesis
     curr_proc_hyps.cur_hyp.confidence_score = conf_score
 
     # (2) Update the current hypothesis from unverified to verified
-    ver_hyp = update_hyp_with_analysis(curr_proc_hyps.cur_hyp, analysis_text)
+    ver_hyp = update_hyp_with_analysis(curr_proc_hyps.cur_hyp, novul_analysis, vul_analysis)
     curr_proc_hyps.verified.append(ver_hyp)
     curr_proc_hyps.cur_hyp = None
 
@@ -141,9 +171,11 @@ def run_in_hyp_verification_state(
     print_desc = f"process {process_no} | state {State.HYPOTHESIS_VERIFY_STATE} | loop {loop_no}"
 
     ## Step 1: Verify the hypothesis
-    analysis_text = verify_current_hypothesis(
+    analysis = verify_current_hypothesis(
         print_desc=print_desc,
+        loop_no=loop_no,
         curr_proc_hyps=curr_proc_hyps,
+        curr_proc_outs=curr_proc_outs,
         msg_thread=msg_thread,
         manager=manager,
         print_callback=print_callback
@@ -161,7 +193,11 @@ def run_in_hyp_verification_state(
     )
 
     ## Step 3: Update the hypothesis
-    update_current_hypothesis(conf_score, analysis_text, curr_proc_hyps)
+    if isinstance(analysis, VulAnalysis):
+        update_current_hypothesis(conf_score, None, analysis, curr_proc_hyps)
+    else:
+        assert isinstance(analysis, str)
+        update_current_hypothesis(conf_score, analysis, None, curr_proc_hyps)
 
     ## Step 4: Loop end
     # (1) Save the conversation of the current loop

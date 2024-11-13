@@ -9,6 +9,47 @@ from agent_app.data_structures import CommitType
 """DATACLASS"""
 
 
+@dataclass(frozen=True)
+class VulAnalysis:
+    """For recording analysis of the vulnerability."""
+    cwe_id: int
+    key_variables: List[Tuple[str, str]]
+    trigger_action: str
+    fix_method: str
+    relationship: str
+
+    def to_dict(self) -> dict:
+        return {
+            "key_variables": self.key_variables,
+            "trigger_action": self.trigger_action,
+            "fix_method": self.fix_method,
+            "relationship": self.relationship
+        }
+
+    def to_str(self) -> str:
+        # analysis = f"This commit may be related to the fix for vulnerability CWE-{self.cwe_id}. The analysis is as below.\n\n"
+        analysis = ""
+
+        # 1. Key variables
+        key_variables_str = "1. Key variables of the vulnerability: "
+        for name, desc in self.key_variables:
+            key_variables_str += f"\n- {name}: {desc}"
+
+        # 2. Trigger action
+        trigger_action_str = f"2. Trigger action of the vulnerability: {self.trigger_action}"
+
+        # 3. Fix method
+        fix_method_str = f"3. Fix method: {self.fix_method}"
+
+        # 4. Relationship
+        relationship_str = (f"4. Relationship between the fix method, trigger action and key variables: "
+                            f"\n{self.relationship}")
+
+        analysis += f"{key_variables_str}\n\n{trigger_action_str}\n\n{fix_method_str}\n\n{relationship_str}"
+
+        return analysis
+
+
 @dataclass
 class Hypothesis:
     """Dataclass to hold the basic hypothesis."""
@@ -24,25 +65,41 @@ class Hypothesis:
         }
 
     def to_str(self) -> str:
-        return (f"- commit type: {self.commit_type}"
-                f"\n- vulnerability type: {self.vulnerability_type}"
-                f"\n- confidence_score: {self.confidence_score}")
+        return (f"(1) commit type: {self.commit_type}"
+                f"\n(2) vulnerability type: {self.vulnerability_type}"
+                f"\n(3) confidence_score: {self.confidence_score}")
 
 
 @dataclass
 class VerifiedHypothesis(Hypothesis):
     """Dataclass to hold the verified hypothesis with its analysis."""
-    analysis: str
+    novul_analysis: str | None
+    vul_analysis: VulAnalysis | None
+
+    def is_valid(self) -> bool:
+        return (self.novul_analysis is not None) ^ (self.vul_analysis is not None)
 
     def to_dict(self) -> Dict:
-        info = super().to_dict()
-        info.update({"analysis": self.analysis})
-        return info
+        assert self.is_valid()
+
+        hyp_dict = super().to_dict()
+        if self.vul_analysis:
+            hyp_dict.update({"analysis": self.vul_analysis.to_dict()})
+        else:
+            hyp_dict.update({"analysis": self.novul_analysis})
+
+        return hyp_dict
 
     def to_str(self) -> str:
-        seq = super().to_str()
-        seq += f"\n- analysis: {self.analysis}"
-        return seq
+        assert self.is_valid()
+
+        hyp_desc = super().to_str()
+        if self.vul_analysis:
+            hyp_desc += "\n(4) analysis: "
+            for line in self.vul_analysis.to_str().split("\n"):
+                hyp_desc += "\n  " + line
+
+        return hyp_desc
 
 
 @dataclass
@@ -51,14 +108,14 @@ class FinalHypothesis(Hypothesis):
     count: int
 
     def to_dict(self) -> Dict:
-        info = super().to_dict()
-        info.update({"count": self.count})
-        return info
+        hyp_dict = super().to_dict()
+        hyp_dict.update({"count": self.count})
+        return hyp_dict
 
     def to_str(self) -> str:
-        seq = super().to_str()
-        seq += f"\n- count: {self.count}"
-        return seq
+        hyp_desc = super().to_str()
+        hyp_desc += f"\n(4) count: {self.count}"
+        return hyp_desc
 
 
 """UTIL"""
@@ -97,13 +154,21 @@ def build_basic_hyp(commit_type: str, vul_type: str, conf_score: int) -> Hypothe
     return Hypothesis(commit_type, vul_type, conf_score)
 
 
-def update_hyp_with_analysis(hyp: Hypothesis, analysis: str) -> VerifiedHypothesis:
+def update_hyp_with_analysis(
+        hyp: Hypothesis,
+        novul_analysis: str | None,
+        vul_analysis: VulAnalysis | None
+) -> VerifiedHypothesis:
+    assert (novul_analysis is not None) ^ (vul_analysis is not None)
+
     ver_hyp = VerifiedHypothesis(
         commit_type=hyp.commit_type,
         vulnerability_type=hyp.vulnerability_type,
         confidence_score=hyp.confidence_score,
-        analysis=analysis
+        novul_analysis=novul_analysis,
+        vul_analysis=vul_analysis
     )
+
     return ver_hyp
 
 

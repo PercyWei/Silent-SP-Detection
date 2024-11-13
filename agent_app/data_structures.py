@@ -337,6 +337,7 @@ class ProxyTask(str, Enum):
     HYP_CHECK = "HYP_CHECK"
     PATCH_EXTRACTION = "PATCH_EXTRACTION"
     CONTEXT_RETRIEVAL = "CONTEXT_RETRIEVAL"
+    VUL_ANALYSIS = "VUL_ANALYSIS"
     SCORE = "SCORE"
     RANK = "RANK"
 
@@ -351,6 +352,8 @@ class ProxyTask(str, Enum):
             return "patch_code"
         elif self == ProxyTask.CONTEXT_RETRIEVAL:
             return "search APIs"
+        elif self == ProxyTask.VUL_ANALYSIS:
+            return "vulnerability analysis"
         elif self == ProxyTask.SCORE:
             return "confidence score"
         elif self == ProxyTask.RANK:

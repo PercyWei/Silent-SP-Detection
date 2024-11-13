@@ -196,6 +196,31 @@ Now based on the given context, write a JSON dict that conforms to the APICalls 
         raise LanguageNotSupportedError(lang)
 
 
+def _get_vul_analysis_prompt() -> str:
+    return """You are a helpful assistant to convert text containing the following information into json format.
+1. What are the corresponding key variables of the given vulnerability in the collected code snippets?
+2. What is the corresponding trigger action of the given vulnerability in the collected code snippets?
+3. What is the fix method in the commit?
+4. How the fix method prevent the trigger action?
+
+Extract the key variables for question 1. For each key variable extracted, it should contain two elements, the name of the key variable and the specific form / description of the key variable in the code snippet.
+Extract the trigger action for question 2.
+Extract the fix method for question 3.
+Extract the relationship between the fix method, trigger action and key variables for question 4.
+
+type KeyVariableName = string;
+
+interface Analysis {
+    key_variables: [KeyVariableName, string][]; 
+    trigger_action: string;
+    fix_method: string;
+    relationship: string;
+};
+
+Now based on the given context, write a JSON dict that conforms to the Analysis schema.
+"""
+
+
 def _get_score_prompt() -> str:
     return """You are a helpful assistant to convert text containing the following information into json format.
 1. What confidence score is set for the current hypothesis?
@@ -239,6 +264,8 @@ def get_task_prompt(lang: Literal['Python', 'Java'], task: ProxyTask) -> str:
         return _get_patch_extraction_prompt(lang)
     elif task == ProxyTask.CONTEXT_RETRIEVAL:
         return _get_context_retrieval_prompt(lang)
+    elif task == ProxyTask.VUL_ANALYSIS:
+        return _get_vul_analysis_prompt()
     elif task == ProxyTask.SCORE:
         return _get_score_prompt()
     elif task == ProxyTask.RANK:
@@ -485,6 +512,29 @@ def is_valid_response(lang: Literal['Python', 'Java'], data: List | Dict, task: 
             #       in mismatched parameters, while repeated queries to get the right format api tended to result
             #       in too many useless conversations, so we do not check the parameters here, but provide specific
             #       feedback later while calling the api.
+
+    elif task == ProxyTask.VUL_ANALYSIS:
+        """
+        {
+            "key_variables": [
+                ["name_1", "description_1"],
+                ["name_2", "description_2"],
+                ...
+            ],  
+            "trigger_action": str,
+            "fix_method": str,
+            "relationship": str
+        }
+        """
+        for key in ["key_variables", "trigger_action", "fix_method", "relationship"]:
+            if key not in data:
+                simp_reason = verb_reason = f"Missing '{key}' key"
+                return False, simp_reason, verb_reason
+
+        for key_variable in data["key_variables"]:
+            if not isinstance(key_variable, list) or len(key_variable) != 2:
+                simp_reason = verb_reason = f"Each key variable should be a list containing two elements, the name and the specific form."
+                return False, simp_reason, verb_reason
 
     elif task == ProxyTask.SCORE:
         """
