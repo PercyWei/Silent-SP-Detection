@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 import torch
 
 from typing import *
+
 from tqdm import tqdm
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -1681,37 +1682,9 @@ def build_key_variable_knowledge_graph_by_token_combination_frequency(token_freq
         json.dump(comb_token_properties, f, indent=4)
 
 
-if __name__ == '__main__':
-    save_dir = "/root/projects/VDTest/data/CWE/VIEW_1000"
-    # save_dir = "/root/projects/VDTest/data/CWE/VIEW_1003"
-
-    ## Build CWE entries file
-    csv_file = "/root/projects/VDTest/data/CWE/1000.csv"
-    # csv_file = "/root/projects/VDTest/data/CWE/1003.csv"
-    # read_cwe_csv(csv_file, save_dir)
-
-    ## Refine CWE tree
-    cwe_tree_file = os.path.join(save_dir, "CWE_tree.json")
-    # refine_cwe_tree_with_paths(cwe_tree_file)
-    # check_cwe_paths_and_print(cwe_tree_file)
-
-    ## Extract CWE ids in different depths
-    # find_diff_depth_cwe(cwe_tree_file, save_dir)
-
-    ## Summarize weakness attributes (depth <= 3)
+def main_build_key_variable_knowledge_graph_by_token_combination_frequency():
     output_dir = "/root/projects/VDTest/data/CWE"
-    # summarize_all_weakness_attributes(output_dir)
-    # recap_all_weakness_attributes(output_dir)
-    # update_all_weakness_attrs_with_recap_attrs(output_dir)
 
-    # weakness_attrs_files = [
-    #     "/root/projects/VDTest/data/CWE/weakness_attributes/all_weakness_attrs.json",
-    #     "/root/projects/VDTest/data/CWE/weakness_attributes/recap_weakness_attrs.json"
-    # ]
-    # for weakness_attrs_file in weakness_attrs_files:
-    #     adjust_key_variable_format_of_weaknesses(weakness_attrs_file)
-
-    # ------------------------- Build Key Variable Knowledge Graph ------------------------- #
     ## Approach 1: ask LLM
     # TODO: Deprecated!
     graph_dir = os.path.join(output_dir, "key_var_graphs")
@@ -1766,3 +1739,400 @@ if __name__ == '__main__':
     l2_token_freq_v3_file = os.path.join(freqs_dir, "l2_token_freqs_v3.json")
     for v3_file in [l2_token_freq_v3_file]:
         build_key_variable_knowledge_graph_by_token_combination_frequency(v3_file)
+
+
+"""COMMON PROPERTIES OF KEY VARIABLES"""
+
+
+COMMON_PROPERTIES_SUMMARY_SYSTEM_PROMPT = """I want you to act as a vulnerability analysis expert and analyse vulnerability knowledge based on the above information.
+For each weakness, we have summarized its two important attributes:
+1. Trigger Action: Direct behaviour leading to vulnerability.
+2. Key Variables: Conditions, states or parameters directly related to the triggered action.
+
+- Guidelines:
+1. Child weaknesses delineate more specific characteristics in relation to their parent weakness.
+Consequently, although child weaknesses under the same parent may address different specific scenarios, they inherently share certain common properties due to their lineage. 
+These common properties are ultimately reflected in the key variables that they encompass, highlighting the interconnectedness of vulnerabilities within the classification framework.
+2. We refer to the common properties mentioned above as generic key variables (in other words, parent key variables), and the key variables that have these common properties are child key variables.
+
+- Task: Given a parent weakness and its child weaknesses, please identify and summarize the generic key variables.
+
+- Request: The summarized generic key variables should encapsulate common attributes shared among the child weaknesses, reflecting the foundational characteristics underlying the parent weakness.
+
+- Note:
+1. Each generic key variable is not required to encompass all of the child weaknesses.
+2. Each generic key variable is not required to include every key variable from the child weaknesses.
+3. DO NOT COPY key variables of child CWEs, you need to abstract them.
+"""
+
+
+COMMON_PROPERTIES_SUMMARY_FORMAT_PROMPT = """Provide your answer in JSON structure and consider the following TypeScript Interface for the JSON schema:
+
+For each summarised generic key variable (in other words, parent key variable), provide its name and child key variables.
+Here, child key variable refer to the key variable belong to the child weaknesses.
+
+type ChildKeyVariable = string;
+
+interface ParentKeyVariable = {
+    name: string;
+    children: ChildKeyVariable[];
+};
+
+interface ParentKeyVariables {
+    key_variables: ParentKeyVariable[];
+};
+
+Now based on the given context, write a JSON dict that conforms to the ParentKeyVariables schema.
+"""
+
+
+def summarize_common_properties_for_d3_weakness_key_variables(weakness_attrs_dpath: str):
+
+    ## (1) Prepare GPT
+    api_key = os.getenv("OPENAI_KEY", None)
+    api_base = os.getenv("OPENAI_API_BASE", None)
+    assert api_key is not None and api_base is not None
+    client = OpenAI(api_key=api_key, base_url=api_base)
+
+    ## (2) Main
+    view_1000_tree_fpath = "/root/projects/VDTest/data/CWE/VIEW_1000/CWE_tree.json"
+    with open(view_1000_tree_fpath, "r") as f:
+        cwe_tree = json.load(f)
+
+    view_1000_entries_fpath = "/root/projects/VDTest/data/CWE/VIEW_1000/CWE_entries.json"
+    with open(view_1000_entries_fpath, "r") as f:
+        all_weakness = json.load(f)
+    all_weakness_dict = {data["CWE-ID"]: data for data in all_weakness}
+
+    weakness_attrs_fpath = "/root/projects/VDTest/data/CWE/weakness_attributes/all_weakness_attrs.json"
+    with open(weakness_attrs_fpath, "r") as f:
+        all_weakness_attrs = json.load(f)
+
+    weakness_parent_key_variables = {}
+
+    for weakness_id, attrs in all_weakness_attrs.items():
+        if any(len(cwe_path) == 2 for cwe_path in cwe_tree[weakness_id]["cwe_paths"]):
+            weakness_name = all_weakness_dict[weakness_id]["Name"]
+            basic_desc = all_weakness_dict[weakness_id]["Description"]
+            extended_desc = all_weakness_dict[weakness_id]["Extended Description"]
+
+            # 1. Basic information
+            usr_msg = (f"The parent weakness is CWE-{weakness_id}: {weakness_name}."
+                       f"\n- Description: {basic_desc}")
+
+            # 2. Extended description
+            if extended_desc != "":
+                usr_msg += f"\n- Extended Description: {extended_desc}"
+
+            # 3. Children information
+
+            child_key_variables = []
+            children_desc = ""
+
+            for i, child in enumerate(cwe_tree[weakness_id]["children"]):
+                child_name = all_weakness_dict[child]["Name"]
+                child_desc = all_weakness_dict[child]["Description"]
+                trigger_action = all_weakness_attrs[child]["trigger_action"]
+                key_variables_str = ', '.join(all_weakness_attrs[child]["key_variables"])
+
+                child_key_variables.extend(all_weakness_attrs[child]["key_variables"])
+                children_desc += (f"\n\nChild {i + 1}: CWE-{child} ({child_name})"
+                                  f"\n- Description: {child_desc}"
+                                  f"\n- Trigger Action: {trigger_action}"
+                                  f"\n- Key Variables: {key_variables_str}")
+
+            usr_msg += ("\n\nIt has the following child weaknesses:"
+                        f"{children_desc}")
+
+            # 4. Format
+            usr_msg += f"\n\n{COMMON_PROPERTIES_SUMMARY_FORMAT_PROMPT}"
+
+            messages = [
+                {
+                    "role": "system",
+                    "content": WEAKNESS_ATTRS_SUMMARY_SYSTEM_PROMPT
+                },
+                {
+                    "role": "user",
+                    "content": usr_msg
+                }
+            ]
+
+            response = client.chat.completions.create(
+                model="gpt-4o-2024-05-13",
+                messages=messages,
+                temperature=0.2,
+                response_format=ResponseFormat(type="json_object")
+            ).choices[0].message
+
+            if response.content is None:
+                response = ""
+            else:
+                response = response.content
+
+            json_response = json.loads(response)
+
+            curr_parent_key_variables = {}
+
+            if isinstance(json_response, dict) and "key_variables" in json_response and isinstance(json_response["key_variables"], list):
+                for key_variable in json_response["key_variables"]:
+                    name = key_variable.get("name", None)
+                    children = key_variable.get("children", [])
+                    if name and children:
+                        curr_parent_key_variables[name] = children
+
+            if curr_parent_key_variables:
+                weakness_parent_key_variables[weakness_id] = curr_parent_key_variables
+
+    parent_key_variables_fpath = os.path.join(weakness_attrs_dpath, "d2_weakness_key_variables.json")
+    with open(parent_key_variables_fpath, "w") as f:
+        json.dump(weakness_parent_key_variables, f, indent=4)
+
+
+def build_init_key_variable_tree(weakness_attrs_dpath: str):
+
+    d2_weakness_key_vars_fpath = os.path.join(weakness_attrs_dpath, "d2_weakness_key_variables.json")
+    with open(d2_weakness_key_vars_fpath, "r") as f:
+        weakness_key_vars = json.load(f)
+
+    key_var_tree: Dict[str, List[str]]= {}
+
+    for _, key_vars in weakness_key_vars.items():
+        for parent_key_var, child_key_vars in key_vars.items():
+            child_key_vars = list(set(child_key_vars))
+            if parent_key_var in child_key_vars:
+                child_key_vars.remove(parent_key_var)
+
+            if parent_key_var not in key_var_tree:
+                key_var_tree[parent_key_var] = child_key_vars
+            else:
+                key_var_tree[parent_key_var].extend(child_key_vars)
+                key_var_tree[parent_key_var] = list(set(key_var_tree[parent_key_var]))
+
+    key_var_tree_fpath = os.path.join(weakness_attrs_dpath, "key_variables_tree.json")
+    with open(key_var_tree_fpath, "w") as f:
+        json.dump(key_var_tree, f, indent=4)
+
+
+def jaccard_similarity(phrase1: str, phrase2: str) -> float:
+    set1 = set(word_tokenize(phrase1))
+    set2 = set(word_tokenize(phrase2))
+
+    insec = set1.intersection(set2)
+    union = set1.union(set2)
+
+    if len(union) == 0:
+        return 0.0
+    return len(insec) / len(union)
+
+
+def find_similar_pairs_in_list(phrase_list: List[str], threshold: float) -> List[Tuple[str, str, float]]:
+    similar_pairs = []
+
+    n = len(phrase_list)
+    for i in range(n):
+        for j in range(i + 1, n):
+            similarity = jaccard_similarity(phrase_list[i], phrase_list[j])
+            if similarity > threshold:
+                similar_pairs.append((phrase_list[i], phrase_list[j], similarity))
+
+    return similar_pairs
+
+
+def find_similar_key_variable_in_tree(weakness_attrs_dpath: str):
+    """Target: grammar + semantics similar key variables"""
+    # TODO: Deprecated!
+    key_var_tree_fpath = os.path.join(weakness_attrs_dpath, "key_variables_tree.json")
+    with open(key_var_tree_fpath, "r") as f:
+        key_var_tree = json.load(f)
+
+    similar_key_vars: List[Tuple[str, str, float]] = []
+
+    threshold = 0.5
+    parent_key_vars = []
+    for parent_key_var, child_key_vars in key_var_tree.items():
+        parent_key_vars.append(parent_key_var)
+
+        cur_similar_child_key_vars = find_similar_pairs_in_list(child_key_vars, threshold)
+        similar_key_vars.extend(cur_similar_child_key_vars)
+
+    similar_parent_key_vars = find_similar_pairs_in_list(parent_key_vars, threshold)
+    similar_key_vars.extend(similar_parent_key_vars)
+
+    similar_key_vars_fpath = os.path.join(weakness_attrs_dpath, "similar_key_variables.json")
+    with open(similar_key_vars_fpath, "w") as f:
+        json.dump(similar_key_vars, f, indent=4)
+
+
+KEY_VAR_NORMALISATION_SYSTEM_PROMPT = """I want you to act as a vulnerability analysis expert and analyse vulnerability knowledge based on the above information.
+For each weakness, we have summarized its two important attributes:
+1. Trigger Action: Direct behaviour leading to vulnerability.
+2. Key Variables: Conditions, states or parameters directly related to the triggered action.
+
+Your task is as follows:
+Given a parent key variable and its child key variables, please standardise the wording of the child key variables so that there are no more synonymous key variables.
+Example 1: for 'input data' and 'input value', use 'input data' consistently.
+Example 2: for 'user input data' and 'input data', do not modify 'user input data' to 'input data'. Since 'user input data' and 'input data' do not cover the same scope, while 'user input data' carries the characteristic of user input.
+
+NOTE: Do not copy directly from any of the examples or descriptions I have given.
+"""
+
+
+KEY_VAR_NORMALISATION_FORMAT_PROMPT = """Provide your answer in JSON structure and consider the following TypeScript Interface for the JSON schema:
+
+For each key variable that needs to have its name modified, give the name before and after the modification.
+
+interface ModifiedKeyVariable = {
+    old_name: string;
+    new_name: string;
+};
+
+interface ModifiedKeyVariables {
+    key_variables: ModifiedKeyVariable[];
+};
+
+Now based on the given context, write a JSON dict that conforms to the ModifiedKeyVariables schema.
+"""
+
+
+def normalise_key_variable_in_tree(weakness_attrs_dpath: str):
+    # TODO: Deprecated!
+
+    ## (1) Prepare GPT
+    api_key = os.getenv("OPENAI_KEY", None)
+    api_base = os.getenv("OPENAI_API_BASE", None)
+    assert api_key is not None and api_base is not None
+    client = OpenAI(api_key=api_key, base_url=api_base)
+
+    ## (2) Main
+    key_var_tree_fpath = os.path.join(weakness_attrs_dpath, "key_variables_tree.json")
+    with open(key_var_tree_fpath, "r") as f:
+        key_var_tree = json.load(f)
+
+    modified_key_vars = []
+
+    with tqdm(total=len(key_var_tree)) as pb:
+        for parent_key_var, child_key_vars in key_var_tree.items():
+            if len(child_key_vars) > 1:
+                usr_msg = (f"The parent key variable is '{parent_key_var}', and its child key variables are as follows:"
+                           f"\n{child_key_vars}"
+                           f"\n\n{KEY_VAR_NORMALISATION_FORMAT_PROMPT}")
+
+                messages = [
+                    {
+                        "role": "system",
+                        "content": KEY_VAR_NORMALISATION_SYSTEM_PROMPT
+                    },
+                    {
+                        "role": "user",
+                        "content": usr_msg
+                    }
+                ]
+
+                response = client.chat.completions.create(
+                    model="gpt-4o-2024-05-13",
+                    messages=messages,
+                    temperature=0.2,
+                    response_format=ResponseFormat(type="json_object")
+                ).choices[0].message
+
+                if response.content is None:
+                    response = ""
+                else:
+                    response = response.content
+
+                json_response = json.loads(response)
+
+                if isinstance(json_response, dict) and "key_variables" in json_response and isinstance(json_response["key_variables"], list):
+                    for modified_key_var in json_response["key_variables"]:
+                        old_name = modified_key_var.get("old_name", None)
+                        new_name = modified_key_var.get("new_name", None)
+                        if old_name and new_name and old_name in [parent_key_var] + child_key_vars:
+                            modified_key_vars.append((old_name, new_name))
+
+            pb.update(1)
+
+    modified_key_vars_fpath = os.path.join(weakness_attrs_dpath, "modified_key_variables.json")
+    with open(modified_key_vars_fpath, "w") as f:
+        json.dump(modified_key_vars, f, indent=4)
+
+
+def normalise_key_variable_with_plural_token_dict(key_var: str, plural_token_dict: Dict[str, str]) -> str:
+    new_tokens = []
+    tokens = key_var.split()
+
+    for token in tokens:
+        if token in plural_token_dict:
+            new_tokens.append(plural_token_dict[token])
+        else:
+            new_tokens.append(token)
+
+    return ' '.join(new_tokens)
+
+
+def normalise_key_variable_in_v1_tree_with_plural_token_dict(weakness_attrs_dpath: str):
+    plural_token_dict_file = "/root/projects/VDTest/data/CWE/key_var_frequencies/plural_token_dict.json"
+    with open(plural_token_dict_file, "r") as f:
+        plural_token_dict = json.load(f)
+
+    key_var_v1_tree_fpath = os.path.join(weakness_attrs_dpath, "key_variable_tree_v1.json")
+    with open(key_var_v1_tree_fpath, 'r') as f:
+        key_var_tree = json.load(f)
+
+    new_key_var_tree = {}
+    for parent_key_var, children in key_var_tree.items():
+        new_parent_key_var = normalise_key_variable_with_plural_token_dict(parent_key_var, plural_token_dict)
+        new_children = [
+            normalise_key_variable_with_plural_token_dict(child, plural_token_dict)
+            for child in children
+        ]
+        new_children = list(set(new_children))
+        new_key_var_tree[new_parent_key_var] = new_children
+
+    key_var_v2_tree_fpath = os.path.join(weakness_attrs_dpath, "key_variable_tree_v2.json")
+    with open(key_var_v2_tree_fpath, 'w') as f:
+        json.dump(new_key_var_tree, f, indent=4)
+
+
+if __name__ == '__main__':
+    save_dir = "/root/projects/VDTest/data/CWE/VIEW_1000"
+    # save_dir = "/root/projects/VDTest/data/CWE/VIEW_1003"
+
+    ## Build CWE entries file
+    csv_file = "/root/projects/VDTest/data/CWE/1000.csv"
+    # csv_file = "/root/projects/VDTest/data/CWE/1003.csv"
+    # read_cwe_csv(csv_file, save_dir)
+
+    ## Refine CWE tree
+    cwe_tree_file = os.path.join(save_dir, "CWE_tree.json")
+    # refine_cwe_tree_with_paths(cwe_tree_file)
+    # check_cwe_paths_and_print(cwe_tree_file)
+
+    ## Extract CWE ids in different depths
+    # find_diff_depth_cwe(cwe_tree_file, save_dir)
+
+    ## Summarize weakness attributes (depth <= 3)
+    # output_dir = "/root/projects/VDTest/data/CWE"
+    # summarize_all_weakness_attributes(output_dir)
+    # recap_all_weakness_attributes(output_dir)
+    # update_all_weakness_attrs_with_recap_attrs(output_dir)
+
+    # weakness_attrs_files = [
+    #     "/root/projects/VDTest/data/CWE/weakness_attributes/all_weakness_attrs.json",
+    #     "/root/projects/VDTest/data/CWE/weakness_attributes/recap_weakness_attrs.json"
+    # ]
+    # for weakness_attrs_file in weakness_attrs_files:
+    #     adjust_key_variable_format_of_weaknesses(weakness_attrs_file)
+
+    # ------------------------- Build Key Variable Knowledge Graph ------------------------- #
+    # main_build_key_variable_knowledge_graph_by_token_combination_frequency()
+
+    # ------------------------- Summarize the Common Properties of Key Variables ------------------------- #
+    weakness_attrs_dir = "/root/projects/VDTest/data/CWE/weakness_attributes"
+    # summarize_common_properties_for_d3_weakness_key_variables(weakness_attrs_dir)
+    # build_init_key_variable_tree(weakness_attrs_dir)
+
+    # normalise_key_variable_in_v1_tree_with_plural_token_dict(weakness_attrs_dir)
+
+
+
