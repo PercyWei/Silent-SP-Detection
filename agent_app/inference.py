@@ -6,7 +6,6 @@ from typing import *
 from agent_app import globals, log
 from agent_app.data_structures import MessageThread
 from agent_app.api.manage import FlowManager
-from agent_app.flow_control.flow_recording import ProcOutPaths
 from agent_app.flow_control.hypothesis import FinalHypothesis
 from agent_app.flow_control.state_start import run_in_start_state
 from agent_app.flow_control.state_reflexion import run_in_reflexion_state
@@ -32,34 +31,34 @@ def start_conversation_round_stratified(
     # STEP 1: Perform identification processes #
     ############################################
 
-    # process name -> {status name -> status data}
-    all_proc_status: Dict[str, Dict[str, Dict]] = {}
-
     for proc_no in range(1, globals.complete_process_limit + 1):
         log.print_banner(f"COMPLETE PROCESS {proc_no}")
 
         # ------------------------------------ 1.1 Preparation ------------------------------------ #
         curr_proc_name = f"process_{proc_no}"
 
+        ## 1. Output paths of current process
         # Root
-        curr_proc_dpath = make_hie_dirs(output_dpath, curr_proc_name)
+        cur_proc_dpath = make_hie_dirs(output_dpath, curr_proc_name)
         # Dirs
-        curr_proc_hyp_fpath = make_hie_dirs(curr_proc_dpath, f"hypothesis")
-        curr_proc_proxy_dpath = make_hie_dirs(curr_proc_dpath, f"proxy_agent")
-        curr_proc_tool_call_dpath = make_hie_dirs(curr_proc_dpath, "tool_calls")
+        cur_proc_hyp_dpath = make_hie_dirs(cur_proc_dpath, f"hypothesis")
+        cur_proc_proxy_dpath = make_hie_dirs(cur_proc_dpath, f"proxy_agent")
+        cur_proc_tool_call_dpath = make_hie_dirs(cur_proc_dpath, "tool_calls")
 
-        curr_proc_outs = ProcOutPaths(
-            root=curr_proc_dpath,
-            hyp_dpath=curr_proc_hyp_fpath,
-            proxy_dpath=curr_proc_proxy_dpath,
-            tool_call_dpath=curr_proc_tool_call_dpath,
+        manager.set_process_output_paths(
+            cur_proc_root=cur_proc_dpath,
+            cur_proc_hyp_dpath=cur_proc_hyp_dpath,
+            cur_proc_proxy_dpath=cur_proc_proxy_dpath,
+            cur_proc_tool_call_dpath=cur_proc_tool_call_dpath
         )
 
-        # Process status count
-        manager.reset_process_status_records()
-        all_proc_status[curr_proc_name] = {}
+        ## 2. All hypothesis of current process
+        manager.reset_process_all_hypothesis()
 
-        # Message thread
+        ## 3. Status of current process
+        manager.reset_process_status_records()
+
+        ## 4. Message thread
         msg_thread = MessageThread()
 
         # ------------------------------------ 1.2 Workflow ------------------------------------ #
@@ -68,9 +67,9 @@ def start_conversation_round_stratified(
         # - Complete process: start -> loop -> ( reflexion -> loop ) -> ... -> ( reflexion -> loop ) -> end
 
         ########## Start State ##########
-        proc_all_hyp = run_in_start_state(proc_no, curr_proc_outs, msg_thread, manager, print_callback)
+        cont_flag = run_in_start_state(proc_no, msg_thread, manager, print_callback)
 
-        if proc_all_hyp is None:
+        if not cont_flag:
             continue
 
         loop_no = 0
@@ -78,44 +77,39 @@ def start_conversation_round_stratified(
             loop_no += 1
 
             ########## (1) Reflexion State ##########
-            run_in_reflexion_state(proc_no, loop_no, proc_all_hyp, curr_proc_outs, msg_thread, manager, print_callback)
+            run_in_reflexion_state(proc_no, loop_no, msg_thread, manager, print_callback)
 
             ########## (2) Hypothesis Check State ##########
-            continue_loop = run_in_hyp_checking_state(
-                proc_no, loop_no, proc_all_hyp, curr_proc_outs, msg_thread, manager, print_callback)
+            cont_flag = run_in_hyp_checking_state(proc_no, loop_no, msg_thread, manager, print_callback)
 
-            if not continue_loop:
+            if not cont_flag:
                 break
 
             ########## (3) Context Retrieval State ##########
-            run_in_context_retrieval_state(
-                proc_no, loop_no, proc_all_hyp, curr_proc_outs, msg_thread, manager, print_callback)
+            run_in_context_retrieval_state(proc_no, loop_no, msg_thread, manager, print_callback)
 
             ########## (4) Hypothesis Verify State ##########
-            continue_loop = run_in_hyp_verification_state(
-                proc_no, loop_no, proc_all_hyp, curr_proc_outs, msg_thread, manager, print_callback)
+            cont_flag = run_in_hyp_verification_state(proc_no, loop_no, msg_thread, manager, print_callback)
 
-            if not continue_loop:
+            if not cont_flag:
                 break
 
         ########## End State ##########
-        finish = run_in_end_state(proc_no, proc_all_hyp, curr_proc_outs, msg_thread, manager, print_callback)
+        finish = run_in_end_state(proc_no, msg_thread, manager, print_callback)
 
         # ------------------------------------ 1.3 Update and save ------------------------------------ #
         # Update action status count
-        manager.action_status_records.update_finish_status(success_flag=finish)
+        manager.cur_proc_action_status.update_finish_status(success_flag=finish)
 
-        # Save
-        all_proc_status[curr_proc_name] = {
-            "Action Status Count": manager.action_status_records.to_dict(),
-            "Search Status Count": manager.search_status_records.to_dict()
-        }
+        # Save all status of current process
+        manager.save_current_process_all_status(curr_proc_name)
 
     #####################################
     # STEP 2: Vote for the final result #
     #####################################
 
-    valid_proc_dpaths = [os.path.join(output_dpath, proc_name) for proc_name, status in all_proc_status.items() if status]
+    valid_proc_dpaths = [os.path.join(output_dpath, proc_name)
+                         for proc_name, status in manager.flow_all_status.items() if status]
 
     all_ver_hyp_dicts: List[Dict] = []
     for proc_dpath in valid_proc_dpaths:
@@ -132,7 +126,7 @@ def start_conversation_round_stratified(
 
     post_output_dpath = make_hie_dirs(output_dpath, "post_process")
     # FIXME: proc_all_hyp 用的是最后一次 process 的，而不是所有 process 的，但是无伤大雅
-    final_hyps = run_in_post_process_state(final_hyps, proc_all_hyp, post_output_dpath, manager, print_callback)
+    final_hyps = run_in_post_process_state(final_hyps, manager.cur_proc_all_hyps, post_output_dpath, manager, print_callback)
 
     final_res_fpath = os.path.join(output_dpath, "result.json")
     with open(final_res_fpath, "w") as f:
@@ -140,7 +134,7 @@ def start_conversation_round_stratified(
 
     log.log_and_print("Ending workflow.")
 
-    return all_proc_status
+    return manager.flow_all_status
 
 
 def run_one_task(

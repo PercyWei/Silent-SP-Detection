@@ -74,7 +74,7 @@ state_retry_limit: int = 3
 state_round_limit: int = 10
 
 # Hypothesis to be verified
-hypothesis_limit: int = 3
+hypothesis_limit: int = 5
 
 # Timeout for test cmd execution, currently set to 5 min
 test_exec_timeout: int = 300

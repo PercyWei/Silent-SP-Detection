@@ -7,7 +7,7 @@ from agent_app import globals, log
 from agent_app.data_structures import CommitType, ProxyTask, MessageThread
 from agent_app.api.manage import FlowManager
 from agent_app.CWE.cwe_util import WeaknessAttrs
-from agent_app.flow_control.flow_recording import State, ProcOutPaths, ProcHypothesis
+from agent_app.flow_control.flow_recording import State, ProcHypothesis
 from agent_app.flow_control.flow_util import (
     _add_usr_msg_and_print,
     _ask_actor_agent_and_print,
@@ -20,19 +20,17 @@ from agent_app.flow_control.hypothesis import VulAnalysis, get_hyp_description, 
 def verify_current_hypothesis(
         print_desc: str,
         loop_no: int,
-        curr_proc_hyps: ProcHypothesis,
-        curr_proc_outs: ProcOutPaths,
         msg_thread: MessageThread,
         manager: FlowManager,
         print_callback: Callable[[dict], None] | None = None
 ) -> VulAnalysis | str:
-    assert curr_proc_hyps.cur_hyp is not None
+    assert manager.cur_proc_all_hyps.cur_hyp is not None
 
-    cur_hyp_desc = get_hyp_description(curr_proc_hyps.cur_hyp)
+    cur_hyp_desc = get_hyp_description(manager.cur_proc_all_hyps.cur_hyp)
     hyp_verify_prompt = ("Now you have enough context, please re-analyse your previous hypothesis."
                          f"\nThe hypothesis is: {cur_hyp_desc}.")
 
-    if curr_proc_hyps.cur_hyp.commit_type == CommitType.NonVulnerabilityPatch:
+    if manager.cur_proc_all_hyps.cur_hyp.commit_type == CommitType.NonVulnerabilityPatch:
         # For hypothesis of non vulnerability patch
         task_prompt = ("For each modified file involved in the commit, please complete the following tasks:"
                        "\n1. Analyze the purpose of the each modification."
@@ -48,7 +46,7 @@ def verify_current_hypothesis(
 
     else:
         # For hypothesis of vulnerability patch
-        full_cwe_id = curr_proc_hyps.cur_hyp.vulnerability_type
+        full_cwe_id = manager.cur_proc_all_hyps.cur_hyp.vulnerability_type
         cwe_id = full_cwe_id.split('-')[-1]
 
         # 1. CWE basic description
@@ -83,7 +81,7 @@ def verify_current_hypothesis(
             ProxyTask.VUL_ANALYSIS, response, manager, print_desc, print_callback
         )
 
-        proxy_conv_fpath = os.path.join(curr_proc_outs.proxy_dpath, f"loop_{loop_no}_vul_analysis.json")
+        proxy_conv_fpath = os.path.join(manager.cur_proc_outs.proxy_dpath, f"loop_{loop_no}_vul_analysis.json")
         _save_proxy_msg(proxy_msg_threads, proxy_conv_fpath)
 
         vul_analysis_dict = json.loads(json_vul_analysis)
@@ -102,14 +100,12 @@ def verify_current_hypothesis(
 def rescore_current_hypothesis(
         print_desc: str,
         loop_no: int,
-        curr_proc_hyps: ProcHypothesis,
-        curr_proc_outs: ProcOutPaths,
         msg_thread: MessageThread,
         manager: FlowManager,
         print_callback: Callable[[dict], None] | None = None
 ) -> int:
     # ------------------ 1. Prepare the prompt ------------------ #
-    score_prompt = f"Based on the above analysis, please give the confidence score for this hypothesis (0-10). The previous score was {curr_proc_hyps.cur_hyp.confidence_score}/10."
+    score_prompt = f"Based on the above analysis, please give the confidence score for this hypothesis (0-10). The previous score was {manager.cur_proc_all_hyps.cur_hyp.confidence_score}/10."
     _add_usr_msg_and_print(score_prompt, msg_thread, print_desc, print_callback)
 
     # ------------------ 2. Ask the LLM ------------------ #
@@ -121,7 +117,7 @@ def rescore_current_hypothesis(
             ProxyTask.SCORE, response, manager, print_desc, print_callback
         )
 
-        proxy_conv_fpath = os.path.join(curr_proc_outs.proxy_dpath, f"loop_{loop_no}_score_update.json")
+        proxy_conv_fpath = os.path.join(manager.cur_proc_outs.proxy_dpath, f"loop_{loop_no}_score_update.json")
         _save_proxy_msg(proxy_msg_threads, proxy_conv_fpath)
 
         if json_score is None and retry < globals.state_retry_limit:
@@ -143,17 +139,17 @@ def update_current_hypothesis(
         conf_score: int,
         novul_analysis: str | None,
         vul_analysis: VulAnalysis | None,
-        curr_proc_hyps: ProcHypothesis
+        manager: FlowManager
 ) -> None:
-    assert (curr_proc_hyps.cur_hyp is not None) ^ (novul_analysis is not None)
+    assert (manager.cur_proc_all_hyps.cur_hyp is not None) ^ (novul_analysis is not None)
 
     # (1) Update the confidence score of the current hypothesis
-    curr_proc_hyps.cur_hyp.confidence_score = conf_score
+    manager.cur_proc_all_hyps.cur_hyp.confidence_score = conf_score
 
     # (2) Update the current hypothesis from unverified to verified
-    ver_hyp = update_hyp_with_analysis(curr_proc_hyps.cur_hyp, novul_analysis, vul_analysis)
-    curr_proc_hyps.verified.append(ver_hyp)
-    curr_proc_hyps.cur_hyp = None
+    ver_hyp = update_hyp_with_analysis(manager.cur_proc_all_hyps.cur_hyp, novul_analysis, vul_analysis)
+    manager.cur_proc_all_hyps.verified.append(ver_hyp)
+    manager.cur_proc_all_hyps.cur_hyp = None
 
 
 """MAIN STATE"""
@@ -162,8 +158,6 @@ def update_current_hypothesis(
 def run_in_hyp_verification_state(
         process_no: int,
         loop_no: int,
-        curr_proc_hyps: ProcHypothesis,
-        curr_proc_outs: ProcOutPaths,
         msg_thread: MessageThread,
         manager: FlowManager,
         print_callback: Callable[[dict], None] | None = None
@@ -174,8 +168,6 @@ def run_in_hyp_verification_state(
     analysis = verify_current_hypothesis(
         print_desc=print_desc,
         loop_no=loop_no,
-        curr_proc_hyps=curr_proc_hyps,
-        curr_proc_outs=curr_proc_outs,
         msg_thread=msg_thread,
         manager=manager,
         print_callback=print_callback
@@ -185,8 +177,6 @@ def run_in_hyp_verification_state(
     conf_score = rescore_current_hypothesis(
         print_desc=print_desc,
         loop_no=loop_no,
-        curr_proc_hyps=curr_proc_hyps,
-        curr_proc_outs=curr_proc_outs,
         msg_thread=msg_thread,
         manager=manager,
         print_callback=print_callback
@@ -194,18 +184,18 @@ def run_in_hyp_verification_state(
 
     ## Step 3: Update the hypothesis
     if isinstance(analysis, VulAnalysis):
-        update_current_hypothesis(conf_score, None, analysis, curr_proc_hyps)
+        update_current_hypothesis(conf_score, None, analysis, manager)
     else:
         assert isinstance(analysis, str)
-        update_current_hypothesis(conf_score, analysis, None, curr_proc_hyps)
+        update_current_hypothesis(conf_score, analysis, None, manager)
 
     ## Step 4: Loop end
     # (1) Save the conversation of the current loop
-    curr_loop_conversation_file = os.path.join(curr_proc_outs.root, f"loop_{loop_no}_conversations.json")
+    curr_loop_conversation_file = os.path.join(manager.cur_proc_outs.root, f"loop_{loop_no}_conversations.json")
     msg_thread.save_to_file(curr_loop_conversation_file)
 
     # (2) Decide next step
-    if len(curr_proc_hyps.verified) >= globals.hypothesis_limit:
+    if len(manager.cur_proc_all_hyps.verified) >= globals.hypothesis_limit:
         log.log_and_print("Too many verified hypothesis. End anyway.")
         return False
 

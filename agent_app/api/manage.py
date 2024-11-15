@@ -18,7 +18,7 @@ from agent_app.search.search_manage import (
     PySearchManager, JavaSearchManager,
     PySearchResult, JavaSearchResult
 )
-from agent_app.flow_control.flow_recording import ProcActionStatus, ProcSearchStatus
+from agent_app.flow_control.flow_recording import ProcOutPaths, ProcHypothesis, ProcActionStatus, ProcSearchStatus
 from agent_app.data_structures import SearchStatus, ToolCallIntent, MessageThread
 from agent_app.task import Task
 from agent_app import globals
@@ -42,7 +42,7 @@ class FlowManager:
         # Prepare the repo environment
         self.task.setup_project()
 
-        ## Tool calls (search API)
+        ## Tool call records (search API)
         # NOTE: 1 process = m * loop
         # 1. Record the tool currently being used
         self.curr_tool_call: str | None = None
@@ -58,16 +58,28 @@ class FlowManager:
         self.input_tokens: int = 0
         self.output_tokens: int = 0
 
-        ## Record status of current process
-        # 1. Action status
-        self.action_status_records: ProcActionStatus = ProcActionStatus()
-        # 2. Search status
-        self.search_status_records: ProcSearchStatus = ProcSearchStatus()
+        ## Status records of the entire flow
+        # process name -> {status name -> status data}
+        self.flow_all_status: Dict[str, Dict[str, Dict]] = {}
+        ## Status records of current process
+        self.cur_proc_action_status: ProcActionStatus = ProcActionStatus()
+        self.cur_proc_search_status: ProcSearchStatus = ProcSearchStatus()
 
-        ## Need initialization
+        ## Sub-manager (need initialization)
         self.commit_manager = None
         self.search_manager = None
         self.cwe_manager = None
+
+        ## Output paths of current process (need set)
+        self.cur_proc_outs: ProcOutPaths | None = None
+
+        ## All hypothesis (verified & unverified) of the entire flow
+        self.flow_all_hyps: Dict[str, ProcHypothesis] = {}
+        ## All hypothesis (verified & unverified) of current process
+        self.cur_proc_all_hyps: ProcHypothesis = ProcHypothesis()
+
+        ## Collected code context of current process
+        # TODO
 
     """INITIALIZATION"""
 
@@ -213,15 +225,42 @@ class FlowManager:
         # 1. Tool call intent
         intent.update_with_search_status(search_status)
         # 2. Search status records
-        self.search_status_records.update_with_search_status(search_status)
+        self.cur_proc_search_status.update_with_search_status(search_status)
 
         return call_res
+
+    """PROCESS OUTPUT PATHS"""
+
+    def set_process_output_paths(
+            self,
+            cur_proc_root: str,
+            cur_proc_hyp_dpath: str,
+            cur_proc_proxy_dpath: str,
+            cur_proc_tool_call_dpath: str
+    ):
+        self.cur_proc_outs = ProcOutPaths(
+            root=cur_proc_root,
+            hyp_dpath=cur_proc_hyp_dpath,
+            proxy_dpath=cur_proc_proxy_dpath,
+            tool_call_dpath=cur_proc_tool_call_dpath
+        )
+
+    """PROCESS HYPOTHESIS"""
+
+    def reset_process_all_hypothesis(self):
+        self.cur_proc_all_hyps = ProcHypothesis()
 
     """PROCESS STATUS RECORDS"""
 
     def reset_process_status_records(self):
-        self.action_status_records = ProcActionStatus()
-        self.search_status_records = ProcSearchStatus()
+        self.cur_proc_action_status = ProcActionStatus()
+        self.cur_proc_search_status = ProcSearchStatus()
+
+    def save_current_process_all_status(self, proc_name: str):
+        self.flow_all_status[proc_name] = {
+            "action_status_records": self.cur_proc_action_status,
+            "search_status_records": self.cur_proc_search_status
+        }
 
     """TOOL CALL RECORDS"""
 

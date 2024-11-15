@@ -124,6 +124,7 @@ class BaseCodeSnippetLocation:
     """Dataclass to hold the location of code snippet."""
     file_path: str  # This is RELATIVE path
     code: str
+    # line_ids: List[str]
 
     def to_tagged_upto_file(self) -> str:
         """Convert the code snippet location to a tagged string, upto file path."""

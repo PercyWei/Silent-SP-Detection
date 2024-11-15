@@ -7,7 +7,7 @@ from agent_app import globals, globals_opt
 from agent_app.data_structures import CommitType, ProxyTask, MessageThread
 from agent_app.api.manage import FlowManager
 from agent_app.search.search_manage import PySearchResult, JavaSearchResult
-from agent_app.flow_control.flow_recording import State, ProcOutPaths, ProcHypothesis
+from agent_app.flow_control.flow_recording import State, ProcHypothesis
 from agent_app.flow_control.flow_util import (
     _add_system_msg_and_print,
     _add_usr_msg_and_print,
@@ -26,11 +26,10 @@ from agent_app.util import LanguageNotSupportedError
 
 def make_free_init_hypothesis(
         print_desc: str,
-        curr_proc_outs: ProcOutPaths,
         msg_thread: MessageThread,
         manager: FlowManager,
         print_callback: Callable[[dict], None] | None = None
-) -> ProcHypothesis | None:
+) -> bool:
     # ------------------ 1. Prepare the prompt ------------------ #
     # (1) System prompt
     system_prompt = get_system_prompt(globals.lang)
@@ -56,7 +55,7 @@ def make_free_init_hypothesis(
             ProxyTask.HYP_PROPOSAL, response, manager, f"{print_desc} | retry {retry}", print_callback
         )
 
-        proxy_conv_fpath = os.path.join(curr_proc_outs.proxy_dpath, f"init_hypothesis_proposal.json")
+        proxy_conv_fpath = os.path.join(manager.cur_proc_outs.proxy_dpath, f"init_hypothesis_proposal.json")
         _save_proxy_msg(proxy_msg_threads, proxy_conv_fpath)
 
         if json_hyps is None and retry < globals.state_retry_limit:
@@ -66,35 +65,32 @@ def make_free_init_hypothesis(
         else:
             break
 
-    if json_hyps is None:
-        return None
-
     # ------------------ 3. Collect init hypothesis ------------------ #
-    raw_hyps = json.loads(json_hyps)["hypothesis_list"]
+    if json_hyps is None:
+        return False
 
-    curr_proc_hyps: ProcHypothesis = ProcHypothesis()
+    raw_hyps = json.loads(json_hyps)["hypothesis_list"]
 
     for hyp in raw_hyps:
         hyp = build_basic_hyp(hyp["commit_type"], hyp["vulnerability_type"], hyp["confidence_score"])
-        if not curr_proc_hyps.in_unverified(hyp):
-            curr_proc_hyps.unverified.append(hyp)
+        if not manager.cur_proc_all_hyps.in_unverified(hyp):
+            manager.cur_proc_all_hyps.unverified.append(hyp)
 
-    assert len(curr_proc_hyps.unverified) > 0
+    assert len(manager.cur_proc_all_hyps.unverified) > 0
 
-    curr_proc_hyps.sort_unverified()
-    hyp_fpath = os.path.join(curr_proc_outs.hyp_dpath, "init.json")
-    curr_proc_hyps.save_hyp_to_file(hyp_fpath)
+    manager.cur_proc_all_hyps.sort_unverified()
+    hyp_fpath = os.path.join(manager.cur_proc_outs.hyp_dpath, "init.json")
+    manager.cur_proc_all_hyps.save_hyp_to_file(hyp_fpath)
 
-    return curr_proc_hyps
+    return True
 
 
 def make_constrained_init_hypothesis(
         print_desc: str,
-        curr_proc_outs: ProcOutPaths,
         msg_thread: MessageThread,
         manager: FlowManager,
         print_callback: Callable[[dict], None] | None = None
-) -> ProcHypothesis | None:
+) -> bool:
     # ------------------ 1. Prepare the prompt ------------------ #
     # (1) System prompt
     system_prompt = get_system_prompt(globals.lang)
@@ -121,7 +117,7 @@ def make_constrained_init_hypothesis(
             ProxyTask.INIT_HYP_COMPLETION, response, manager, f"{print_desc} | retry {retry}", print_callback
         )
 
-        proxy_conv_fpath = os.path.join(curr_proc_outs.proxy_dpath, f"init_hypothesis_proposal.json")
+        proxy_conv_fpath = os.path.join(manager.cur_proc_outs.proxy_dpath, f"init_hypothesis_proposal.json")
         _save_proxy_msg(proxy_msg_threads, proxy_conv_fpath)
 
         if json_masks is None and retry < globals.state_retry_limit:
@@ -131,13 +127,11 @@ def make_constrained_init_hypothesis(
         else:
             break
 
-    if json_masks is None:
-        return None
-
     # ------------------ 3. Collect init hypothesis ------------------ #
-    raw_masks = json.loads(json_masks)
+    if json_masks is None:
+        return False
 
-    curr_proc_hyps: ProcHypothesis = ProcHypothesis()
+    raw_masks = json.loads(json_masks)
 
     # Hypothesis 1: non_vulnerability_patch
     hyp = build_basic_hyp(
@@ -145,7 +139,7 @@ def make_constrained_init_hypothesis(
         vul_type="",
         conf_score=int(raw_masks["mask_1"])
     )
-    curr_proc_hyps.unverified.append(hyp)
+    manager.cur_proc_all_hyps.unverified.append(hyp)
 
     # Hypothesis 2: vulnerability_patch
     hyp = build_basic_hyp(
@@ -153,13 +147,13 @@ def make_constrained_init_hypothesis(
         vul_type=raw_masks["mask_2"],
         conf_score=int(raw_masks["mask_3"])
     )
-    curr_proc_hyps.unverified.append(hyp)
+    manager.cur_proc_all_hyps.unverified.append(hyp)
 
-    curr_proc_hyps.sort_unverified()
-    hyp_fpath = os.path.join(curr_proc_outs.hyp_dpath, "init.json")
-    curr_proc_hyps.save_hyp_to_file(hyp_fpath)
+    manager.cur_proc_all_hyps.sort_unverified()
+    hyp_fpath = os.path.join(manager.cur_proc_outs.hyp_dpath, "init.json")
+    manager.cur_proc_all_hyps.save_hyp_to_file(hyp_fpath)
 
-    return curr_proc_hyps
+    return True
 
 
 """ACTION: EXTRACT PATCH LOCATIONS"""
@@ -167,8 +161,6 @@ def make_constrained_init_hypothesis(
 
 def extract_patch_locations(
         print_desc: str,
-        curr_proc_outs: ProcOutPaths,
-        curr_proc_hyps: ProcHypothesis,
         msg_thread: MessageThread,
         manager: FlowManager,
         print_callback: Callable[[dict], None] | None = None
@@ -198,7 +190,7 @@ def extract_patch_locations(
             ProxyTask.PATCH_EXTRACTION, response, manager, f"{print_desc} | retry {retry}", print_callback
         )
 
-        proxy_conv_fpath = os.path.join(curr_proc_outs.proxy_dpath, f"patch_extraction.json")
+        proxy_conv_fpath = os.path.join(manager.cur_proc_outs.proxy_dpath, f"patch_extraction.json")
         _save_proxy_msg(proxy_msg_threads, proxy_conv_fpath)
 
         if json_patches is None and retry < globals.state_retry_limit:
@@ -210,9 +202,9 @@ def extract_patch_locations(
 
     # ------------------ 3. Collect patch locations ------------------ #
     if json_patches is None:
-        manager.action_status_records.update_patch_extraction_status(success_flag=False)
+        manager.cur_proc_action_status.update_patch_extraction_status(success_flag=False)
     else:
-        manager.action_status_records.update_patch_extraction_status(success_flag=True)
+        manager.cur_proc_action_status.update_patch_extraction_status(success_flag=True)
 
         raw_patches = json.loads(json_patches)["patch_locations"]
 
@@ -239,7 +231,7 @@ def extract_patch_locations(
             else:
                 raise LanguageNotSupportedError(globals.lang)
 
-            curr_proc_hyps.patch.append(snip)
+            manager.cur_proc_all_hyps.patch.append(snip)
 
 
 """MAIN STATE"""
@@ -247,26 +239,23 @@ def extract_patch_locations(
 
 def run_in_start_state(
         process_no: int,
-        curr_proc_outs: ProcOutPaths,
         msg_thread: MessageThread,
         manager: FlowManager,
         print_callback: Callable[[dict], None] | None = None
-) -> ProcHypothesis | None:
+) -> bool:
     print_desc = f"process {process_no} | state {State.START_STATE}"
 
     ## Step 1: Make init hypothesis
     if globals_opt.opt_to_start_state_path == 1:
-        curr_proc_hyps = make_free_init_hypothesis(
+        cont_flag = make_free_init_hypothesis(
             print_desc=print_desc,
-            curr_proc_outs=curr_proc_outs,
             msg_thread=msg_thread,
             manager=manager,
             print_callback=print_callback
         )
     elif globals_opt.opt_to_start_state_path == 2:
-        curr_proc_hyps = make_constrained_init_hypothesis(
+        cont_flag = make_constrained_init_hypothesis(
             print_desc=print_desc,
-            curr_proc_outs=curr_proc_outs,
             msg_thread=msg_thread,
             manager=manager,
             print_callback=print_callback
@@ -274,10 +263,13 @@ def run_in_start_state(
     else:
         raise RuntimeError(f"Strategy {globals_opt.opt_to_start_state_path} for making init hypothesis is not supported yet.")
 
+    if not cont_flag:
+        return False
+
     ## Step 2: Extract patch locations
     # 2.1 Determine whether to extract the patch locations
     need_patch = False
-    for hyp in curr_proc_hyps.unverified:
+    for hyp in manager.cur_proc_all_hyps.unverified:
         if hyp.commit_type == CommitType.VulnerabilityPatch:
             need_patch = True
             break
@@ -286,11 +278,9 @@ def run_in_start_state(
     if need_patch:
         extract_patch_locations(
             print_desc=print_desc,
-            curr_proc_outs=curr_proc_outs,
-            curr_proc_hyps=curr_proc_hyps,
             msg_thread=msg_thread,
             manager=manager,
             print_callback=print_callback
         )
 
-    return curr_proc_hyps
+    return True

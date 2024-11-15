@@ -4,7 +4,7 @@ from typing import *
 from agent_app import globals
 from agent_app.data_structures import MessageThread
 from agent_app.api.manage import FlowManager
-from agent_app.flow_control.flow_recording import State, ProcOutPaths, ProcHypothesis
+from agent_app.flow_control.flow_recording import State, ProcHypothesis
 from agent_app.flow_control.flow_util import (
     _add_system_msg_and_print,
     _add_usr_msg_and_print,
@@ -16,8 +16,6 @@ from agent_app.flow_control.hypothesis import get_hyp_description
 def run_in_reflexion_state(
         process_no: int,
         loop_no: int,
-        curr_proc_hyps: ProcHypothesis,
-        curr_proc_outs: ProcOutPaths,
         msg_thread: MessageThread,
         manager: FlowManager,
         print_callback: Callable[[dict], None] | None = None
@@ -47,8 +45,8 @@ def run_in_reflexion_state(
         # 2.1 Summary about description and analysis of verified hypothesis
         verified_hyps_summary = "In the previous analysis, you have made and analysed the following hypothesis:"
 
-        curr_proc_hyps.sort_verified()
-        for i, hyp in enumerate(curr_proc_hyps.verified):
+        manager.cur_proc_all_hyps.sort_verified()
+        for i, hyp in enumerate(manager.cur_proc_all_hyps.verified):
             hyp_desc = get_hyp_description(hyp)
             verified_hyps_summary += (f"\n\nHypothesis id {i + 1}:"
                                       f"\n(1) Description: {hyp_desc}"
@@ -59,7 +57,7 @@ def run_in_reflexion_state(
         # 2.2 Code snippets of patch and context
         # TODO: Consider how to add the patch code snippets.
         code_snippet_desc = ("Besides, by calling the search APIs, you have got the following code snippets which help with analysis."
-                             f"\n\n{curr_proc_hyps.context_to_str()}")
+                             f"\n\n{manager.cur_proc_all_hyps.context_to_str()}")
 
         reflexion_prompt = f"{verified_hyps_summary}\n\n{code_snippet_desc}"
 

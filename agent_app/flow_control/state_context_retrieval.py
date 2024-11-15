@@ -8,7 +8,7 @@ from agent_app import globals, globals_opt, log
 from agent_app.data_structures import ProxyTask, ToolCallIntent, MessageThread, SearchStatus
 from agent_app.api.manage import FlowManager
 from agent_app.search.search_manage import PySearchManager, JavaSearchManager
-from agent_app.flow_control.flow_recording import State, ProcOutPaths, ProcHypothesis
+from agent_app.flow_control.flow_recording import State, ProcHypothesis
 from agent_app.flow_control.flow_util import (
     _add_usr_msg_and_print,
     _ask_actor_agent_and_print,
@@ -47,8 +47,6 @@ def call_search_apis(
         loop_no: int,
         round_no: int,
         retry_flag: bool,
-        proc_all_hypothesis: ProcHypothesis,
-        curr_proc_outs: ProcOutPaths,
         msg_thread: MessageThread,
         manager: FlowManager,
         print_callback: Callable[[dict], None] | None = None
@@ -70,16 +68,16 @@ def call_search_apis(
         ProxyTask.CONTEXT_RETRIEVAL, response, manager, round_print_desc, print_callback
     )
 
-    proxy_conv_fpath = os.path.join(curr_proc_outs.proxy_dpath, f"loop_{loop_no}_context_retrieval.json")
+    proxy_conv_fpath = os.path.join(manager.cur_proc_outs.proxy_dpath, f"loop_{loop_no}_context_retrieval.json")
     _save_proxy_msg(proxy_msg_threads, proxy_conv_fpath)
 
     # ------------------ (3) Decide next step ------------------ #
     # (1) Whether to retry
     if json_calls is None:
-        manager.action_status_records.update_tool_call_extraction_status(False)
+        manager.cur_proc_action_status.update_tool_call_extraction_status(False)
         return True, True
     else:
-        manager.action_status_records.update_tool_call_extraction_status(True)
+        manager.cur_proc_action_status.update_tool_call_extraction_status(True)
 
     # (2) Whether to continue searching
     raw_tool_calls = json.loads(json_calls)["api_calls"]
@@ -146,7 +144,7 @@ def call_search_apis(
         # Extracted code snippet
         if intent.tool_name in ['search_top_level_function', 'search_class', 'search_interface'] and \
                 globals_opt.opt_to_ctx_retrieval_detailed_search_struct_tool:
-            proc_all_hypothesis.code_context.extend(all_search_res)
+            manager.cur_proc_all_hyps.code_context.extend(all_search_res)
 
     collated_tool_response.rstrip()
 
@@ -174,8 +172,6 @@ def analyse_collected_context(
 def run_in_context_retrieval_state(
         process_no: int,
         loop_no: int,
-        proc_all_hypothesis: ProcHypothesis,
-        curr_proc_outs: ProcOutPaths,
         msg_thread: MessageThread,
         manager: FlowManager,
         print_callback: Callable[[dict], None] | None = None
@@ -192,8 +188,6 @@ def run_in_context_retrieval_state(
             loop_no=loop_no,
             round_no=round_no,
             retry_flag=retry_flag,
-            proc_all_hypothesis=proc_all_hypothesis,
-            curr_proc_outs=curr_proc_outs,
             msg_thread=msg_thread,
             manager=manager,
             print_callback=print_callback
@@ -215,7 +209,5 @@ def run_in_context_retrieval_state(
     else:
         log.log_and_print("Too many rounds. Try to verify the hypothesis anyway.")
 
-    manager.dump_loop_tool_call_sequence_to_file(curr_proc_outs.tool_call_dpath, str(loop_no))
-    manager.dump_loop_tool_call_layers_to_file(curr_proc_outs.tool_call_dpath, str(loop_no))
-
-    return proc_all_hypothesis
+    manager.dump_loop_tool_call_sequence_to_file(manager.cur_proc_outs.tool_call_dpath, str(loop_no))
+    manager.dump_loop_tool_call_layers_to_file(manager.cur_proc_outs.tool_call_dpath, str(loop_no))

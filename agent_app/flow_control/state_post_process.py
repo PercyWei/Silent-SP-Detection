@@ -224,7 +224,7 @@ def run_in_post_process_state(
 
         # ------------------ 2.4 Rank the final hypothesis ------------------ #
         if json_ranking is None:
-            manager.action_status_records.update_post_process_rank_status(success_flag=False)
+            manager.cur_proc_action_status.update_post_process_rank_status(success_flag=False)
 
             # TODO: Heuristic: 1) more occurrences -> higher ranking; 2) vulnerability fix > non-vulnerability fix
             commit_type_priority = {CommitType.VulnerabilityPatch: 1, CommitType.NonVulnerabilityPatch: 0}
@@ -234,7 +234,7 @@ def run_in_post_process_state(
                 reverse=True
             )
         else:
-            manager.action_status_records.update_post_process_rank_status(success_flag=True)
+            manager.cur_proc_action_status.update_post_process_rank_status(success_flag=True)
 
             raw_ranking = json.loads(json_ranking)["ranking"]
             ranking_hyps = [pending_hyps[i - 1] for i in raw_ranking]

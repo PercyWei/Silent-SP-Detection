@@ -6,7 +6,7 @@ from typing import *
 from agent_app import globals
 from agent_app.data_structures import CommitType, ProxyTask, MessageThread
 from agent_app.api.manage import FlowManager
-from agent_app.flow_control.flow_recording import State, ProcOutPaths, ProcHypothesis
+from agent_app.flow_control.flow_recording import State, ProcHypothesis
 from agent_app.flow_control.flow_util import (
     _add_usr_msg_and_print,
     _ask_actor_agent_and_print,
@@ -20,8 +20,6 @@ from agent_app.flow_control.hypothesis import build_basic_hyp, get_hyp_descripti
 def run_in_hyp_checking_state(
         process_no: int,
         loop_no: int,
-        curr_proc_hyps: ProcHypothesis,
-        curr_proc_outs: ProcOutPaths,
         msg_thread: MessageThread,
         manager: FlowManager,
         print_callback: Callable[[dict], None] | None = None
@@ -32,7 +30,7 @@ def run_in_hyp_checking_state(
     # STEP 1: Make new hypothesis #
     ###############################
 
-    if len(curr_proc_hyps.unverified) == 0:
+    if len(manager.cur_proc_all_hyps.unverified) == 0:
         # ------------------ 1.1 Prepare the prompt ------------------ #
         hyp_def = get_hyp_def_prompt()
         hyp_prop_prompt = (f"Based on the previous hypothesis and analyses, answer the below question:"
@@ -51,7 +49,7 @@ def run_in_hyp_checking_state(
                 ProxyTask.HYP_PROPOSAL, response, manager, f"{print_desc} | retry {retry}", print_callback
             )
 
-            proxy_conv_fpath = os.path.join(curr_proc_outs.proxy_dpath, f"loop_{loop_no}_hypothesis_proposal.json")
+            proxy_conv_fpath = os.path.join(manager.cur_proc_outs.proxy_dpath, f"loop_{loop_no}_hypothesis_proposal.json")
             _save_proxy_msg(proxy_msg_threads, proxy_conv_fpath)
 
             if json_hyps is None and retry < globals.state_retry_limit:
@@ -70,9 +68,9 @@ def run_in_hyp_checking_state(
         # Filter verified hypothesis
         for hyp in raw_hyps:
             hyp = build_basic_hyp(hyp["commit_type"], hyp["vulnerability_type"], hyp["confidence_score"])
-            curr_proc_hyps.add_new_unverified(hyp)
+            manager.cur_proc_all_hyps.add_new_unverified(hyp)
 
-    if len(curr_proc_hyps.unverified) == 0:
+    if len(manager.cur_proc_all_hyps.unverified) == 0:
         # No more new hypothesis
         return False
 
@@ -89,16 +87,16 @@ def run_in_hyp_checking_state(
 
     while True:
         # ------------------ 1.1 Select an unverified hypothesis ------------------ #
-        if len(curr_proc_hyps.unverified) == 0:
+        if len(manager.cur_proc_all_hyps.unverified) == 0:
             # No valid unverified hypothesis
             return False
 
-        curr_proc_hyps.update_cur_hyp()
-        assert curr_proc_hyps.cur_hyp is not None
+        manager.cur_proc_all_hyps.update_cur_hyp()
+        assert manager.cur_proc_all_hyps.cur_hyp is not None
 
         # ------------------ 1.2 Check the hypothesis ------------------ #
-        cur_hyp_desc = get_hyp_description(curr_proc_hyps.cur_hyp)
-        cur_full_cwe_id = curr_proc_hyps.cur_hyp.vulnerability_type
+        cur_hyp_desc = get_hyp_description(manager.cur_proc_all_hyps.cur_hyp)
+        cur_full_cwe_id = manager.cur_proc_all_hyps.cur_hyp.vulnerability_type
         cur_cwe_id = cur_full_cwe_id.split("-")[-1]
 
         # (1) Non-vulnerability patch
@@ -169,14 +167,14 @@ def run_in_hyp_checking_state(
                 ProxyTask.HYP_CHECK, response, manager, print_desc, print_callback
             )
 
-            proxy_conv_fpath = os.path.join(curr_proc_outs.proxy_dpath, f"loop_{loop_no}_hypothesis_check.json")
+            proxy_conv_fpath = os.path.join(manager.cur_proc_outs.proxy_dpath, f"loop_{loop_no}_hypothesis_check.json")
             _save_proxy_msg(proxy_msg_threads, proxy_conv_fpath)
 
             # ------------------ 1.2.3 Check the modification result ------------------ #
             if json_full_cwe_id is None:
                 # TODO: Bad result. This should not happen. (Require Verification)
                 # Bad case 1: modification failed <- invalid response
-                manager.action_status_records.add_unsupported_hyp_modification_case(
+                manager.cur_proc_action_status.add_unsupported_hyp_modification_case(
                     none_result=True, same_result=False, uns_result=False, good_result=False
                 )
 
@@ -188,7 +186,7 @@ def run_in_hyp_checking_state(
                 if mod_cwe_id == cur_cwe_id:
                     # TODO: Bad result. This should not happen. (Require Verification)
                     # Bad case 2: modification failed <- modified CWE-ID is the same as before
-                    manager.action_status_records.add_unsupported_hyp_modification_case(
+                    manager.cur_proc_action_status.add_unsupported_hyp_modification_case(
                         none_result=False, same_result=True, uns_result=False, good_result=False
                     )
 
@@ -201,7 +199,7 @@ def run_in_hyp_checking_state(
                     # We follow the strict condition: keep the hypothesis only if the modified CWE-ID is within the consideration.
                     if mod_cwe_id not in manager.cwe_manager.cwe_ids:
                         # Bad case 3: modification failed <- modified CWE-ID is still unsupported
-                        manager.action_status_records.add_unsupported_hyp_modification_case(
+                        manager.cur_proc_action_status.add_unsupported_hyp_modification_case(
                             none_result=False, same_result=False, uns_result=True, good_result=False
                         )
 
@@ -209,16 +207,16 @@ def run_in_hyp_checking_state(
 
                     else:
                         # Good case 3: modification successful <- modified CWE-ID is supported.
-                        manager.action_status_records.add_unsupported_hyp_modification_case(
+                        manager.cur_proc_action_status.add_unsupported_hyp_modification_case(
                             none_result=False, same_result=False, uns_result=False, good_result=True
                         )
 
-                        curr_proc_hyps.cur_hyp.vulnerability_type = f"CWE-{mod_cwe_id}"
+                        manager.cur_proc_all_hyps.cur_hyp.vulnerability_type = f"CWE-{mod_cwe_id}"
 
                         good_case_summary = f"{prefix}, and, this CWE-ID is within our consideration, so we will retain this modification."
 
         if good_case_summary is None:
-            curr_proc_hyps.cur_hyp = None
+            manager.cur_proc_all_hyps.cur_hyp = None
             continue
         else:
             break
@@ -226,9 +224,9 @@ def run_in_hyp_checking_state(
     ###############################################################
     # Step 2-2: Process hypothesis containing too detailed CWE-ID #
     ###############################################################
-    assert curr_proc_hyps.cur_hyp is not None and good_case_summary is not None
+    assert manager.cur_proc_all_hyps.cur_hyp is not None and good_case_summary is not None
 
-    cur_full_cwe_id = curr_proc_hyps.cur_hyp.vulnerability_type
+    cur_full_cwe_id = manager.cur_proc_all_hyps.cur_hyp.vulnerability_type
     cur_cwe_id = cur_full_cwe_id.split("-")[-1]
 
     if cur_full_cwe_id == "":
@@ -239,7 +237,7 @@ def run_in_hyp_checking_state(
                          "\nBesides, this CWE-ID is moderately detailed, so it needs no more modification.")
 
     else:
-        manager.action_status_records.update_too_detailed_hyp_modification_case()
+        manager.cur_proc_action_status.update_too_detailed_hyp_modification_case()
 
         # ------------------ 2.1 Get father CWEs at the specified depth ------------------ #
         fathers = manager.cwe_manager.get_depth_k_fathers_of_weakness(cur_cwe_id)
@@ -254,15 +252,15 @@ def run_in_hyp_checking_state(
             hyp = build_basic_hyp(
                 commit_type=CommitType.VulnerabilityPatch,
                 vul_type=f"CWE-{father}",
-                conf_score=curr_proc_hyps.cur_hyp.confidence_score
+                conf_score=manager.cur_proc_all_hyps.cur_hyp.confidence_score
             )
 
             if i == 0:
                 # Select the first new unverified hypothesis to verify
-                curr_proc_hyps.cur_hyp = hyp
+                manager.cur_proc_all_hyps.cur_hyp = hyp
             else:
                 # Collect the rest new unverified hypothesis
-                curr_proc_hyps.add_new_unverified(hyp)
+                manager.cur_proc_all_hyps.add_new_unverified(hyp)
 
     _add_usr_msg_and_print(check_summary, msg_thread, print_desc, print_callback)
 
@@ -270,12 +268,12 @@ def run_in_hyp_checking_state(
     # STEP 3: Prepare summary prompt #
     ##################################
 
-    assert curr_proc_hyps.cur_hyp is not None
-    cur_hyp_desc = get_hyp_description(curr_proc_hyps.cur_hyp)
+    assert manager.cur_proc_all_hyps.cur_hyp is not None
+    cur_hyp_desc = get_hyp_description(manager.cur_proc_all_hyps.cur_hyp)
     next_step_prompt = f"Now your target is to justify the hypothesis: {cur_hyp_desc}."
 
     suffix_prompt = "In the subsequent context retrieval and analysis process, "
-    if curr_proc_hyps.cur_hyp.commit_type == CommitType.NonVulnerabilityPatch:
+    if manager.cur_proc_all_hyps.cur_hyp.commit_type == CommitType.NonVulnerabilityPatch:
         suffix_prompt += "please analyze the functionality of each code snippet in the commit to determine if it is not relevant to vulnerability fixing."
     else:
         # TODO: Consider whether to repeat the previously extracted patch code in the prompt.
