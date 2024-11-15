@@ -31,21 +31,19 @@ class VulAnalysis:
         analysis = ""
 
         # 1. Key variables
-        key_variables_str = "1. Key variables of the vulnerability: "
+        analysis += "1. Key variables of the vulnerability:"
         for name, desc in self.key_variables:
-            key_variables_str += f"\n- {name}: {desc}"
+            analysis += f"\n- {name}: {desc}"
 
         # 2. Trigger action
-        trigger_action_str = f"2. Trigger action of the vulnerability: {self.trigger_action}"
+        analysis += f"\n2. Trigger action of the vulnerability: {self.trigger_action}"
 
         # 3. Fix method
-        fix_method_str = f"3. Fix method: {self.fix_method}"
+        analysis += f"\n3. Fix method: {self.fix_method}"
 
         # 4. Relationship
-        relationship_str = (f"4. Relationship between the fix method, trigger action and key variables: "
-                            f"\n{self.relationship}")
-
-        analysis += f"{key_variables_str}\n\n{trigger_action_str}\n\n{fix_method_str}\n\n{relationship_str}"
+        analysis = (f"\n4. Relationship between the fix method, trigger action and key variables: "
+                    f"\n{self.relationship}")
 
         return analysis
 
@@ -94,10 +92,14 @@ class VerifiedHypothesis(Hypothesis):
         assert self.is_valid()
 
         hyp_desc = super().to_str()
+
+        hyp_desc += "\n(4) analysis: "
         if self.vul_analysis:
-            hyp_desc += "\n(4) analysis: "
             for line in self.vul_analysis.to_str().split("\n"):
-                hyp_desc += "\n  " + line
+                hyp_desc += "\n    " + line
+        else:
+            for line in self.novul_analysis:
+                hyp_desc += "\n    " + line
 
         return hyp_desc
 
