@@ -98,10 +98,17 @@ class VerifiedHypothesis(Hypothesis):
             for line in self.vul_analysis.to_str().split("\n"):
                 hyp_desc += "\n    " + line
         else:
-            for line in self.novul_analysis:
+            for line in self.novul_analysis.split("\n"):
                 hyp_desc += "\n    " + line
 
         return hyp_desc
+
+    def get_analysis(self) -> str:
+        assert self.is_valid()
+        if self.vul_analysis:
+            return self.vul_analysis.to_str()
+        else:
+            return self.novul_analysis
 
 
 @dataclass
