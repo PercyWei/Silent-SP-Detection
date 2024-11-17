@@ -12,10 +12,19 @@ from openai.types.chat import ChatCompletionMessageToolCall
 from openai.types.chat.chat_completion_message_tool_call import Function as OpenaiFunction
 
 
-LineRange = NamedTuple("LineRange", [("start", int), ("end", int)])
+@dataclass(frozen=True)
+class LineRange:
+    start: int
+    end: int
+
+    def all_line_ids(self) -> List[int]:
+        return list(range(self.start, self.end + 1))
 
 
-CodeRange = NamedTuple('CodeRange', [('file_path', str), ('range', LineRange)])
+@dataclass(frozen=True)
+class CodeRange:
+    file_path: str
+    range: LineRange
 
 
 """STATIC ANALYSIS"""
@@ -124,7 +133,7 @@ class BaseCodeSnippetLocation:
     """Dataclass to hold the location of code snippet."""
     file_path: str  # This is RELATIVE path
     code: str
-    # line_ids: List[str]
+    line_ids: List[int]
 
     def to_tagged_upto_file(self) -> str:
         """Convert the code snippet location to a tagged string, upto file path."""
@@ -211,22 +220,24 @@ class PyDiffFileInfo(DiffFileInfo):
     # -------------------- Simple Node -------------------- #
     old_nodes: Dict[int, PySimNode] | None = None  # Simple Node id -> Simple Node
     new_nodes: Dict[int, PySimNode] | None = None  # Simple Node id -> Simple Node
+
+    # ----------------------- Import ----------------------- #
+    old_imports: List[str] | None = None  # [reconstructed import statement]
+    new_imports: List[str] | None = None  # [reconstructed import statement]
+
     # ----------------------- Old Struct Index ----------------------- #
     # 1.1 Top-level class / function:   [name, line range]
     old_func_index: List[Tuple[str, LineRange]] | None = None
     old_class_index: List[Tuple[str, LineRange]] | None = None
-    # 1.2 Inclass method:               [{class name -> [(name, line range)]}
+    # 1.2 Inclass method:               {class name -> [(name, line range)]}
     old_inclass_method_index: Dict[str, List[Tuple[str, LineRange]]] | None = None
-    # 1.3 Import:                       [(pkg path, attr name, alias name)]
-    old_imports: List[Tuple[str, str, str]] | None = None
+
     # ----------------------- New Struct Index ----------------------- #
     # 2.1 Top-level class / function:   [name, line range]
     new_func_index: List[Tuple[str, LineRange]] | None = None
     new_class_index: List[Tuple[str, LineRange]] | None = None
     # 2.2 Inclass method:               {class name -> [(name, line range)]}
     new_inclass_method_index: Dict[str, List[Tuple[str, LineRange]]] | None = None
-    # 2.3 Import:                       [(pkg path, attr name, alias name)]
-    new_imports: List[Tuple[str, str, str]] | None = None
 
     def _get_lang(self) -> str:
         return "Python"
@@ -237,9 +248,15 @@ class JavaDiffFileInfo(DiffFileInfo):
     """Dataclass to hold info of diff Java file in the commit."""
     # -------------------- Package -------------------- #
     package_name: str | None = None
+
     # -------------------- Simple Node -------------------- #
     old_nodes: Dict[int, JavaSimNode] | None = None  # Simple Node id -> Simple Node
     new_nodes: Dict[int, JavaSimNode] | None = None  # Simple Node id -> Simple Node
+
+    # ----------------------- Import ----------------------- #
+    old_imports: List[str] | None = None  # [original import statement]
+    new_imports: List[str] | None = None  # [original import statement]
+
     # ----------------------- Old Struct Index ----------------------- #
     # 1.1 Top-level interface / class:        [name, line range]
     old_iface_index: List[Tuple[str, LineRange]] | None = None
@@ -248,8 +265,7 @@ class JavaDiffFileInfo(DiffFileInfo):
     old_inclass_iface_index: Dict[str, List[Tuple[str, LineRange]]] | None = None
     old_inclass_class_index: Dict[str, List[Tuple[str, LineRange]]] | None = None
     old_inclass_method_index: Dict[str, List[Tuple[str, LineRange]]] | None = None
-    # 1.3 Import:                             [full import statement]
-    old_imports: List[str] | None = None
+
     # ----------------------- New Struct Index ----------------------- #
     # 2.1 Top-level interface / class:        [name, line range]
     new_iface_index: List[Tuple[str, LineRange]] | None = None
@@ -258,8 +274,6 @@ class JavaDiffFileInfo(DiffFileInfo):
     new_inclass_iface_index: Dict[str, List[Tuple[str, LineRange]]] | None = None
     new_inclass_class_index: Dict[str, List[Tuple[str, LineRange]]] | None = None
     new_inclass_method_index: Dict[str, List[Tuple[str, LineRange]]] | None = None
-    # 2.3 Import:                             [full import statement]
-    new_imports: List[str] | None = None
 
     def _get_lang(self) -> str:
         return "Java"

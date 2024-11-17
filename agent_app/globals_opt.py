@@ -22,8 +22,10 @@ opt_to_iface_diff_context: int = 2
 opt_to_start_state_path: int = 2
 
 ## State Context Retrieval
-# Strategy for tools 'search_function' / 'search_class' / 'search_interface'
-opt_to_ctx_retrieval_detailed_search_struct_tool: bool = False
+# For search API 'search_top_level_function', 'search_interface' and 'search_class',
+# detailed: show code snippet
+# spare: only show file path
+opt_to_ctx_retrieval_detailed_search_struct_tool = False
 
 # Strategy for analysing context
 opt_to_ctx_retrieval_analysis: bool = False

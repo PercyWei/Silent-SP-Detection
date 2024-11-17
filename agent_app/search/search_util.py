@@ -2,7 +2,6 @@
 # Original file: agent_app/search/search_utils.py
 
 import os
-import ast
 import glob
 
 from typing import *
@@ -15,6 +14,7 @@ from agent_app.static_analysis.py_ast_parse import (
 from agent_app.static_analysis.java_ast_parse import (
     extract_class_sig_lines_from_file as extract_class_sig_lines_from_java_file
 )
+from agent_app.util import LanguageNotSupportedError
 
 
 """SEARCH RESULT DATACLASS"""
@@ -23,9 +23,9 @@ from agent_app.static_analysis.java_ast_parse import (
 @dataclass
 class PySearchResult(BaseCodeSnippetLocation):
     """Dataclass to hold the search result containing the location of Python code snippet."""
-    func_name: str | None
-    class_name: str | None
-    inclass_method_name: str | None
+    func_name: str | None = None
+    class_name: str | None = None
+    inclass_method_name: str | None = None
 
     def to_tagged_upto_func(self) -> str:
         """Convert the code snippet location to a tagged string, upto function."""
@@ -269,12 +269,12 @@ def get_code_snippet_from_file_content(file_content: str, line_ids: List[int]) -
 
 
 def get_code_snippet_from_diff_file(
+        old_lranges: List[LineRange],
+        new_lranges: List[LineRange],
         merged_file_content: str,
-        old_line_ranges: List[LineRange],
-        new_line_ranges: List[LineRange],
         line_id_old2merge: Dict[int, int],
         line_id_new2merge: Dict[int, int]
-) -> str:
+) -> Tuple[str, List[int]]:
     """Get code snippet in the range from the file content.
 
     NOTE 1: Valid for Python file and Java file.
@@ -283,9 +283,9 @@ def get_code_snippet_from_diff_file(
     """
     # (1) Map line ranges in the old file and new file to the merged file
     merge_lranges_for_old: List[LineRange] = [LineRange(line_id_old2merge[lrange.start], line_id_old2merge[lrange.end])
-                                              for lrange in old_line_ranges]
+                                              for lrange in old_lranges]
     merge_lranges_for_new: List[LineRange] = [LineRange(line_id_new2merge[lrange.start], line_id_new2merge[lrange.end])
-                                              for lrange in new_line_ranges]
+                                              for lrange in new_lranges]
 
     # (2) Find the smallest line range that contains these line ranges
     try:
@@ -305,38 +305,33 @@ def get_code_snippet_from_diff_file(
 
     assert range_start is not None and range_end is not None
 
-    # (3) Extract the code snippet within this line range
     snippet_line_ids = list(range(range_start, range_end + 1))
+
+    # (3) Extract code snippet based on line ids
     snippet = get_code_snippet_from_file_content(merged_file_content, snippet_line_ids)
 
-    return snippet
+    return snippet, snippet_line_ids
 
 
-def get_code_snippet_from_nodiff_file(abs_fpath: str, line_start: int, line_end: int) -> str:
+def get_code_snippet_from_nodiff_file(abs_fpath: str, lrange: LineRange) -> Tuple[str, List[int]]:
     """Get the code snippet in the range from the file content.
 
     NOTE 1: Valid for Python file and Java file.
     NOTE 2: For nodiff files, we get their contents from the local repo.
     Args:
         abs_fpath (str): Absolute path to the file.
-        line_start (int): Start line id. (1-based)
-        line_end (int): End line id. (1-based)
+        lrange (LineRange): Line range of the code snippet.
     """
     with open(abs_fpath, 'r') as f:
         file_content = f.read()
 
-    snippet_line_ids = list(range(line_start, line_end + 1))
+    snippet_line_ids = lrange.all_line_ids()
     snippet = get_code_snippet_from_file_content(file_content, snippet_line_ids)
 
-    return snippet
+    return snippet, snippet_line_ids
 
 
-def get_class_signature_from_nodiff_file(
-        abs_fpath: str,
-        class_name: str,
-        class_range: LineRange,
-        lang: Literal['Python', 'Java']
-) -> str:
+def get_class_signature_from_nodiff_file(abs_fpath: str, class_name: str, lrange: LineRange, lang: str) -> Tuple[str, List[int]]:
     """Get the signature of the specified class from the file.
 
     NOTE 1: Valid for Python or Java file.
@@ -345,39 +340,37 @@ def get_class_signature_from_nodiff_file(
     Args:
         abs_fpath (str): Absolute path to the code file.
         class_name (str): Class name.
-        class_range (LineRange): Class line range.
+        lrange (LineRange): Class line range.
         lang (str): Programming language. ['Python', 'Java']
     """
     with open(abs_fpath, "r") as f:
         file_content = f.read()
 
     if lang == 'Python':
-        sig_line_ids = extract_class_sig_lines_from_py_file(file_content, class_name, class_range)
+        sig_line_ids = extract_class_sig_lines_from_py_file(file_content, class_name, lrange)
     elif lang == 'Java':
-        sig_line_ids = extract_class_sig_lines_from_java_file(
-            code=None, code_fpath=abs_fpath, class_name=class_name, class_range=class_range
-        )
+        sig_line_ids = extract_class_sig_lines_from_java_file(None, abs_fpath, class_name, lrange)
     else:
-        raise RuntimeError(f"Language '{lang}' is not supported yet.")
+        raise LanguageNotSupportedError(lang)
 
     assert len(sig_line_ids) > 0
 
     sig_snippet = get_code_snippet_from_file_content(file_content, sig_line_ids)
 
-    return sig_snippet
+    return sig_snippet, sig_line_ids
 
 
 def get_class_signature_from_diff_file(
-        merge_file_content: str,
+        class_name: str,
+        old_lrange: LineRange | None,
+        new_lrange: LineRange | None,
         old_file_content: str | None,
         new_file_content: str | None,
+        merge_file_content: str,
         line_id_old2merge: Dict[int, int] | None,
         line_id_new2merge: Dict[int, int] | None,
-        class_name: str,
-        old_class_range: LineRange | None,
-        new_class_range: LineRange | None,
-        lang: Literal['Python', 'Java']
-) -> str:
+        lang: str
+) -> Tuple[str, List[int]]:
     """Get the signature of the specified class from the file.
 
     NOTE 1: Valid for Python or Java file.
@@ -391,31 +384,29 @@ def get_class_signature_from_diff_file(
         line_id_old2merge (Dict[int, int] | None): Line id mapping from old code to merged code.
         line_id_new2merge (Dict[int, int] | None): Line id mapping from new code to merged code.
         class_name (str): Name of the class.
-        old_class_range (LineRange | None): Line range of the class in the old file.
-        new_class_range (LineRange | None): Line range of the class in the new file.
+        old_lrange (LineRange | None): Line range of the class in the old file.
+        new_lrange (LineRange | None): Line range of the class in the new file.
         lang (str): Programming language. ['Python', 'Java']
     """
     if old_file_content is None or new_file_content is None:
         # Deleted / added file
         if old_file_content is not None:
-            assert line_id_old2merge is not None and old_class_range is not None
+            assert line_id_old2merge is not None and old_lrange is not None
             ori_content = old_file_content
-            class_range = old_class_range
+            class_range = old_lrange
             line_id_ori2merge = line_id_old2merge
         else:
-            assert line_id_new2merge is not None and new_class_range is not None
+            assert line_id_new2merge is not None and new_lrange is not None
             ori_content = new_file_content
-            class_range = new_class_range
+            class_range = new_lrange
             line_id_ori2merge = line_id_new2merge
 
         if lang == 'Python':
             sig_line_ids = extract_class_sig_lines_from_py_file(ori_content, class_name, class_range)
         elif lang == 'Java':
-            sig_line_ids = extract_class_sig_lines_from_java_file(
-                code=ori_content, code_fpath=None, class_name=class_name, class_range=class_range
-            )
+            sig_line_ids = extract_class_sig_lines_from_java_file(ori_content, None, class_name, class_range)
         else:
-            raise RuntimeError(f"Language '{lang}' is not supported yet.")
+            raise LanguageNotSupportedError(lang)
 
         merge_sig_line_ids = [line_id_ori2merge[li] for li in sig_line_ids]
 
@@ -425,29 +416,25 @@ def get_class_signature_from_diff_file(
         # Modified file
         assert line_id_old2merge is not None and line_id_new2merge is not None
 
-        if old_class_range is not None and line_id_old2merge is not None:
-            assert is_overlap_in_merged_file(old_class_range, new_class_range, line_id_old2merge, line_id_new2merge)
+        if old_lrange is not None and line_id_old2merge is not None:
+            assert is_overlap_in_merged_file(old_lrange, new_lrange, line_id_old2merge, line_id_new2merge)
         else:
-            assert old_class_range is not None or line_id_old2merge is not None
+            assert old_lrange is not None or line_id_old2merge is not None
 
         old_sig_line_ids: List[int] = []
         new_sig_line_ids: List[int] = []
         if lang == 'Python':
-            if old_class_range is not None:
-                old_sig_line_ids = extract_class_sig_lines_from_py_file(old_file_content, class_name, old_class_range)
-            if new_class_range is not None:
-                new_sig_line_ids = extract_class_sig_lines_from_py_file(new_file_content, class_name, new_class_range)
+            if old_lrange is not None:
+                old_sig_line_ids = extract_class_sig_lines_from_py_file(old_file_content, class_name, old_lrange)
+            if new_lrange is not None:
+                new_sig_line_ids = extract_class_sig_lines_from_py_file(new_file_content, class_name, new_lrange)
         elif lang == 'Java':
-            if old_class_range is not None:
-                old_sig_line_ids = extract_class_sig_lines_from_java_file(
-                    code=old_file_content, code_fpath=None, class_name=class_name, class_range=old_class_range
-                )
-            if new_class_range is not None:
-                new_sig_line_ids = extract_class_sig_lines_from_java_file(
-                    code=new_file_content, code_fpath=None, class_name=class_name, class_range=new_class_range
-                )
+            if old_lrange is not None:
+                old_sig_line_ids = extract_class_sig_lines_from_java_file(old_file_content, None, class_name, old_lrange)
+            if new_lrange is not None:
+                new_sig_line_ids = extract_class_sig_lines_from_java_file(new_file_content, None, class_name, new_lrange)
         else:
-            raise RuntimeError(f"Language '{lang}' is not supported yet.")
+            raise LanguageNotSupportedError(lang)
 
         merge_sig_line_ids = []
         for old_line_id in old_sig_line_ids:
@@ -460,4 +447,4 @@ def get_class_signature_from_diff_file(
 
         sig_snippet = get_code_snippet_from_file_content(merge_file_content, merge_sig_line_ids)
 
-    return sig_snippet
+    return sig_snippet, merge_sig_line_ids

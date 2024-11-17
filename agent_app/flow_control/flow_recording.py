@@ -3,6 +3,8 @@ import json
 from typing import *
 from enum import Enum
 from dataclasses import dataclass, field
+from abc import abstractmethod
+from collections import defaultdict
 
 from agent_app.data_structures import SearchStatus
 from agent_app.flow_control.hypothesis import Hypothesis, VerifiedHypothesis
@@ -109,6 +111,679 @@ class ProcHypothesis:
     def save_hyp_to_file(self, fpath: str) -> None:
         with open(fpath, "w") as f:
             json.dump(self.hyp_to_dict(), f, indent=4)
+
+
+@dataclass
+class CodeContext:
+    line_ids: List[int]
+    context: str
+
+
+def have_duplicate_lines(line_ids_1: List[int], line_ids_2: List[int]) -> bool:
+    assert -1 not in line_ids_1 and -1 not in line_ids_2
+    return len(set(line_ids_1).intersection(set(line_ids_2))) > 0
+
+
+@dataclass
+class ProcessCodeContext:
+    """For recording all collected code context in current process."""
+    files: List[str] = field(default_factory=list)
+    file_line_ids: Dict[str, List[int]] = field(default_factory=dict)
+
+    @abstractmethod
+    def update_with_search_result(self, search_result):
+        raise NotImplementedError
+
+    @abstractmethod
+    def update_with_search_results(self, search_results):
+        raise NotImplementedError
+
+    def update_with_file(self, file_name: str):
+        if file_name not in self.files:
+            self.files.append(file_name)
+
+    def update_with_file_line_ids(self, file_name: str, line_ids: List[int]):
+        if file_name not in self.file_line_ids:
+            self.file_line_ids[file_name] = []
+        self.file_line_ids[file_name].extend(line_ids)
+        self.file_line_ids[file_name] = list(set(self.file_line_ids[file_name]))
+        self.file_line_ids[file_name].sort()
+
+    @abstractmethod
+    def get_all_struct_description(self):
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_all_context(self, all_file_content):
+        raise NotImplementedError
+
+
+@dataclass
+class ProcPyCodeContext(ProcessCodeContext):
+    # file name -> [import statement]
+    file_imports: Dict[str, List[str]] = field(default_factory=dict)
+
+    # file name -> {name -> code}
+    file_functions: Dict[str, Dict[str, CodeContext]] = field(default_factory=dict)
+    # file name -> {name -> code}
+    file_classes: Dict[str, Dict[str, CodeContext]] = field(default_factory=dict)
+    # file name -> {class name -> {name -> [code]} (just in case)
+    file_inclass_methods: Dict[str, Dict[str, Dict[str, List[CodeContext]]]] = field(default_factory=dict)
+    # file name -> [code]
+    file_other_snippets: Dict[str, List[CodeContext]] = field(default_factory=dict)
+
+    """DUPLICATE STRUCT"""
+
+    def is_duplicate_function(self, file_name: str, func_name: str) -> Tuple[bool, str]:
+        old_func = self.file_functions.get(file_name, {}).get(func_name, None)
+        if old_func:
+            return True, f"Have collected function '{func_name}' in file '{file_name}'."
+        else:
+            return False, "ok"
+
+    def is_duplicate_class(self, file_name: str, class_name: str) -> Tuple[bool, str]:
+        old_class = self.file_classes.get(file_name, {}).get(class_name, None)
+        if old_class:
+            return True, f"Have collected class '{class_name}' in file '{file_name}'."
+        else:
+            return False, "ok"
+
+    def is_duplicate_inclass_method(self, file_name: str, class_name: str, inclass_method_name: str, line_ids: List[int]) -> Tuple[bool, str]:
+        old_inclass_methods = self.file_inclass_methods.get(file_name, {}).get(class_name, {}).get(inclass_method_name, [])
+        for old_inclass_method in old_inclass_methods:
+            if have_duplicate_lines(old_inclass_method.line_ids, line_ids):
+                return True, f"Have collected method '{inclass_method_name}' in class '{class_name}' of file '{file_name}'."
+        return False, "ok"
+
+    """CLASSIFICATION"""
+
+    @staticmethod
+    def is_import_search_result(res: PySearchResult):
+        if -1 in res.line_ids and res.func_name is None and res.class_name is None and res.inclass_method_name is None:
+            return True
+        else:
+            return False
+
+    @staticmethod
+    def is_function_search_result(res: PySearchResult):
+        if -1 not in res.line_ids and res.func_name is not None and res.class_name is None and res.inclass_method_name is None:
+            return True
+        else:
+            return False
+
+    @staticmethod
+    def is_class_search_result(res: PySearchResult):
+        if -1 not in res.line_ids and res.class_name is not None and res.func_name is None and res.inclass_method_name is None:
+            return True
+        else:
+            return False
+
+    @staticmethod
+    def is_inclass_method_search_result(res: PySearchResult):
+        if -1 not in res.line_ids and res.class_name is not None and res.inclass_method_name is not None and res.func_name is None:
+            return True
+        else:
+            return False
+
+    @staticmethod
+    def is_other_search_result(res: PySearchResult):
+        if -1 not in res.line_ids and res.func_name is None and res.class_name is None and res.inclass_method_name is None:
+            return True
+        else:
+            return False
+
+    """UPDATE"""
+
+    def update_with_import_search_result(self, res: PySearchResult) -> Tuple[bool, str]:
+        if res.file_path not in self.file_imports:
+            self.file_imports[res.file_path] = []
+        if res.code not in self.file_imports[res.file_path]:
+            self.file_imports[res.file_path].append(res.code)
+        return True, "ok"
+
+    def update_with_function_search_result(self, res: PySearchResult) -> Tuple[bool, str]:
+        if res.file_path not in self.file_functions:
+            self.file_functions[res.file_path] = {}
+
+        flag, msg = self.is_duplicate_function(res.file_path, res.func_name)
+        if flag:
+            return False, msg
+
+        self.file_functions[res.file_path][res.func_name] = CodeContext(res.line_ids, res.code)
+
+        self.update_with_file(res.file_path)
+        self.update_with_file_line_ids(res.file_path, res.line_ids)
+
+        return True, "ok"
+
+    def update_with_class_search_result(self, res: PySearchResult) -> Tuple[bool, str]:
+        if res.file_path not in self.file_classes:
+            self.file_classes[res.file_path] = {}
+
+        flag, msg = self.is_duplicate_class(res.file_path, res.class_name)
+        if flag:
+            return False, msg
+
+        self.file_classes[res.file_path][res.class_name] = CodeContext(res.line_ids, res.code)
+
+        self.update_with_file(res.file_path)
+        self.update_with_file_line_ids(res.file_path, res.line_ids)
+
+        return True, "ok"
+
+    def update_with_inclass_method_search_result(self, res: PySearchResult) -> Tuple[bool, str]:
+        if res.file_path not in self.file_inclass_methods:
+            self.file_inclass_methods[res.file_path] = defaultdict(lambda: defaultdict(list))
+
+        flag, msg = self.is_duplicate_inclass_method(res.file_path, res.class_name, res.inclass_method_name, res.line_ids)
+        if flag:
+            return False, msg
+
+        self.file_inclass_methods[res.file_path][res.class_name][res.inclass_method_name].append(CodeContext(res.line_ids, res.code))
+
+        self.update_with_file(res.file_path)
+        self.update_with_file_line_ids(res.file_path, res.line_ids)
+
+        return True, "ok"
+
+    def update_with_other_search_result(self, res: PySearchResult) -> Tuple[bool, str]:
+        if not res.line_ids:
+            return False, "Empty line ids"
+
+        # TODO: For now, we do not check if other code added is duplicated.
+        if res.file_path not in self.file_other_snippets:
+            self.file_other_snippets[res.file_path] = []
+        self.file_other_snippets[res.file_path].append(CodeContext(res.line_ids, res.code))
+
+        self.update_with_file(res.file_path)
+        self.update_with_file_line_ids(res.file_path, res.line_ids)
+
+        return True, "ok"
+
+    def update_with_search_result(self, res: PySearchResult) -> Tuple[bool, str]:
+        ## Code context
+        # 1. Import statement
+        if self.is_import_search_result(res):
+            return self.update_with_import_search_result(res)
+
+        # 2. Function
+        if self.is_function_search_result(res):
+            return self.update_with_function_search_result(res)
+
+        # 3. Class
+        if self.is_class_search_result(res):
+            return self.update_with_class_search_result(res)
+
+        # 4. Inclass method
+        if self.is_inclass_method_search_result(res):
+            return self.update_with_inclass_method_search_result(res)
+
+        # 5. Other code snippet
+        assert self.is_other_search_result(res)
+        return self.update_with_other_search_result(res)
+
+    def update_with_search_results(self, search_results: List[PySearchResult]) -> str:
+        msg = ""
+        for res in search_results:
+            flag, msg = self.update_with_search_result(res)
+            if not flag:
+                msg += "\n" + msg
+        msg.strip()
+        return msg
+
+    """DESCRIPTION"""
+
+    def get_file_function_name_seq(self, file_name: str) -> str:
+        if file_name not in self.file_functions:
+            return ""
+        func_names: List[str] = [name for name, _ in self.file_functions[file_name].items()]
+        return ", ".join(func_names)
+
+    def get_file_class_name_seq(self, file_name: str) -> str:
+        if file_name not in self.file_classes:
+            return ""
+        class_names: List[str] = [name for name, _ in self.file_classes[file_name].items()]
+        return ", ".join(class_names)
+
+    def get_file_inclass_method_name_seq(self, file_name: str) -> str:
+        file_inclass_methods = {}
+        if file_name in self.file_inclass_methods:
+            file_inclass_methods = self.file_inclass_methods[file_name]
+
+        if file_inclass_methods:
+            return ""
+
+        class_names = list(file_inclass_methods.keys())
+
+        desc = ""
+        for class_name in class_names:
+            inclass_method_names = list(file_inclass_methods[class_name].keys())
+            cur_desc = f"For class {class_name}:\n- method: " + ", ".join(inclass_method_names)
+            desc += "\n\n" + cur_desc
+
+        desc.strip()
+
+        return desc
+
+    def get_file_struct_description(self, file_name: str) -> str:
+        file_desc = f"In file {file_name}:"
+
+        # 1. Function
+        func_name_seq = self.get_file_function_name_seq(file_name)
+        if func_name_seq:
+            file_desc += "\n- Interface: " + func_name_seq
+        # 2. Class
+        class_name_seq = self.get_file_class_name_seq(file_name)
+        if class_name_seq:
+            file_desc += "\n- Class: " + class_name_seq
+        # 3. Inclass method
+        inclass_method_seq = self.get_file_inclass_method_name_seq(file_name)
+        if inclass_method_seq:
+            file_desc += "\n- Inclass Method: "
+            for line in inclass_method_seq.split('\n'):
+                file_desc += "\n    " + line
+
+        return file_desc
+
+    def get_all_struct_description(self):
+        desc = ""
+        for file_name in self.files:
+            cur_file_desc = self.get_file_struct_description(file_name)
+            desc += "\n\n" + cur_file_desc
+        desc.strip()
+        return desc
+
+    """CONTEXT"""
+
+    def get_file_context(self, file_name: str, file_content: str) -> str:
+        file_lines = file_content.split("\n")
+
+        cur_context = ""
+        # 1. Import statements
+        cur_imports = self.file_imports.get(file_name, [])
+        if cur_imports:
+            cur_context += "\n".join(cur_imports)
+            cur_context += "\n..."
+        # 2. Other context
+        cur_line_ids = self.file_line_ids.get(file_name, [])
+        cur_line_ids.sort()
+        for i in range(len(cur_line_ids)):
+            if i > 0 and cur_line_ids[i] != cur_line_ids[i - 1] + 1:
+                cur_context += "\n..."
+            cur_context += "\n" + file_lines[cur_line_ids[i]]
+
+        cur_context.strip()
+
+        return cur_context
+
+    def get_all_context(self, all_file_content: Dict[str, str]) -> str:
+        total_context = ""
+        for i, file_name in enumerate(self.files):
+            file_context = self.get_file_context(file_name, all_file_content[file_name])
+            total_context += (f"\n\n## File {i + 1}: {file_name}"
+                              f"\n{file_context}")
+        total_context.strip()
+        return total_context
+
+
+@dataclass
+class ProcJavaCodeContext(ProcessCodeContext):
+    # package name -> [file name]
+    package_files: Dict[str, List[str]] = field(default_factory=Dict)
+
+    # file name -> package name
+    file_package: Dict[str, str] = field(default_factory=Dict)
+
+    # file name -> [import statement]
+    file_imports: Dict[str, List[str]] = field(default_factory=dict)
+
+    # file name -> {name -> code}
+    file_interfaces: Dict[str, Dict[str, CodeContext]] = field(default_factory=dict)
+    # file name -> {name -> code}
+    file_classes: Dict[str, Dict[str, CodeContext]] = field(default_factory=dict)
+    # file name -> {class name -> {name -> code}
+    file_inclass_interfaces: Dict[str, Dict[str, Dict[str, CodeContext]]] = field(default_factory=dict)
+    # file name -> {class name -> {name -> code}
+    file_inclass_classes: Dict[str, Dict[str, Dict[str, CodeContext]]] = field(default_factory=dict)
+    # file name -> {class name -> {name -> [code]} (method overloading)
+    file_inclass_methods: Dict[str, Dict[str, Dict[str, List[CodeContext]]]] = field(default_factory=dict)
+    # file name -> [code]
+    file_other_snippets: Dict[str, List[CodeContext]] = field(default_factory=dict)
+
+    """DUPLICATE STRUCT"""
+
+    def is_duplicate_interface(self, file_name: str, iface_name: str) -> Tuple[bool, str]:
+        old_iface = self.file_interfaces.get(file_name, {}).get(iface_name, None)
+        if old_iface:
+            return True, f"Have collected interface '{iface_name}' in file '{file_name}'."
+        else:
+            return False, "ok"
+
+    def is_duplicate_class(self, file_name: str, class_name: str) -> Tuple[bool, str]:
+        old_class = self.file_classes.get(file_name, {}).get(class_name, None)
+        if old_class:
+            return True, f"Have collected class '{class_name}' in file '{file_name}'."
+        else:
+            return False, "ok"
+
+    def is_duplicate_inclass_interface(self, file_name: str, class_name: str, inclass_iface_name: str) -> Tuple[bool, str]:
+        old_inclass_iface = self.file_inclass_interfaces.get(file_name, {}).get(class_name, {}).get(inclass_iface_name, None)
+        if old_inclass_iface:
+            return True, f"Have collected interface '{inclass_iface_name}' in class '{class_name}' of file '{file_name}'."
+        else:
+            return False, "ok"
+
+    def is_duplicate_inclass_class(self, file_name: str, class_name: str, inclass_class_name: str) -> Tuple[bool, str]:
+        old_inclass_class = self.file_inclass_classes.get(file_name, {}).get(class_name, {}).get(inclass_class_name, None)
+        if old_inclass_class:
+            return True, f"Have collected class '{inclass_class_name}' in class '{class_name}' of file '{file_name}'."
+        else:
+            return False, "ok"
+
+    def is_duplicate_inclass_method(self, file_name: str, class_name: str, inclass_method_name: str, line_ids: List[int]) -> Tuple[bool, str]:
+        old_inclass_methods = self.file_inclass_methods.get(file_name, {}).get(class_name, {}).get(inclass_method_name, [])
+        for old_inclass_method in old_inclass_methods:
+            if have_duplicate_lines(old_inclass_method.line_ids, line_ids):
+                return True, f"Have collected method '{inclass_method_name}' in class '{class_name}' of file '{file_name}'."
+        return False, "ok"
+
+    """CLASSIFICATION"""
+
+    @staticmethod
+    def is_import_search_result(res: JavaSearchResult):
+        if -1 in res.line_ids and res.iface_name is None and res.class_name is None and \
+                res.inclass_iface_name is None and res.inclass_class_name is None and res.inclass_method_name is None:
+            return True
+        else:
+            return False
+
+    @staticmethod
+    def is_interface_search_result(res: JavaSearchResult):
+        if -1 not in res.line_ids and res.iface_name is not None and res.class_name is None and \
+                res.inclass_iface_name is None and res.inclass_class_name is None and res.inclass_method_name is None:
+            return True
+        else:
+            return False
+
+    @staticmethod
+    def is_class_search_result(res: JavaSearchResult):
+        if -1 not in res.line_ids and res.class_name is not None and res.iface_name is None and \
+                res.inclass_iface_name is None and res.inclass_class_name is None and res.inclass_method_name is None:
+            return True
+        else:
+            return False
+
+    @staticmethod
+    def is_inclass_type_search_result(res: JavaSearchResult):
+        if -1 not in res.line_ids and res.iface_name is None and res.class_name is not None and \
+                (res.inclass_iface_name is not None or res.inclass_class_name is not None or res.inclass_method_name is not None):
+            return True
+        else:
+            return False
+
+    @staticmethod
+    def is_other_search_result(res: JavaSearchResult):
+        if -1 not in res.line_ids and res.iface_name is None and res.class_name is None and \
+                res.inclass_iface_name is None and res.inclass_class_name is None and res.inclass_method_name is None:
+            return True
+        else:
+            return False
+
+    """UPDATE"""
+
+    def update_with_import_search_result(self, res: JavaSearchResult) -> Tuple[bool, str]:
+        if res.file_path not in self.file_imports:
+            self.file_imports[res.file_path] = []
+        if res.code not in self.file_imports[res.file_path]:
+            self.file_imports[res.file_path].append(res.code)
+        return True, "ok"
+
+    def update_with_interface_search_result(self, res: JavaSearchResult) -> Tuple[bool, str]:
+        if res.file_path not in self.file_interfaces:
+            self.file_interfaces[res.file_path] = {}
+
+        flag, msg = self.is_duplicate_interface(res.file_path, res.iface_name)
+        if flag:
+            return False, msg
+
+        self.file_interfaces[res.file_path][res.iface_name] = CodeContext(res.line_ids, res.code)
+
+        self.update_with_file(res.file_path)
+        self.update_with_file_line_ids(res.file_path, res.line_ids)
+
+        return True, "ok"
+
+    def update_with_class_search_result(self, res: JavaSearchResult) -> Tuple[bool, str]:
+        if res.file_path not in self.file_classes:
+            self.file_classes[res.file_path] = {}
+
+        flag, msg = self.is_duplicate_class(res.file_path, res.class_name)
+        if flag:
+            return False, msg
+
+        self.file_classes[res.file_path][res.class_name] = CodeContext(res.line_ids, res.code)
+
+        self.update_with_file(res.file_path)
+        self.update_with_file_line_ids(res.file_path, res.line_ids)
+
+        return True, "ok"
+
+    def update_with_inclass_type_search_result(self, res: JavaSearchResult) -> Tuple[bool, str]:
+        if res.inclass_iface_name:
+            if res.file_path not in self.file_inclass_interfaces:
+                self.file_inclass_interfaces[res.file_path] = defaultdict(dict)
+
+            flag, msg = self.is_duplicate_inclass_interface(res.file_path, res.class_name, res.inclass_iface_name)
+            if flag:
+                return False, msg
+
+            self.file_inclass_interfaces[res.file_path][res.class_name][res.inclass_iface_name] = CodeContext(res.line_ids, res.code)
+        elif res.inclass_class_name:
+            if res.file_path not in self.file_inclass_classes:
+                self.file_inclass_classes[res.file_path] = defaultdict(dict)
+
+            flag, msg = self.is_duplicate_inclass_class(res.file_path, res.class_name, res.inclass_class_name)
+            if flag:
+                return False, msg
+
+            self.file_inclass_classes[res.file_path][res.class_name][res.inclass_class_name] = CodeContext(res.line_ids, res.code)
+        else:
+            if res.file_path not in self.file_inclass_methods:
+                self.file_inclass_methods[res.file_path] = defaultdict(lambda: defaultdict(list))
+
+            flag, msg = self.is_duplicate_inclass_method(res.file_path, res.class_name, res.inclass_method_name, res.line_ids)
+            if flag:
+                return False, msg
+
+            self.file_inclass_methods[res.file_path][res.class_name][res.inclass_method_name].append(CodeContext(res.line_ids, res.code))
+
+        self.update_with_file(res.file_path)
+        self.update_with_file_line_ids(res.file_path, res.line_ids)
+
+        return True, "ok"
+
+    def update_with_other_search_result(self, res: JavaSearchResult) -> Tuple[bool, str]:
+        if not res.line_ids:
+            return False, "Empty line ids"
+
+        # TODO: For now, we do not check if other code added is duplicated.
+        if res.file_path not in self.file_other_snippets:
+            self.file_other_snippets[res.file_path] = []
+        self.file_other_snippets[res.file_path].append(CodeContext(res.line_ids, res.code))
+
+        self.update_with_file(res.file_path)
+        self.update_with_file_line_ids(res.file_path, res.line_ids)
+
+        return True, "ok"
+
+    def update_with_search_result(self, res: JavaSearchResult) -> Tuple[bool, str]:
+        ## Package
+        if res.package_name:
+            if res.package_name in self.package_files:
+                self.package_files[res.package_name].append(res.file_path)
+                self.package_files[res.package_name] = list(set(self.package_files[res.package_name]))
+            else:
+                self.package_files[res.package_name] = [res.file_path]
+
+            self.file_package[res.file_path] = res.package_name
+
+        ## Code context
+        # 1. Package declaration
+        # TODO: For package declarations, we do not actively add them (there are no search results that simply
+        #       contain a package declaration statement), but we will add package declaration like 'package xxx'
+        #       to the beginning of each collected file when showing
+
+        # 2. Import statement
+        if self.is_import_search_result(res):
+            return self.update_with_import_search_result(res)
+
+        # 3. Interface
+        if self.is_interface_search_result(res):
+            return self.update_with_interface_search_result(res)
+
+        # 4. Class
+        if self.is_class_search_result(res):
+            return self.update_with_class_search_result(res)
+
+        # 5. Inclass type
+        if self.is_inclass_type_search_result(res):
+            return self.update_with_inclass_type_search_result(res)
+
+        # 6. Other code snippet
+        assert self.is_other_search_result(res)
+        return self.update_with_other_search_result(res)
+
+    def update_with_search_results(self, search_results: List[JavaSearchResult]) -> str:
+        msg = ""
+        for res in search_results:
+            flag, msg = self.update_with_search_result(res)
+            if not flag:
+                msg += "\n" + msg
+        msg.strip()
+        return msg
+
+    """DESCRIPTION"""
+
+    def get_file_interface_name_seq(self, file_name: str) -> str:
+        if file_name not in self.file_interfaces:
+            return ""
+        iface_names: List[str] = [name for name, _ in self.file_interfaces[file_name].items()]
+        return ", ".join(iface_names)
+
+    def get_file_class_name_seq(self, file_name: str) -> str:
+        if file_name not in self.file_classes:
+            return ""
+        class_names: List[str] = [name for name, _ in self.file_classes[file_name].items()]
+        return ", ".join(class_names)
+
+    def get_file_inclass_type_name_seq(self, file_name: str) -> str:
+        file_inclass_interfaces = {}
+        if file_name in self.file_inclass_interfaces:
+            file_inclass_interfaces = self.file_inclass_interfaces[file_name]
+
+        file_inclass_classes = {}
+        if file_name in self.file_inclass_classes:
+            file_inclass_classes = self.file_inclass_classes[file_name]
+
+        file_inclass_methods = {}
+        if file_name in self.file_inclass_methods:
+            file_inclass_methods = self.file_inclass_methods[file_name]
+
+        if not file_inclass_interfaces and not file_inclass_classes and not file_inclass_methods:
+            return ""
+
+        class_names = list(set(list(file_inclass_interfaces.keys()) +
+                               list(file_inclass_classes.keys()) +
+                               list(file_inclass_methods.keys())))
+
+        desc = ""
+        for class_name in class_names:
+            cur_desc = f"For class {class_name}: "
+
+            # 1. Inclass interface
+            if class_name in file_inclass_interfaces:
+                inclass_iface_names = list(file_inclass_interfaces[class_name].keys())
+                cur_desc += "\n- interface: " + ", ".join(inclass_iface_names)
+
+            # 2. Inclass class
+            if class_name in file_inclass_classes:
+                inclass_class_names = list(file_inclass_classes[class_name].keys())
+                cur_desc += "\n- class: " + ", ".join(inclass_class_names)
+
+            # 3. Inclass method
+            if class_name in file_inclass_methods:
+                inclass_method_names = list(file_inclass_methods[class_name].keys())
+                cur_desc += "\n- method: " + ", ".join(inclass_method_names)
+
+            desc += "\n\n" + cur_desc
+
+        desc.strip()
+
+        return desc
+
+    def get_file_struct_description(self, file_name: str) -> str:
+        file_desc = f"In file {file_name}:"
+
+        # 1. Interface
+        iface_name_seq = self.get_file_interface_name_seq(file_name)
+        if iface_name_seq:
+            file_desc += "\n- Interface: " + iface_name_seq
+        # 2. Class
+        class_name_seq = self.get_file_class_name_seq(file_name)
+        if class_name_seq:
+            file_desc += "\n- Class: " + class_name_seq
+        # 3. Inclass type
+        inclass_type_seq = self.get_file_inclass_type_name_seq(file_name)
+        if inclass_type_seq:
+            file_desc += "\n- Inclass Interface / Class / Method: "
+            for line in inclass_type_seq.split('\n'):
+                file_desc += "\n    " + line
+
+        return file_desc
+
+    def get_all_struct_description(self):
+        desc = ""
+        for file_name in self.files:
+            cur_file_desc = self.get_file_struct_description(file_name)
+            desc += "\n\n" + cur_file_desc
+        desc.strip()
+        return desc
+
+    """CONTEXT"""
+
+    def get_file_context(self, file_name: str, file_content: str) -> str:
+        file_lines = file_content.split("\n")
+
+        cur_context = ""
+        # 1. Package declaration
+        cur_package = self.file_package.get(file_name, None)
+        if cur_package:
+            cur_context += f"package {cur_package}"
+        # 2. Import statements
+        cur_imports = self.file_imports.get(file_name, [])
+        if cur_imports:
+            cur_context += "\n".join(cur_imports)
+            cur_context += "\n..."
+        # 3. Other context
+        cur_line_ids = self.file_line_ids.get(file_name, [])
+        cur_line_ids.sort()
+        for i in range(len(cur_line_ids)):
+            if i > 0 and cur_line_ids[i] != cur_line_ids[i - 1] + 1:
+                cur_context += "\n..."
+            cur_context += "\n" + file_lines[cur_line_ids[i]]
+
+        cur_context.strip()
+
+        return cur_context
+
+    def get_all_context(self, all_file_content: Dict[str, str]) -> str:
+        total_context = ""
+        for i, file_name in enumerate(self.files):
+            file_context = self.get_file_context(file_name, all_file_content[file_name])
+            total_context += (f"\n\n## File {i + 1}: {file_name}"
+                              f"\n{file_context}")
+        total_context.strip()
+        return total_context
 
 
 @dataclass

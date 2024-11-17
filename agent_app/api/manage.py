@@ -10,7 +10,7 @@ from copy import deepcopy
 from docstring_parser import parse
 from abc import abstractmethod
 
-from agent_app import log
+from agent_app import globals, log
 from agent_app.api.agent_proxy import ProxyTask, run_with_retries as run_proxy_with_retries
 from agent_app.CWE.cwe_manage import CWEManager
 from agent_app.commit.commit_manage import PyCommitManager, JavaCommitManager
@@ -18,11 +18,16 @@ from agent_app.search.search_manage import (
     PySearchManager, JavaSearchManager,
     PySearchResult, JavaSearchResult
 )
-from agent_app.flow_control.flow_recording import ProcOutPaths, ProcHypothesis, ProcActionStatus, ProcSearchStatus
+from agent_app.flow_control.flow_recording import (
+    ProcOutPaths,
+    ProcHypothesis,
+    ProcActionStatus, ProcSearchStatus,
+    ProcPyCodeContext, ProcJavaCodeContext
+)
 from agent_app.data_structures import SearchStatus, ToolCallIntent, MessageThread
 from agent_app.task import Task
-from agent_app import globals
-
+from agent_app.util import LanguageNotSupportedError
+from utils import make_hie_dirs
 
 """BASE MANAGER"""
 
@@ -78,8 +83,8 @@ class FlowManager:
         ## All hypothesis (verified & unverified) of current process
         self.cur_proc_all_hyps: ProcHypothesis = ProcHypothesis()
 
-        ## Collected code context of current process
-        # TODO
+        ## Collected code context of current process (need set according to language)
+        self.cur_proc_code_context: ProcPyCodeContext | ProcJavaCodeContext | None = None
 
     """INITIALIZATION"""
 
@@ -231,7 +236,7 @@ class FlowManager:
 
     """PROCESS OUTPUT PATHS"""
 
-    def set_process_output_paths(
+    def reset_process_output_paths(
             self,
             cur_proc_root: str,
             cur_proc_hyp_dpath: str,
@@ -250,17 +255,54 @@ class FlowManager:
     def reset_process_all_hypothesis(self):
         self.cur_proc_all_hyps = ProcHypothesis()
 
+    """PROCESS CODE CONTEXT"""
+
+    def reset_process_code_context(self, lang: str):
+        if lang == "Python":
+            self.cur_proc_code_context = ProcPyCodeContext
+        elif lang == "Java":
+            self.cur_proc_code_context = ProcJavaCodeContext
+        else:
+            raise LanguageNotSupportedError(lang)
+
     """PROCESS STATUS RECORDS"""
 
     def reset_process_status_records(self):
         self.cur_proc_action_status = ProcActionStatus()
         self.cur_proc_search_status = ProcSearchStatus()
 
-    def save_current_process_all_status(self, proc_name: str):
-        self.flow_all_status[proc_name] = {
-            "action_status_records": self.cur_proc_action_status,
-            "search_status_records": self.cur_proc_search_status
+    def save_current_process_all_status(self, cur_proc_name: str):
+        self.flow_all_status[cur_proc_name] = {
+            "action_status_records": self.cur_proc_action_status.to_dict(),
+            "search_status_records": self.cur_proc_search_status.to_dict()
         }
+
+    """PROCESS PREPARATION"""
+
+    def prepare_for_new_process(self, output_dpath: str, cur_proc_name: str):
+        ## 1. Output paths of current process
+        # Root
+        cur_proc_dpath = make_hie_dirs(output_dpath, cur_proc_name)
+        # Dirs
+        cur_proc_hyp_dpath = make_hie_dirs(cur_proc_dpath, f"hypothesis")
+        cur_proc_proxy_dpath = make_hie_dirs(cur_proc_dpath, f"proxy_agent")
+        cur_proc_tool_call_dpath = make_hie_dirs(cur_proc_dpath, "tool_calls")
+
+        self.reset_process_output_paths(
+            cur_proc_root=cur_proc_dpath,
+            cur_proc_hyp_dpath=cur_proc_hyp_dpath,
+            cur_proc_proxy_dpath=cur_proc_proxy_dpath,
+            cur_proc_tool_call_dpath=cur_proc_tool_call_dpath
+        )
+
+        ## 2. All hypothesis of current process
+        self.reset_process_all_hypothesis()
+
+        ## 3. Collected code context of current process
+        self.reset_process_code_context(globals.lang)
+
+        ## 4. Status of current process
+        self.reset_process_status_records()
 
     """TOOL CALL RECORDS"""
 

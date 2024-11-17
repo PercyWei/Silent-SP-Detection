@@ -8,7 +8,7 @@ from agent_app import globals, globals_opt, log
 from agent_app.data_structures import ProxyTask, ToolCallIntent, MessageThread, SearchStatus
 from agent_app.api.manage import FlowManager
 from agent_app.search.search_manage import PySearchManager, JavaSearchManager
-from agent_app.flow_control.flow_recording import State, ProcHypothesis
+from agent_app.flow_control.flow_recording import State
 from agent_app.flow_control.flow_util import (
     _add_usr_msg_and_print,
     _ask_actor_agent_and_print,
@@ -142,9 +142,13 @@ def call_search_apis(
                                    f"\n\n{tool_output}\n\n")
 
         # Extracted code snippet
-        if intent.tool_name in ['search_top_level_function', 'search_class', 'search_interface'] and \
-                globals_opt.opt_to_ctx_retrieval_detailed_search_struct_tool:
-            manager.cur_proc_all_hyps.code_context.extend(all_search_res)
+        # FIXME: NOT COMPLETE!
+        manager.cur_proc_all_hyps.code_context.extend(all_search_res)
+
+        # FIXME: globals_opt
+        code_context_collection_msg = manager.cur_proc_code_context.update_with_search_results(all_search_res)
+        log.log_debug(code_context_collection_msg)
+
 
     collated_tool_response.rstrip()
 

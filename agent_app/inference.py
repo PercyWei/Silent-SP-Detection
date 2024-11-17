@@ -35,30 +35,12 @@ def start_conversation_round_stratified(
         log.print_banner(f"COMPLETE PROCESS {proc_no}")
 
         # ------------------------------------ 1.1 Preparation ------------------------------------ #
-        curr_proc_name = f"process_{proc_no}"
+        cur_proc_name = f"process_{proc_no}"
 
-        ## 1. Output paths of current process
-        # Root
-        cur_proc_dpath = make_hie_dirs(output_dpath, curr_proc_name)
-        # Dirs
-        cur_proc_hyp_dpath = make_hie_dirs(cur_proc_dpath, f"hypothesis")
-        cur_proc_proxy_dpath = make_hie_dirs(cur_proc_dpath, f"proxy_agent")
-        cur_proc_tool_call_dpath = make_hie_dirs(cur_proc_dpath, "tool_calls")
+        # 1. Manager
+        manager.prepare_for_new_process(output_dpath, cur_proc_name)
 
-        manager.set_process_output_paths(
-            cur_proc_root=cur_proc_dpath,
-            cur_proc_hyp_dpath=cur_proc_hyp_dpath,
-            cur_proc_proxy_dpath=cur_proc_proxy_dpath,
-            cur_proc_tool_call_dpath=cur_proc_tool_call_dpath
-        )
-
-        ## 2. All hypothesis of current process
-        manager.reset_process_all_hypothesis()
-
-        ## 3. Status of current process
-        manager.reset_process_status_records()
-
-        ## 4. Message thread
+        # 2. Message thread
         msg_thread = MessageThread()
 
         # ------------------------------------ 1.2 Workflow ------------------------------------ #
@@ -102,7 +84,7 @@ def start_conversation_round_stratified(
         manager.cur_proc_action_status.update_finish_status(success_flag=finish)
 
         # Save all status of current process
-        manager.save_current_process_all_status(curr_proc_name)
+        manager.save_current_process_all_status(cur_proc_name)
 
     #####################################
     # STEP 2: Vote for the final result #
@@ -143,14 +125,7 @@ def run_one_task(
         manager: FlowManager,
         print_callback: Callable[[dict], None] | None = None,
 ) -> Dict[str, Dict[str, Dict]]:
-    """Main entry point to run inference on one task.
-
-    Args:
-        raw_commit_content (str): The original commit content submitted to the task.
-        output_dpath (str): Path to the output directory.
-        manager (FlowManager): The already-initialized process manager.
-        print_callback:
-    """
+    """Main entry point to run inference on one task."""
     log.print_banner("Starting Silent Patch Identification on the following commit")
     log.print_commit_content(raw_commit_content)
 

@@ -27,7 +27,7 @@ from agent_app.static_analysis.java_ast_parse import (
 from agent_app.data_structures import (
     DiffFileInfo, PyDiffFileInfo, JavaDiffFileInfo,
     PySimNodeType, JavaSimNodeType,
-    PySimNode, JavaSimNode
+    PySimNode, JavaSimNode, LineRange
 )
 from agent_app.util import make_tmp_file, remove_tmp_file
 from utils import run_command
@@ -1469,11 +1469,12 @@ def analyse_deleted_py_file(ast_parser: PyASTParser, old_code: str, comb_code: s
     diff_file_info.old_nodes = ast_parser.all_nodes
     # 2. Mapping from line id to Simple Node id
     diff_file_info.old_li2node = ast_parser.li2node_map
+    # 3. Import statements
+    diff_file_info.old_imports = ast_parser.all_imports
     # 3. Structure indexes
     diff_file_info.old_func_index = ast_parser.all_funcs
     diff_file_info.old_class_index = ast_parser.all_classes
     diff_file_info.old_inclass_method_index = ast_parser.all_inclass_methods
-    diff_file_info.old_imports = ast_parser.all_imports
 
     return diff_file_info
 
@@ -1492,11 +1493,12 @@ def analyse_added_py_file(ast_parser: PyASTParser, new_code: str, comb_code: str
     diff_file_info.new_nodes = ast_parser.all_nodes
     # 2. Mapping from line id to Simple Node id
     diff_file_info.new_li2node = ast_parser.li2node_map
-    # 3. Structure indexes
+    # 3. Import statements
+    diff_file_info.new_imports = ast_parser.all_imports
+    # 4. Structure indexes
     diff_file_info.new_func_index = ast_parser.all_funcs
     diff_file_info.new_class_index = ast_parser.all_classes
     diff_file_info.new_inclass_method_index = ast_parser.all_inclass_methods
-    diff_file_info.new_imports = ast_parser.all_imports
 
     return diff_file_info
 
@@ -1529,6 +1531,7 @@ def build_diff_info_for_py_modified_file(
     diff_file_info.old_func_index = ast_parser.all_funcs
     diff_file_info.old_class_index = ast_parser.all_classes
     diff_file_info.old_inclass_method_index = ast_parser.all_inclass_methods
+
     diff_file_info.old_imports = ast_parser.all_imports
 
     # 2. Parse the new code and update
@@ -1540,6 +1543,7 @@ def build_diff_info_for_py_modified_file(
     diff_file_info.new_func_index = ast_parser.all_funcs
     diff_file_info.new_class_index = ast_parser.all_classes
     diff_file_info.new_inclass_method_index = ast_parser.all_inclass_methods
+
     diff_file_info.new_imports = ast_parser.all_imports
 
     return diff_file_info
@@ -1610,13 +1614,14 @@ def analyse_deleted_java_file(ast_parser: JavaASTParser, old_code: str, merge_co
     diff_file_info.old_nodes = ast_parser.all_nodes
     # 2. Mapping from line id to Simple Node id
     diff_file_info.old_li2node = ast_parser.li2node_map
-    # 3. Structure indexes
+    # 3. Imports
+    diff_file_info.old_imports = ast_parser.all_imports
+    # 4. Structure indexes
     diff_file_info.old_iface_index = ast_parser.all_interfaces
     diff_file_info.old_class_index = ast_parser.all_classes
     diff_file_info.old_inclass_iface_index = ast_parser.all_inclass_interfaces
     diff_file_info.old_inclass_class_index = ast_parser.all_inclass_classes
     diff_file_info.old_inclass_method_index = ast_parser.all_inclass_methods
-    diff_file_info.old_imports = ast_parser.all_imports
 
     return diff_file_info
 
@@ -1635,13 +1640,14 @@ def analyse_added_java_file(ast_parser: JavaASTParser, new_code: str, merge_code
     diff_file_info.new_nodes = ast_parser.all_nodes
     # 2. Mapping from line id to Simple Node id
     diff_file_info.new_li2node = ast_parser.li2node_map
-    # 3. Structure indexes
+    # 3. Imports
+    diff_file_info.new_imports = ast_parser.all_imports
+    # 4. Structure indexes
     diff_file_info.new_iface_index = ast_parser.all_interfaces
     diff_file_info.new_class_index = ast_parser.all_classes
     diff_file_info.new_inclass_iface_index = ast_parser.all_inclass_interfaces
     diff_file_info.new_inclass_class_index = ast_parser.all_inclass_classes
     diff_file_info.new_inclass_method_index = ast_parser.all_inclass_methods
-    diff_file_info.new_imports = ast_parser.all_imports
 
     return diff_file_info
 
@@ -1669,6 +1675,8 @@ def build_diff_info_for_java_modified_file(
     ast_parser.set(code=old_code, code_fpath=None)
     ast_parser.parse_java_code()
 
+    diff_file_info.old_imports = ast_parser.all_imports
+
     diff_file_info.package_name = ast_parser.package_name
     diff_file_info.old_nodes = ast_parser.all_nodes
     diff_file_info.old_li2node = ast_parser.li2node_map
@@ -1677,13 +1685,15 @@ def build_diff_info_for_java_modified_file(
     diff_file_info.old_inclass_iface_index = ast_parser.all_inclass_interfaces
     diff_file_info.old_inclass_class_index = ast_parser.all_inclass_classes
     diff_file_info.old_inclass_method_index = ast_parser.all_inclass_methods
-    diff_file_info.old_imports = ast_parser.all_imports
 
     # 2. Parse the new code and update
     ast_parser.set(code=new_code, code_fpath=None)
     ast_parser.parse_java_code()
 
     assert diff_file_info.package_name == ast_parser.package_name
+
+    diff_file_info.new_imports = ast_parser.all_imports
+
     diff_file_info.new_nodes = ast_parser.all_nodes
     diff_file_info.new_li2node = ast_parser.li2node_map
     diff_file_info.new_iface_index = ast_parser.all_interfaces
@@ -1691,7 +1701,6 @@ def build_diff_info_for_java_modified_file(
     diff_file_info.new_inclass_iface_index = ast_parser.all_inclass_interfaces
     diff_file_info.new_inclass_class_index = ast_parser.all_inclass_classes
     diff_file_info.new_inclass_method_index = ast_parser.all_inclass_methods
-    diff_file_info.new_imports = ast_parser.all_imports
 
     return diff_file_info
 

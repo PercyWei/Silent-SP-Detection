@@ -23,19 +23,23 @@ from agent_app.data_structures import (
 )
 
 
+## Search Index Type
 # For Python & Java
 ClassIndexType = MutableMapping[str, List[CodeRange]]
 MethodInClassIndexType = MutableMapping[str, MutableMapping[str, List[CodeRange]]]
 
 # Only for Python
 FuncIndexType = MutableMapping[str, List[CodeRange]]
-PyFileImportType = MutableMapping[str, List[Tuple[str, str, str]]]
 
 # Only for Java
 IfaceIndexType = MutableMapping[str, List[CodeRange]]
 IfaceInClassIndexType = MutableMapping[str, MutableMapping[str, List[CodeRange]]]
 ClassInClassIndexType = MutableMapping[str, MutableMapping[str, List[CodeRange]]]
-JavaFileImportType = MutableMapping[str, List[str]]
+
+## File Import Type
+# For Python: {file path -> [reconstructed import statement]}
+# For Java:   {file path -> [original import statement]}
+FileImportType = MutableMapping[str, List[str]]
 
 
 RESULT_SHOW_LIMIT = 3
@@ -158,24 +162,24 @@ class PySearchManager(BaseSearchManager):
         self.line_id_old2merge: Dict[str, Dict[int, int]] = {}  # file path -> {line id old -> line id merged}
         self.line_id_new2merge: Dict[str, Dict[int, int]] = {}  # file path -> {line id new -> line id merged}
 
-        self.old_func_index: FuncIndexType = defaultdict(list)    # name  -> [(file path, line range)]
-        self.old_class_index: ClassIndexType = defaultdict(list)  # name  -> [(file path, line range)]
+        self.old_func_index: FuncIndexType = defaultdict(list)    # name -> [(file path, line range)]
+        self.old_class_index: ClassIndexType = defaultdict(list)  # name -> [(file path, line range)]
         self.old_inclass_method_index: MethodInClassIndexType = defaultdict(lambda: defaultdict(list))  # class name -> {name -> [(file path, line range)]}
 
-        self.new_func_index: FuncIndexType = defaultdict(list)    # name  -> [(file path, line range)]
-        self.new_class_index: ClassIndexType = defaultdict(list)  # name  -> [(file path, line range)]
+        self.new_func_index: FuncIndexType = defaultdict(list)    # name -> [(file path, line range)]
+        self.new_class_index: ClassIndexType = defaultdict(list)  # name -> [(file path, line range)]
         self.new_inclass_method_index: MethodInClassIndexType = defaultdict(lambda: defaultdict(list))  # class name -> {name -> [(file path, line range)]}
 
-        self.diff_file_imports: PyFileImportType = {}  # file path -> [(package path, attr name, alias name)]
+        self.diff_file_imports: FileImportType = {}  # file path -> [reconstructed import statement]
 
         # -------------------------------- III. Unchanged Files Info -------------------------------- #
         self.nodiff_files: List[str] = []
 
-        self.nodiff_func_index: FuncIndexType = defaultdict(list)    # name  -> [(file path, line range)]
-        self.nodiff_class_index: ClassIndexType = defaultdict(list)  # name  -> [(file path, line range)]
+        self.nodiff_func_index: FuncIndexType = defaultdict(list)    # name -> [(file path, line range)]
+        self.nodiff_class_index: ClassIndexType = defaultdict(list)  # name -> [(file path, line range)]
         self.nodiff_inclass_method_index: MethodInClassIndexType = defaultdict(lambda: defaultdict(list))  # class name -> {name -> [(file path, line range)]}
 
-        self.nodiff_file_imports: PyFileImportType = {}  # file path -> [(package path, attr name, alias name)]
+        self.nodiff_file_imports: FileImportType = {}  # file path -> [reconstructed import statement]
 
         # -------------------------------- IV. AST Parser -------------------------------- #
         self.ast_parser = PyASTParser()
@@ -253,7 +257,9 @@ class PySearchManager(BaseSearchManager):
                     self.new_inclass_method_index[class_name][name].append(CodeRange(file_path, lrange))
 
             ## Imports
-            self.diff_file_imports[file_path] = list(set(diff_info.old_imports + diff_info.new_imports))
+            old_imports = diff_info.old_imports if diff_info.old_imports is not None else []
+            new_imports = diff_info.new_imports if diff_info.new_imports is not None else []
+            self.diff_file_imports[file_path] = list(set(old_imports + new_imports))
 
 
     def _update_nodiff_file_info(self) -> None:
@@ -295,7 +301,7 @@ class PySearchManager(BaseSearchManager):
         self.parsed_files: List[str] = self.diff_files + self.nodiff_files
 
 
-    """LIBRARY"""
+    """IMPORT LIBRARY"""
 
 
     def is_path_in_repo(self, abs_pkg_path: str, attr_name: str) -> Tuple[str, str] | None:
@@ -353,20 +359,14 @@ class PySearchManager(BaseSearchManager):
         return rel_pkg_path, attr_name
 
 
-    def is_custom_lib(
-            self,
-            import_stmt_info: Tuple[str, str, str],
-            abs_cur_fpath: str
-    ) -> Tuple[bool, Tuple[str, str] | None]:
+    def is_custom_lib(self, pkg_or_module_name: str, obj_name: str, abs_cur_fpath: str) -> Tuple[str, str] | None:
         """Determine whether an import is a custom library.
 
         NOTE 1: `local_cur_py_file` is ABSOLUTE path.
         NOTE 2: File paths in `repo_py_files` are all ABSOLUTE paths, i.e. root/projects/....
         Args:
-            import_stmt_info (Tuple[str, str, str]):
-                - str: pkg path (I. 'xx' in 'import xx'; II. 'xx.xx' in 'from xx.xx import xxx')
-                - str: attr name (pkg / module / class / function ...)
-                - str: alias name
+            pkg_or_module_name (str):
+            obj_name (str):
             abs_cur_fpath (str): Current Python file path.
         Returns:
             bool: True if the import is a custom library, False otherwise.
@@ -375,8 +375,6 @@ class PySearchManager(BaseSearchManager):
                 - str: Name of imported code element (class / function ...), '' if no code element is imported.
         """
         assert abs_cur_fpath.startswith(self.local_repo_dpath)
-
-        pkg_path, attr_name, _ = import_stmt_info
 
         ###########################################################
         ########### Case 1: Form "from ..xx import xxx" ###########
@@ -391,21 +389,21 @@ class PySearchManager(BaseSearchManager):
                     break
             return l
 
-        if pkg_path.startswith("."):
+        if pkg_or_module_name.startswith("."):
             # cur_fpath: /root/...project/.../A/B/x.py
             # target (pkg_path): ..C.D -> levels: 2
-            levels = _count_path_levels(pkg_path)
+            levels = _count_path_levels(pkg_or_module_name)
 
             # prefix -> /root/...project/.../A
             prefix = "/".join(abs_cur_fpath.split("/")[:-levels])
             # rest -> C/D
-            rest = pkg_path[levels:].replace(".", "/")
+            rest = pkg_or_module_name[levels:].replace(".", "/")
             # abs_pkg_path: /root/...project/.../A/C/D <- /root/...project/.../A + C/D
             abs_pkg_path = os.path.join(prefix, rest)
 
-            rel_pkg_path, attr_name = self.is_path_in_repo(abs_pkg_path, attr_name)
+            rel_pkg_path, obj_name = self.is_path_in_repo(abs_pkg_path, obj_name)
 
-            return True, (rel_pkg_path, attr_name)
+            return rel_pkg_path, obj_name
 
         ############################################################
         ########### Case 2: Form "from xx.xx import xxx" ###########
@@ -417,7 +415,7 @@ class PySearchManager(BaseSearchManager):
         # Adv: Comprehensive consideration
         # Dis: 1) Time consuming; 2) Possible false-classification
 
-        pkg_path_regex = re.compile(re.escape(pkg_path.replace(".", "/")))
+        pkg_path_regex = re.compile(re.escape(pkg_or_module_name.replace(".", "/")))
         abs_repo_fpaths = glob.glob(os.path.join(self.local_repo_dpath, "**/*.py"), recursive=True)
 
         for abs_py_fpath in abs_repo_fpaths:
@@ -434,15 +432,15 @@ class PySearchManager(BaseSearchManager):
                 # prefix -> A/B
                 prefix = rel_py_path[:match.start()]
                 # abs_pkg_path: /root/.../project/A/B/C/D <- /root/.../project + A/B + C/D
-                abs_pkg_path = os.path.join(self.local_repo_dpath, prefix, pkg_path.replace(".", "/"))
+                abs_pkg_path = os.path.join(self.local_repo_dpath, prefix, pkg_or_module_name.replace(".", "/"))
 
-                res = self.is_path_in_repo(abs_pkg_path, attr_name)
+                res = self.is_path_in_repo(abs_pkg_path, obj_name)
                 if not res:
                     continue
 
-                rel_pkg_path, attr_name = res
+                rel_pkg_path, obj_name = res
 
-                return True, (rel_pkg_path, attr_name)
+                return rel_pkg_path, obj_name
 
         ## Option 2: While importing custom packages or modules in the project, we only consider two paths for
         #       Python to find modules and packages: 1) the repo root dir, and 2) the current dir.
@@ -464,65 +462,55 @@ class PySearchManager(BaseSearchManager):
         #     rel_pkg_path, attr_name = res
         #     return True, (rel_pkg_path, attr_name)
 
-        return False, None
+        return None
 
 
-    def is_standard_lib(self, import_stmt_info: Tuple[str, str, str]) -> Tuple[bool, Tuple[str, str] | None]:
+    def is_standard_lib(self, pkg_or_module_name: str, obj_name: str) -> Tuple[str, str] | None:
         """Determine whether an import is a standard library.
 
         Args:
-            import_stmt_info (Tuple[str, str, str]):
-                - str: pkg path (I. 'xx' in 'import xx'; II. 'xx.xx' in 'from xx.xx import xxx').
-                - str: attr name (pkg / module / class / function ...).
-                - str: alias name.
+            pkg_or_module_name (str):
+            obj_name (str):
         Returns:
             bool: True if the import is a standard library, False otherwise.
             Tuple[str, str, str] | None:
                 - str: Lib name, like 'os', 'sys'.
                 - str: Complete import path of package / module / ... , like 'os.path', 'os.path.join'.
         """
-        pkg_path, attr_name, alias_name = import_stmt_info
-
-        if pkg_path.startswith("."):
-            return False, None
+        if pkg_or_module_name.startswith("."):
+            return None
 
         try:
-            local_pkg = __import__(pkg_path)
+            local_pkg = __import__(pkg_or_module_name)
             local_pkg_path = getattr(local_pkg, '__file__', None)
             res = local_pkg_path is None or any(
                 local_pkg_path.startswith(p) for p in sys.path if 'site-packages' not in p)
         except ModuleNotFoundError:
-            return False, None
+            return None
         except Exception:
-            raise RuntimeError(f"Unsupported import path: {pkg_path}, {attr_name}, {alias_name}")
+            raise RuntimeError(f"Unsupported import path: {pkg_or_module_name}, {obj_name}")
 
         if not res:
-            return False, None
+            return None
 
-        lib_name = pkg_path.split(".")[0]
-        if attr_name == "":
+        lib_name = pkg_or_module_name.split(".")[0]
+        if obj_name == "":
             # Import form is "import xxx" or "import xx.xxx"
-            comp_import_path = pkg_path
+            comp_import_path = pkg_or_module_name
         else:
             # Import form is "from xx.xx import xxx"
-            comp_import_path = pkg_path + "." + attr_name
+            comp_import_path = pkg_or_module_name + "." + obj_name
 
-        return True, (lib_name, comp_import_path)
+        return lib_name, comp_import_path
 
 
-    def judge_lib_source(
-            self,
-            import_stmt_info: Tuple[str, str, str],
-            abs_cur_fpath: str,
-    ) -> Tuple[str, str]:
+    def judge_import_source(self, pkg_or_module_name: str, obj_name: str, abs_cur_fpath: str) -> Tuple[str, str]:
         """Judge the source of the library imported.
 
         Three types of sources: standard, third-party, custom
         Args:
-            import_stmt_info (Tuple[str, str, str]):
-                - str: pkg path (I. 'xx' in 'import xx'; II. 'xx.xx' in 'from xx.xx import xxx')
-                - str: attr name (pkg / module / class / function ...)
-                - str: alias name
+            pkg_or_module_name (str):
+            obj_name (str):
             abs_cur_fpath (str): Current Python file path.
         Returns:
             str: Source of lib imported.
@@ -531,22 +519,46 @@ class PySearchManager(BaseSearchManager):
                 - For custom lib: package / module RELATIVE path.
         """
         ######## (1) Standard library ########
-        res, stand_lib = self.is_standard_lib(import_stmt_info)
+        res = self.is_standard_lib(pkg_or_module_name, obj_name)
         if res:
-            lib_name, _ = stand_lib
+            lib_name, _ = res
             return "standard library", lib_name
 
         ######## (2) Custom library ########
-        res, custom_lib = self.is_custom_lib(import_stmt_info, abs_cur_fpath)
+        res = self.is_custom_lib(pkg_or_module_name, obj_name, abs_cur_fpath)
         if res:
-            rel_pkg_path, attr_name = custom_lib
+            rel_pkg_path, _ = res
             return "custom library", rel_pkg_path
 
         ######## (3) Third-party library ########
-        pkg_path, *_ = import_stmt_info
-        lib_name = pkg_path.split(".")[0]
+        lib_name = pkg_or_module_name.split(".")[0]
 
         return "third-party library", lib_name
+
+
+    @staticmethod
+    def parse_standard_import_statement(import_stmt: str) -> Tuple[str, str, str]:
+        """
+        Here, the standard import statement refers to an import statement of the following form:
+        1. import xxx (as xx)
+        2. from xxx import xxx (as xx)
+        """
+        if import_stmt.startswith("import"):
+            parts = import_stmt.split()
+            assert len(parts) == 2 or len(parts) == 4
+
+            pkg_or_module_name = parts[1]
+            obj_name = ""
+            alias_name = parts[3] if len(parts) == 4 else ""
+        else:
+            parts = import_stmt.split()
+            assert len(parts) == 4 or len(parts) == 6
+
+            pkg_or_module_name = parts[1]
+            obj_name = parts[3]
+            alias_name = parts[5] if len(parts) == 6 else ""
+
+        return pkg_or_module_name, obj_name, alias_name
 
 
     """EXTRACT CODE SNIPPET"""
@@ -590,29 +602,26 @@ class PySearchManager(BaseSearchManager):
         return complete_call if complete_call else ori_call
 
 
-    def _get_class_signature_in_nodiff_file(self, class_name: str, fpath: str, class_range: LineRange) -> str:
+    def _get_class_signature_in_nodiff_file(self, class_name: str, fpath: str, lrange: LineRange) -> Tuple[str, List[int]]:
         """Get class signature from the specified nodiff file."""
         assert fpath in self.nodiff_files
         abs_fpath = os.path.join(self.local_repo_dpath, fpath)
-        class_sig = search_util.get_class_signature_from_nodiff_file(
+        return search_util.get_class_signature_from_nodiff_file(
             abs_fpath=abs_fpath,
             class_name=class_name,
-            class_range=class_range,
+            lrange=lrange,
             lang='Python'
         )
-        return class_sig
 
 
-    def _get_class_signature_in_diff_file(
-            self, class_name: str, fpath: str, old_class_ranges: List[LineRange], new_class_ranges: List[LineRange]
-    ) -> str:
+    def _get_class_signature_in_diff_file(self, class_name: str, fpath: str, old_lranges: List[LineRange], new_lranges: List[LineRange]) -> Tuple[str, List[int]]:
         """Get class signature from the specified diff file."""
         assert fpath in self.diff_files
         # NOTE: Classes with the same name in a file are generally not allowed in Python (the former will be overwritten by the latter).
-        assert 1 <= len(old_class_ranges) + len(new_class_ranges) <= 2
+        assert 1 <= len(old_lranges) + len(new_lranges) <= 2
 
-        old_class_range = old_class_ranges[0] if old_class_ranges else None
-        new_class_range = new_class_ranges[0] if new_class_ranges else None
+        old_class_range = old_lranges[0] if old_lranges else None
+        new_class_range = new_lranges[0] if new_lranges else None
 
         merge_code = self.merge_code[fpath]
         old_code = self.old_code[fpath] if fpath in self.old_code else None
@@ -621,55 +630,40 @@ class PySearchManager(BaseSearchManager):
         line_id_old2merge = self.line_id_old2merge[fpath] if fpath in self.line_id_old2merge else None
         line_id_new2merge = self.line_id_new2merge[fpath] if fpath in self.line_id_new2merge else None
 
-        class_sig_code = search_util.get_class_signature_from_diff_file(
-            merge_file_content=merge_code,
+        return search_util.get_class_signature_from_diff_file(
+            class_name=class_name,
+            old_lrange=old_class_range,
+            new_lrange=new_class_range,
             old_file_content=old_code,
             new_file_content=new_code,
+            merge_file_content=merge_code,
             line_id_old2merge=line_id_old2merge,
             line_id_new2merge=line_id_new2merge,
-            class_name=class_name,
-            old_class_range=old_class_range,
-            new_class_range=new_class_range,
             lang='Python'
         )
 
-        return class_sig_code
 
-
-    def _get_code_snippet_in_nodiff_file(self, fpath: str, line_range: LineRange) -> str:
+    def _get_code_snippet_in_nodiff_file(self, fpath: str, lrange: LineRange) -> Tuple[str, List[int]]:
         """Get code snippet from the specified nodiff file."""
         assert fpath in self.nodiff_files
         abs_fpath = os.path.join(self.local_repo_dpath, fpath)
-        code = search_util.get_code_snippet_from_nodiff_file(abs_fpath, line_range.start, line_range.end)
-        return code
+        return search_util.get_code_snippet_from_nodiff_file(abs_fpath, lrange)
 
 
-    def _get_code_snippet_in_diff_file(
-            self, fpath: str, old_line_ranges: List[LineRange], new_line_ranges: List[LineRange]
-    ) -> str:
+    def _get_code_snippet_in_diff_file(self, fpath: str, old_lranges: List[LineRange], new_lranges: List[LineRange]) -> Tuple[str, List[int]]:
         """Get code snippet from the specified diff file."""
         assert fpath in self.diff_files
         merge_code = self.merge_code[fpath]
-        snippet = search_util.get_code_snippet_from_diff_file(
-            merge_code, old_line_ranges, new_line_ranges, self.line_id_old2merge[fpath], self.line_id_new2merge[fpath]
+        return search_util.get_code_snippet_from_diff_file(
+            old_lranges=old_lranges,
+            new_lranges=new_lranges,
+            merged_file_content=merge_code,
+            line_id_old2merge=self.line_id_old2merge[fpath],
+            line_id_new2merge=self.line_id_new2merge[fpath]
         )
-
-        return snippet
 
 
     """SEARCH FUNCTIONS"""
-
-
-    @staticmethod
-    def lib_info_to_seq(pkg_path: str, attr_name: str, alias_name: str) -> str:
-        if attr_name == "":
-            import_seq = f"import {pkg_path}"
-        else:
-            import_seq = f"from {pkg_path} import {attr_name}"
-
-        import_seq = import_seq + f" as {alias_name}" if alias_name != "" else import_seq
-
-        return import_seq
 
 
     def _search_class_or_func_in_file_imports(self, call_name: str, file_path: str) -> Tuple[str, PySearchResult] | None:
@@ -685,24 +679,20 @@ class PySearchManager(BaseSearchManager):
                 - SearchResult: Corresponding search result.
         """
         if file_path in self.nodiff_files:
-            file_import_libs = self.nodiff_file_imports[file_path]
+            file_import_stmts = self.nodiff_file_imports[file_path]
         else:
-            file_import_libs = self.diff_file_imports[file_path]
+            file_import_stmts = self.diff_file_imports[file_path]
 
         call_source = call_name.split(".")[0]
 
-        for import_lib in file_import_libs:
-            pkg_path, attr_name, alias_name = import_lib
+        for import_stmt in file_import_stmts:
+            pkg_or_module_name, obj_name, alias_name = self.parse_standard_import_statement(import_stmt)
             abs_cur_fpath = os.path.join(self.local_repo_dpath, file_path)
 
-            if alias_name == call_source or attr_name == call_source or pkg_path.endswith(call_source):
-                lib_source, attr = self.judge_lib_source(import_lib, abs_cur_fpath)
+            if alias_name == call_source or obj_name == call_source or pkg_or_module_name.endswith(call_source):
+                lib_source, attr = self.judge_import_source(pkg_or_module_name, obj_name, abs_cur_fpath)
 
-                # FIXME: Instead of looking for the import statement in the original code, we reconstruct
-                #       an individual import statement based on the current import. Are any improvements needed?
-                import_seq = self.lib_info_to_seq(pkg_path, attr_name, alias_name)
-
-                desc = f"It is imported through '{import_seq}'. The library is a {lib_source}, and "
+                desc = f"It is imported through '{import_stmt}'. The library is a {lib_source}, and "
                 if lib_source == "custom library":
                     desc += f"the import path is '{attr}'."
                 else:
@@ -710,17 +700,18 @@ class PySearchManager(BaseSearchManager):
 
                 res = PySearchResult(
                     file_path=file_path,
-                    code=import_seq,
                     func_name=None,
                     class_name=None,
-                    inclass_method_name=None
+                    inclass_method_name=None,
+                    code=import_stmt,
+                    line_ids=[-1]  # special case
                 )
                 return desc, res
 
         return None
 
 
-    def _search_method_in_class(self, func_name: str, class_name: str, file_path: str | None = None) -> List[PySearchResult]:
+    def _search_method_in_class(self, func_name: str, class_name: str, file_path: str | None) -> List[PySearchResult]:
         """Search for this method among the specified class in the repo / specified file."""
         result: List[PySearchResult] = []
 
@@ -728,16 +719,17 @@ class PySearchManager(BaseSearchManager):
         nodiff_cand_inclass_methods: List[CodeRange] = self.nodiff_inclass_method_index.get(class_name, {}).get(func_name, [])
         for inclass_method_crange in nodiff_cand_inclass_methods:
             if file_path is None or inclass_method_crange.file_path == file_path:
-                method_code = self._get_code_snippet_in_nodiff_file(
+                method_code, method_line_ids = self._get_code_snippet_in_nodiff_file(
                     inclass_method_crange.file_path, inclass_method_crange.range
                 )
 
                 res = PySearchResult(
                     file_path=inclass_method_crange.file_path,
-                    code=method_code,
                     func_name=None,
                     class_name=class_name,
-                    inclass_method_name=func_name
+                    inclass_method_name=func_name,
+                    code=method_code,
+                    line_ids=method_line_ids
                 )
                 result.append(res)
 
@@ -761,21 +753,22 @@ class PySearchManager(BaseSearchManager):
         # 3. Get the code snippet of each modified inclass method
         for fpath, lrange_groups in file_inclass_method_lrange_groups.items():
             for old_lranges, new_lranges in lrange_groups:
-                inclass_method_code = self._get_code_snippet_in_diff_file(fpath, old_lranges, new_lranges)
+                inclass_method_code, inclass_method_line_ids = self._get_code_snippet_in_diff_file(fpath, old_lranges, new_lranges)
 
                 res = PySearchResult(
                     file_path=fpath,
-                    code=inclass_method_code,
                     func_name=None,
                     class_name=class_name,
-                    inclass_method_name=func_name
+                    inclass_method_name=func_name,
+                    code=inclass_method_code,
+                    line_ids=inclass_method_line_ids
                 )
                 result.append(res)
 
         return result
 
 
-    def _search_func_in_classes(self, func_name: str, file_path: str | None = None) -> List[PySearchResult]:
+    def _search_func_in_classes(self, func_name: str, file_path: str | None) -> List[PySearchResult]:
         """Search for this function among all classes in the repo / specified file."""
         result: List[PySearchResult] = []
 
@@ -803,7 +796,7 @@ class PySearchManager(BaseSearchManager):
         return result
 
 
-    def _search_top_level_func(self, func_name: str, file_path: str | None = None) -> List[PySearchResult]:
+    def _search_top_level_func(self, func_name: str, file_path: str | None) -> List[PySearchResult]:
         """Search for this function among all top level functions in the repo / specified file."""
         result: List[PySearchResult] = []
 
@@ -811,14 +804,15 @@ class PySearchManager(BaseSearchManager):
         if func_name in self.nodiff_func_index:
             for func_crange in self.nodiff_func_index[func_name]:
                 if file_path is None or func_crange.file_path == file_path:
-                    code = self._get_code_snippet_in_nodiff_file(func_crange.file_path, func_crange.range)
+                    code, line_ids = self._get_code_snippet_in_nodiff_file(func_crange.file_path, func_crange.range)
 
                     res = PySearchResult(
                         file_path=func_crange.file_path,
-                        code=code,
                         func_name=func_name,
                         class_name=None,
-                        inclass_method_name=None
+                        inclass_method_name=None,
+                        code=code,
+                        line_ids=line_ids
                     )
                     result.append(res)
 
@@ -839,21 +833,22 @@ class PySearchManager(BaseSearchManager):
         # 3. Get the code snippet of each modified functions
         for fpath, func_lrange_groups in file_func_lrange_groups.items():
             for old_lranges, new_lranges in func_lrange_groups:
-                code = self._get_code_snippet_in_diff_file(fpath, old_lranges, new_lranges)
+                code, line_ids = self._get_code_snippet_in_diff_file(fpath, old_lranges, new_lranges)
 
                 res = PySearchResult(
                     file_path=fpath,
-                    code=code,
                     func_name=func_name,
                     class_name=None,
-                    inclass_method_name=None
+                    inclass_method_name=None,
+                    code=code,
+                    line_ids=line_ids
                 )
                 result.append(res)
 
         return result
 
 
-    def _search_func(self, func_name: str, file_path: str | None = None) -> List[PySearchResult]:
+    def _search_func(self, func_name: str, file_path: str | None) -> List[PySearchResult]:
         """Search for this function in the repo / specified file, including top-level functions and class functions."""
         result: List[PySearchResult] = []
 
@@ -868,29 +863,32 @@ class PySearchManager(BaseSearchManager):
         return result
 
 
-    def _search_nodiff_class(self, class_name: str, file_path: str | None = None) -> List[PySearchResult]:
+    def _search_nodiff_class(self, class_name: str, file_path: str | None) -> List[PySearchResult]:
         """Search for this class among all nodiff classes in the repo / specified file."""
 
         result: List[PySearchResult] = []
         for class_crange in self.nodiff_class_index[class_name]:
             if file_path is None or class_crange.file_path == file_path:
-                sig_code = self._get_class_signature_in_nodiff_file(
-                    class_name, class_crange.file_path, class_crange.range
+                sig_code, sig_line_ids = self._get_class_signature_in_nodiff_file(
+                    class_name=class_name,
+                    fpath=class_crange.file_path,
+                    lrange=class_crange.range
                 )
 
                 res = PySearchResult(
                     file_path=class_crange.file_path,
-                    code=sig_code,
                     func_name=None,
                     class_name=class_name,
-                    inclass_method_name=None
+                    inclass_method_name=None,
+                    code=sig_code,
+                    line_ids=sig_line_ids
                 )
                 result.append(res)
 
         return result
 
 
-    def _search_diff_class(self, class_name: str, file_path: str | None = None) -> List[PySearchResult]:
+    def _search_diff_class(self, class_name: str, file_path: str | None) -> List[PySearchResult]:
         """Search for this class among all diff classes in the repo / specified file."""
         result: List[PySearchResult] = []
 
@@ -910,21 +908,27 @@ class PySearchManager(BaseSearchManager):
         # 3. Get the signature of each modified class
         for fpath, class_lrange_groups in file_class_lrange_groups.items():
             for old_lranges, new_lranges in class_lrange_groups:
-                sig_code = self._get_class_signature_in_diff_file(class_name, fpath, old_lranges, new_lranges)
+                sig_code, sig_line_ids = self._get_class_signature_in_diff_file(
+                    class_name=class_name,
+                    fpath=fpath,
+                    old_lranges=old_lranges,
+                    new_lranges=new_lranges
+                )
 
                 res = PySearchResult(
                     file_path=fpath,
-                    code=sig_code,
                     func_name=None,
                     class_name=class_name,
-                    inclass_method_name=None
+                    inclass_method_name=None,
+                    code=sig_code,
+                    line_ids=sig_line_ids
                 )
                 result.append(res)
 
         return result
 
 
-    def _search_class(self, class_name: str, file_path: str | None = None) -> List[PySearchResult]:
+    def _search_class(self, class_name: str, file_path: str | None) -> List[PySearchResult]:
         """Search for this class in the repo / specified file.
         NOTE：Normally, there will not be classes with the same name in a file, but just in case.
         """
@@ -958,7 +962,7 @@ class PySearchManager(BaseSearchManager):
             return tool_output, SearchStatus.FIND_NONE, []
 
         # ----------------- (2) Get the entire snippet of the function ----------------- #
-        all_search_res = self._search_top_level_func(func_name)
+        all_search_res = self._search_top_level_func(func_name, None)
 
         # ----------------- (3) Prepare the response ----------------- #
         tool_output = f"Found {len(all_search_res)} top-level functions with name '{func_name}' in the repo:\n"
@@ -993,7 +997,7 @@ class PySearchManager(BaseSearchManager):
             return tool_output, SearchStatus.FIND_NONE, []
 
         # ----------------- (2) Get the signature of the class ----------------- #
-        all_search_res = self._search_class(class_name)
+        all_search_res = self._search_class(class_name, None)
 
         # ----------------- (3) Prepare the response ----------------- #
         tool_output = f"Found {len(all_search_res)} classes with name '{class_name}' in the repo:\n"
@@ -1119,7 +1123,7 @@ class PySearchManager(BaseSearchManager):
             return tool_output, SearchStatus.FIND_NONE, []
 
         # ----------------- (2) Search the function in the specified classes ----------------- #
-        all_search_res: List[PySearchResult] = self._search_method_in_class(method_name, class_name)
+        all_search_res: List[PySearchResult] = self._search_method_in_class(method_name, class_name, None)
 
         if not all_search_res:
             # TODO: Consider whether to search among imports when no function definition is found.
@@ -1252,7 +1256,7 @@ class JavaSearchManager(BaseSearchManager):
         self.new_inclass_iface_index: IfaceInClassIndexType = defaultdict(lambda: defaultdict(list))    # class name -> {name -> [(file path, line range)]}
         self.new_inclass_class_index: ClassInClassIndexType = defaultdict(lambda: defaultdict(list))    # class name -> {name -> [(file path, line range)]}
 
-        self.diff_file_imports: JavaFileImportType = {}  # file path -> [full import stmt]
+        self.diff_file_imports: FileImportType = {}  # file path -> [original import stmt]
 
         # -------------------------------- III. Unchanged Files Info -------------------------------- #
         # file path -> full package name
@@ -1264,7 +1268,7 @@ class JavaSearchManager(BaseSearchManager):
         self.nodiff_inclass_iface_index: IfaceInClassIndexType = defaultdict(lambda: defaultdict(list))    # class name -> {name -> [(file path, line range)]}
         self.nodiff_inclass_class_index: ClassInClassIndexType = defaultdict(lambda: defaultdict(list))    # class name -> {name -> [(file path, line range)]}
 
-        self.nodiff_file_imports: JavaFileImportType = {}  # file path -> [full import stmt]
+        self.nodiff_file_imports: FileImportType = {}  # file path -> [original import stmt]
 
         # -------------------------------- IV. AST Parser -------------------------------- #
         self.ast_parser = JavaASTParser()
@@ -1379,12 +1383,9 @@ class JavaSearchManager(BaseSearchManager):
                         self.new_inclass_method_index[class_name][name].append(CodeRange(file_path, lrange))
 
             ## Imports
-            file_imports = []
-            if diff_info.old_code is not None:
-                file_imports = diff_info.old_imports
-            if diff_info.new_code is not None:
-                file_imports = list(set(file_imports + diff_info.new_imports))
-            self.diff_file_imports[file_path] = file_imports
+            old_imports = diff_info.old_imports if diff_info.old_imports is not None else []
+            new_imports = diff_info.new_imports if diff_info.new_imports is not None else []
+            self.diff_file_imports[file_path] = list(set(old_imports + new_imports))
 
 
     def _update_nodiff_file_info(self) -> None:
@@ -1409,7 +1410,7 @@ class JavaSearchManager(BaseSearchManager):
                 continue
 
             ## Step 3: Update info of nodiff file
-            # File package
+            # Package
             self.nodiff_files[rel_file_path] = self.ast_parser.package_name
 
             # Imports
@@ -1477,23 +1478,20 @@ class JavaSearchManager(BaseSearchManager):
     """EXTRACT CODE SNIPPET"""
 
 
-    def _get_class_signature_in_nodiff_file(self, class_name: str, fpath: str, class_range: LineRange) -> str:
+    def _get_class_signature_in_nodiff_file(self, class_name: str, fpath: str, lrange: LineRange) -> Tuple[str, List[int]]:
         """Get class signature from the specified nodiff file.
         Strategy:
         Reason:"""
         assert fpath in self.nodiff_files
         abs_fpath = os.path.join(self.local_repo_dpath, fpath)
-        class_sig = search_util.get_class_signature_from_nodiff_file(abs_fpath, class_name, class_range, lang='Java')
-        return class_sig
+        return search_util.get_class_signature_from_nodiff_file(abs_fpath, class_name, lrange, 'Java')
 
 
-    def _get_class_signature_in_diff_file(
-            self, class_name: str, fpath: str, old_class_lranges: List[LineRange], new_class_lranges: List[LineRange]
-    ) -> str:
+    def _get_class_signature_in_diff_file(self, class_name: str, fpath: str, old_lranges: List[LineRange], new_lranges: List[LineRange]) -> Tuple[str, List[int]]:
         """Get class signature from the specified diff file."""
         assert fpath in self.diff_files
         # NOTE: In Java, it is not allowed for a file to contain classes with the same name.
-        assert 1 <= len(old_class_lranges) + len(new_class_lranges) <= 2
+        assert 1 <= len(old_lranges) + len(new_lranges) <= 2
 
         merge_code = self.merge_code[fpath]
         old_code = self.old_code[fpath] if fpath in self.old_code else None
@@ -1502,66 +1500,58 @@ class JavaSearchManager(BaseSearchManager):
         line_id_old2merge = self.line_id_old2merge[fpath] if fpath in self.line_id_old2merge else None
         line_id_new2merge = self.line_id_new2merge[fpath] if fpath in self.line_id_new2merge else None
 
-        old_class_lrange = old_class_lranges[0] if old_class_lranges else None
-        new_class_lrange = new_class_lranges[0] if new_class_lranges else None
+        old_class_lrange = old_lranges[0] if old_lranges else None
+        new_class_lrange = new_lranges[0] if new_lranges else None
 
-        class_sig = search_util.get_class_signature_from_diff_file(
-            merge_file_content=merge_code,
+        return search_util.get_class_signature_from_diff_file(
+            class_name=class_name,
+            old_lrange=old_class_lrange,
+            new_lrange=new_class_lrange,
             old_file_content=old_code,
             new_file_content=new_code,
+            merge_file_content=merge_code,
             line_id_old2merge=line_id_old2merge,
             line_id_new2merge=line_id_new2merge,
-            class_name=class_name,
-            old_class_range=old_class_lrange,
-            new_class_range=new_class_lrange,
             lang='Java'
         )
 
-        return class_sig
 
-
-    def _get_iface_signature_in_nodiff_file(self, iface_name: str, fpath: str, iface_range: LineRange) -> str:
+    def _get_iface_signature_in_nodiff_file(self, iface_name: str, fpath: str, lrange: LineRange) -> Tuple[str, List[int]]:
         """Get interface signature from the specified nodiff file.
         Strategy: For interface, we extract its entire snippet.
         Reason: Methods in the interface are all abstract methods, which has no method body but only method signature."""
-        return self._get_code_snippet_in_nodiff_file(fpath, iface_range)
+        return self._get_code_snippet_in_nodiff_file(fpath, lrange)
 
 
-    def _get_iface_signature_in_diff_file(
-            self, iface_name: str, fpath: str, old_iface_lranges: List[LineRange], new_iface_lranges: List[LineRange]
-    ) -> str:
+    def _get_iface_signature_in_diff_file(self, iface_name: str, fpath: str, old_lranges: List[LineRange], new_lranges: List[LineRange]) -> Tuple[str, List[int]]:
         """Get interface signature from the specified diff file.
         Strategy: For interface, we extract its entire snippet.
         Reason: Methods in the interface are all abstract methods, which has no method body but only method signature.
         """
         # NOTE: In Java, it is not allowed for a file to contain interfaces with the same name.
-        assert 1 <= len(old_iface_lranges) + len(new_iface_lranges) <= 2
+        assert 1 <= len(old_lranges) + len(new_lranges) <= 2
 
-        return self._get_code_snippet_in_diff_file(fpath, old_iface_lranges, new_iface_lranges)
+        return self._get_code_snippet_in_diff_file(fpath, old_lranges, new_lranges)
 
 
-    def _get_code_snippet_in_nodiff_file(self, fpath: str, line_range: LineRange) -> str:
+    def _get_code_snippet_in_nodiff_file(self, fpath: str, lrange: LineRange) -> Tuple[str, List[int]]:
         """Get code snippet from the specified nodiff file."""
         assert fpath in self.nodiff_files
         abs_fpath = os.path.join(self.local_repo_dpath, fpath)
-        code = search_util.get_code_snippet_from_nodiff_file(abs_fpath, line_range.start, line_range.end)
-        return code
+        return search_util.get_code_snippet_from_nodiff_file(abs_fpath, lrange)
 
 
-    def _get_code_snippet_in_diff_file(
-            self, fpath: str, old_line_ranges: List[LineRange], new_line_ranges: List[LineRange]
-    ) -> str:
+    def _get_code_snippet_in_diff_file(self, fpath: str, old_lranges: List[LineRange], new_lranges: List[LineRange]) -> Tuple[str, List[int]]:
         """Get code snippet from the specified diff file."""
         assert fpath in self.diff_files
         merge_code = self.merge_code[fpath]
-        snippet = search_util.get_code_snippet_from_diff_file(
+        return search_util.get_code_snippet_from_diff_file(
+            old_lranges=old_lranges,
+            new_lranges=new_lranges,
             merged_file_content=merge_code,
-            old_line_ranges=old_line_ranges,
-            new_line_ranges=new_line_ranges,
             line_id_old2merge=self.line_id_old2merge[fpath],
             line_id_new2merge=self.line_id_new2merge[fpath]
         )
-        return snippet
 
 
     """SEARCH FUNCTIONS"""
@@ -1614,16 +1604,21 @@ class JavaSearchManager(BaseSearchManager):
                 desc = f"Type '{call_source}' is in the package where file '{file_path}' is located, and the package is '{cur_package_name}'."
 
                 code = f"Since type '{call_source}' is in the same package as the current file, there is no need to import explicitly."
-                res = JavaSearchResult(file_path=file_path, package_name=cur_package_name, code=code)
+                res = JavaSearchResult(
+                    file_path=file_path,
+                    package_name=cur_package_name,
+                    code=code,
+                    line_ids=[]  # Empty as no explicit import statement exists
+                )
 
                 return desc, res
 
         ## (2) Search in the types imported from other packages
-        for full_import_stmt in file_imports:
+        for import_stmt in file_imports:
             # There are two types of the full import statement:
             # 1. import xxx.xx
             # 2. import static xxx.xx
-            import_stmt_parts = re.split(r'\s+', full_import_stmt)
+            import_stmt_parts = re.split(r'\s+', import_stmt)
             assert len(import_stmt_parts) == 2 or len(import_stmt_parts) == 3
 
             import_name = import_stmt_parts[-1]
@@ -1648,8 +1643,13 @@ class JavaSearchManager(BaseSearchManager):
                     else:
                         # This statement imports types in this package
                         if call_source in self.package_space[import_pkg]:
-                            desc = f"Type {call_source} is imported through '{full_import_stmt}', the package is '{import_pkg}' and it is a {import_pkg_type}."
-                            res = JavaSearchResult(file_path=file_path, package_name=import_pkg, code=full_import_stmt)
+                            desc = f"Type {call_source} is imported through '{import_stmt}', the package is '{import_pkg}' and it is a {import_pkg_type}."
+                            res = JavaSearchResult(
+                                file_path=file_path,
+                                package_name=import_pkg,
+                                code=import_stmt,
+                                line_ids=[-1]  # special case
+                            )
                             return desc, res
             else:
                 if import_name.split('.')[-1] == call_source:
@@ -1669,30 +1669,30 @@ class JavaSearchManager(BaseSearchManager):
 
                     import_pkg, import_pkg_type = _find_import_pkg_source()
 
-                    desc = f"Type {call_source} is imported through '{full_import_stmt}'"
+                    desc = f"Type {call_source} is imported through '{import_stmt}'"
                     if import_pkg is not None and import_pkg_type is not None:
                         desc += f", while the package is {import_pkg} and it is a {import_pkg_type}."
                     else:
                         # TODO: For packages not found, we believe it might to be a third-party package.
                         desc += ", while the package might to be a third-party package."
-                    res = JavaSearchResult(file_path=file_path, package_name=import_pkg, code=full_import_stmt)
+                    res = JavaSearchResult(
+                        file_path=file_path,
+                        package_name=import_pkg,
+                        code=import_stmt,
+                        line_ids=[-1]  # special case
+                    )
 
                     return desc, res
 
         return None
 
 
-    def _search_type_in_class_of_nodiff_file(
-            self,
-            ttype: Literal['interface', 'class', 'method'],
-            type_name: str,
-            class_name: str,
-            file_path: str | None = None
-    ) -> List[JavaSearchResult]:
+    def _search_type_in_class_of_nodiff_file(self, ttype: str, type_name: str, class_name: str, file_path: str | None) -> List[JavaSearchResult]:
         """Search for this type among the specified class in the repo / specified file.
 
         NOTE 1: We only consider nodiff files.
-        NOTE 2: Type here indicate interface / class / method in class.
+        NOTE 2: We only consider type definition / declaration.
+        NOTE 3: Type here indicate interface / class / method in class.
         """
         assert ttype in ['interface', 'class', 'method']
 
@@ -1708,31 +1708,37 @@ class JavaSearchManager(BaseSearchManager):
         cand_inclass_types: List[CodeRange] = nodiff_inclass_type_index.get(class_name, {}).get(type_name, [])
         for cand_inclass_type in cand_inclass_types:
             if file_path is None or cand_inclass_type.file_path == file_path:
-                # NOTE: For interface / class / method in class, we extract its entire code snippet.
-                inclass_type_code = self._get_code_snippet_in_nodiff_file(
-                    cand_inclass_type.file_path, cand_inclass_type.range
+                # Extraction Strategy: For interface / class / method in class, we extract its entire code snippet.
+                # 1. Extract code snippet and line ids
+                inclass_type_code, inclass_type_line_ids = self._get_code_snippet_in_nodiff_file(
+                    fpath=cand_inclass_type.file_path,
+                    lrange=cand_inclass_type.range
                 )
 
+                # 2. Construct search result
                 if ttype == 'interface':
                     res = JavaSearchResult(
                         file_path=cand_inclass_type.file_path,
                         class_name=class_name,
                         inclass_iface_name=type_name,
-                        code=inclass_type_code
+                        code=inclass_type_code,
+                        line_ids=inclass_type_line_ids
                     )
                 elif ttype == 'class':
                     res = JavaSearchResult(
                         file_path=cand_inclass_type.file_path,
                         class_name=class_name,
                         inclass_class_name=type_name,
-                        code=inclass_type_code
+                        code=inclass_type_code,
+                        line_ids=inclass_type_line_ids
                     )
                 else:
                     res = JavaSearchResult(
                         file_path=cand_inclass_type.file_path,
                         class_name=class_name,
                         inclass_method_name=type_name,
-                        code=inclass_type_code
+                        code=inclass_type_code,
+                        line_ids=inclass_type_line_ids
                     )
 
                 result.append(res)
@@ -1740,17 +1746,12 @@ class JavaSearchManager(BaseSearchManager):
         return result
 
 
-    def _search_type_in_class_of_diff_file(
-            self,
-            ttype: Literal['interface', 'class', 'method'],
-            type_name: str,
-            class_name: str,
-            file_path: str | None = None
-    ) -> List[JavaSearchResult]:
+    def _search_type_in_class_of_diff_file(self, ttype: str, type_name: str, class_name: str, file_path: str | None) -> List[JavaSearchResult]:
         """Search for this type among the specified class in the repo / specified file.
 
         NOTE 1: We only consider diff files.
-        NOTE 2: Type here indicate interface / class / method in class.
+        NOTE 2: We only consider type definition / declaration.
+        NOTE 3: Type here indicate interface / class / method in class.
         """
         assert ttype in ['interface', 'class', 'method']
 
@@ -1786,29 +1787,34 @@ class JavaSearchManager(BaseSearchManager):
         result: List[JavaSearchResult] = []
         for fpath, lrange_groups in file_inclass_type_lrange_groups.items():
             for old_lranges, new_lranges in lrange_groups:
-                # NOTE: For interface / class / method in class, we extract its entire code snippet.
-                inclass_type_code = self._get_code_snippet_in_diff_file(fpath, old_lranges, new_lranges)
+                # Extraction Strategy: For interface / class / method in class, we extract its entire code snippet.
+                # 1. Extract code snippet and line ids
+                inclass_type_code, inclass_type_line_ids = self._get_code_snippet_in_diff_file(fpath, old_lranges, new_lranges)
 
+                # 2. Construct search result
                 if ttype == 'interface':
                     res = JavaSearchResult(
                         file_path=fpath,
                         class_name=class_name,
                         inclass_iface_name=type_name,
-                        code=inclass_type_code
+                        code=inclass_type_code,
+                        line_ids=inclass_type_line_ids
                     )
                 elif ttype == 'class':
                     res = JavaSearchResult(
                         file_path=fpath,
                         class_name=class_name,
                         inclass_class_name=type_name,
-                        code=inclass_type_code
+                        code=inclass_type_code,
+                        line_ids=inclass_type_line_ids
                     )
                 else:
                     res = JavaSearchResult(
                         file_path=fpath,
                         class_name=class_name,
                         inclass_method_name=type_name,
-                        code=inclass_type_code
+                        code=inclass_type_code,
+                        line_ids=inclass_type_line_ids
                     )
 
                 result.append(res)
@@ -1816,13 +1822,7 @@ class JavaSearchManager(BaseSearchManager):
         return result
 
 
-    def _search_type_in_class(
-            self,
-            ttype: Literal['interface', 'class', 'method'],
-            type_name: str,
-            class_name: str,
-            file_path: str | None = None
-    ) -> List[JavaSearchResult]:
+    def _search_type_in_class(self, ttype: str, type_name: str, class_name: str, file_path: str | None) -> List[JavaSearchResult]:
         """Search for this type among the specified class in the repo / specified file.
 
         NOTE: Type here indicate interface / class / method in class.
@@ -1842,16 +1842,12 @@ class JavaSearchManager(BaseSearchManager):
         return result
 
 
-    def _search_top_level_type_of_nodiff_file(
-            self,
-            ttype: Literal['interface', 'class'],
-            type_name: str,
-            file_path: str | None = None
-    ) -> List[JavaSearchResult]:
+    def _search_top_level_type_of_nodiff_file(self, ttype: str, type_name: str, file_path: str | None) -> List[JavaSearchResult]:
         """Search for this top-level type in the repo / specified file.
 
         NOTE 1: Top-level type here indicate top-level interface / class.
-        NOTE 2: We only consider nodiff files.
+        NOTE 2: We only consider type definition / declaration.
+        NOTE 3: We only consider nodiff files.
         """
         assert ttype in ['interface', 'class']
 
@@ -1867,27 +1863,32 @@ class JavaSearchManager(BaseSearchManager):
             if file_path is None or cand_type.file_path == file_path:
                 # For top-level interface / class, we extract its signature code snippet.
                 if ttype == "interface":
-                    iface_sig = self._get_iface_signature_in_nodiff_file(
+                    iface_sig, iface_sig_line_ids= self._get_iface_signature_in_nodiff_file(
                         type_name, cand_type.file_path, cand_type.range
                     )
-                    res = JavaSearchResult(file_path=cand_type.file_path, iface_name=type_name, code=iface_sig)
+                    res = JavaSearchResult(
+                        file_path=cand_type.file_path,
+                        iface_name=type_name,
+                        code=iface_sig,
+                        line_ids=iface_sig_line_ids
+                    )
                 else:
-                    class_sig = self._get_class_signature_in_nodiff_file(
+                    class_sig, class_sig_line_ids = self._get_class_signature_in_nodiff_file(
                         type_name, cand_type.file_path, cand_type.range
                     )
-                    res = JavaSearchResult(file_path=cand_type.file_path, class_name=type_name, code=class_sig)
+                    res = JavaSearchResult(
+                        file_path=cand_type.file_path,
+                        class_name=type_name,
+                        code=class_sig,
+                        line_ids=class_sig_line_ids
+                    )
 
                 result.append(res)
 
         return result
 
 
-    def _search_top_level_type_of_diff_file(
-            self,
-            ttype: Literal['interface', 'class'],
-            type_name: str,
-            file_path: str | None = None
-    ) -> List[JavaSearchResult]:
+    def _search_top_level_type_of_diff_file(self, ttype: str, type_name: str, file_path: str | None) -> List[JavaSearchResult]:
         """Search for this top-level type in the repo / specified file.
 
         NOTE 1: Top-level type here indicate top-level interface / class.
@@ -1924,23 +1925,28 @@ class JavaSearchManager(BaseSearchManager):
             for old_lranges, new_lranges in type_lrange_groups:
                 # For top-level interface / class, we extract its signature code snippet.
                 if ttype == "interface":
-                    iface_sig = self._get_iface_signature_in_diff_file(type_name, fpath, old_lranges, new_lranges)
-                    res = JavaSearchResult(file_path=fpath, iface_name=type_name, code=iface_sig)
+                    iface_sig, iface_sig_line_ids = self._get_iface_signature_in_diff_file(type_name, fpath, old_lranges, new_lranges)
+                    res = JavaSearchResult(
+                        file_path=fpath,
+                        iface_name=type_name,
+                        code=iface_sig,
+                        line_ids=iface_sig_line_ids
+                    )
                 else:
-                    class_sig = self._get_class_signature_in_diff_file(type_name, fpath, old_lranges, new_lranges)
-                    res = JavaSearchResult(file_path=fpath, class_name=type_name, code=class_sig)
+                    class_sig, class_sig_line_ids = self._get_class_signature_in_diff_file(type_name, fpath, old_lranges, new_lranges)
+                    res = JavaSearchResult(
+                        file_path=fpath,
+                        class_name=type_name,
+                        code=class_sig,
+                        line_ids=class_sig_line_ids
+                    )
 
                 result.append(res)
 
         return result
 
 
-    def _search_top_level_type(
-            self,
-            ttype: Literal['interface', 'class'],
-            type_name: str,
-            file_path: str | None = None
-    ) -> List[JavaSearchResult]:
+    def _search_top_level_type(self, ttype: str, type_name: str, file_path: str | None) -> List[JavaSearchResult]:
         """Search for this top-level type in the repo / specified file.
 
         NOTE: Top-level type here indicate top-level interface / class.
@@ -1965,7 +1971,7 @@ class JavaSearchManager(BaseSearchManager):
 
     def search_top_level_type(
             self,
-            ttype: Literal['interface', 'class'],
+            ttype: str,
             type_name: str
     ) -> Tuple[str, SearchStatus, List[JavaSearchResult]]:
         """Search class or interface in the entire repo.
@@ -1988,7 +1994,7 @@ class JavaSearchManager(BaseSearchManager):
             return tool_output, SearchStatus.FIND_NONE, []
 
         # ----------------- (2) Get the signature of the classes / interfaces ----------------- #
-        all_search_res = self._search_top_level_type(ttype, type_name)
+        all_search_res = self._search_top_level_type(ttype, type_name, None)
 
         # ----------------- (3) Prepare the response ----------------- #
         if ttype == 'interface':
@@ -2027,7 +2033,7 @@ class JavaSearchManager(BaseSearchManager):
 
     def search_top_level_type_in_file(
             self,
-            ttype: Literal['interface', 'class'],
+            ttype: str,
             type_name: str,
             file_name: str
     ) -> Tuple[str, SearchStatus, List[JavaSearchResult]]:
@@ -2077,7 +2083,7 @@ class JavaSearchManager(BaseSearchManager):
 
     def search_inclass_type_in_class(
             self,
-            ttype: Literal['interface', 'class', 'method'],
+            ttype: str,
             type_name: str,
             class_name: str
     ) -> Tuple[str, SearchStatus, List[JavaSearchResult]]:
@@ -2087,6 +2093,8 @@ class JavaSearchManager(BaseSearchManager):
         NOTE 2: Inclass type here indicate inclass interface / class / method.
         """
         tool_output = ""
+
+        # Just in case
         if ttype not in ['interface', 'class', 'method']:
             old_ttype = ttype
             assert old_ttype.lower() in ['annotation', 'enum', 'record']
@@ -2099,7 +2107,7 @@ class JavaSearchManager(BaseSearchManager):
             return tool_output, SearchStatus.FIND_NONE, []
 
         # ----------------- (2) Search the inclass type in the specified classes ----------------- #
-        all_search_res: List[JavaSearchResult] = self._search_type_in_class(ttype, type_name, class_name)
+        all_search_res: List[JavaSearchResult] = self._search_type_in_class(ttype, type_name, class_name, None)
 
         if not all_search_res:
             # TODO: Consider whether to search among imports when no type definition is found.
@@ -2138,7 +2146,7 @@ class JavaSearchManager(BaseSearchManager):
 
     def search_inclass_type_in_class_in_file(
             self,
-            ttype: Literal['interface', 'class', 'method'],
+            ttype: str,
             type_name: str,
             class_name: str,
             file_name: str
@@ -2149,6 +2157,8 @@ class JavaSearchManager(BaseSearchManager):
         NOTE 2: Inclass type here indicate inclass interface / class / method.
         """
         tool_output = ""
+
+        # Just in case
         if ttype not in ['interface', 'class', 'method']:
             old_ttype = ttype
             assert old_ttype.lower() in ['annotation', 'enum', 'record']
@@ -2267,7 +2277,7 @@ class JavaSearchManager(BaseSearchManager):
 
     def search_type_in_class(
             self,
-            ttype: Literal['interface', 'class', 'method'],
+            ttype: str,
             type_name: str,
             class_name: str
     ) -> Tuple[str, SearchStatus, List[JavaSearchResult]]:
@@ -2277,7 +2287,7 @@ class JavaSearchManager(BaseSearchManager):
 
     def search_type_in_class_in_file(
             self,
-            ttype: Literal['interface', 'class', 'method'],
+            ttype: str,
             type_name: str,
             class_name: str,
             file_name: str

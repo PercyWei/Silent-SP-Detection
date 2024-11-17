@@ -296,6 +296,7 @@ def parse_java_code_by_processing_java_script(
 
 
 class ASTParser:
+
     def __init__(self):
         # Parse the code entered or read from a file
         self.code: str | None = None
@@ -313,8 +314,8 @@ class ASTParser:
         self.all_inclass_interfaces: Dict[str, List[Tuple[str, LineRange]]] = {}  # {class name -> [(name, line range)]}
         self.all_inclass_classes: Dict[str, List[Tuple[str, LineRange]]] = {}     # {class name -> [(name, line range)]}
         self.all_inclass_methods: Dict[str, List[Tuple[str, LineRange]]] = {}     # {class name -> [(name, line range)]}
-        # (4) Imports
-        self.all_imports: List[str] = []  # [full import statement]
+        # (4) Imports (In java, the import statements are all single line statements)
+        self.all_imports: List[str] = []  # [original import statement]
 
 
     def set(self, code: str | None, code_fpath: str | None) -> bool:
@@ -338,7 +339,6 @@ class ASTParser:
     def reset(self):
         self.code = None
         self.code_fpath = None
-        self.code_len = 0
 
         self.cur_node_id = None
         self.all_nodes = {}
@@ -348,7 +348,7 @@ class ASTParser:
         self.all_inclass_interfaces = {}
         self.all_inclass_classes = {}
         self.all_inclass_methods = {}
-        self.all_imports = []
+        self.all_imports = {}
 
 
     def _update_all_nodes(

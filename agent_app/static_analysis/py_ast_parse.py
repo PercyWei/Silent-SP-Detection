@@ -150,6 +150,7 @@ def extract_class_sig_lines_from_file(file_content: str, class_name: str, class_
 
 
 class ASTParser:
+
     def __init__(self):
         # Parse the code entered or read from a file
         self.code: str | None = None
@@ -165,7 +166,9 @@ class ASTParser:
         self.all_classes: List[Tuple[str, LineRange]] = []                     # [(name, line range)]
         self.all_inclass_methods: Dict[str, List[Tuple[str, LineRange]]] = {}  # {class name -> [(name, line range)]}
         # (3) Imports
-        self.all_imports: List[Tuple[str, str, str]] = []  # [(pkg path, attr name, alias name)]
+        # In Python, it is common for multiple imports to be implemented in the same statement,
+        # so we reconstruct a statement for each import for convenience
+        self.all_imports: List[str] = []  # [reconstructed import statement]
 
 
     def reset(self):
@@ -277,18 +280,30 @@ class ASTParser:
 
         if isinstance(ast_node, ast.Import):
             for alias in ast_node.names:
-                pkg_path = alias.name if alias.name is not None else ""
-                attr_name = ""
+                pkg_or_module_name = alias.name
+                obj_name = ""
                 alias_name = alias.asname if alias.asname is not None else ""
 
-                self.all_imports.append((pkg_path, attr_name, alias_name))
+                if alias_name:
+                    import_stmt = f"import {pkg_or_module_name} as {alias_name}"
+                else:
+                    import_stmt = f"import {pkg_or_module_name}"
+
+                if import_stmt not in self.all_imports:
+                    self.all_imports.append(import_stmt)
         else:
-            module_path = ast_node.level * '.' + ast_node.module if ast_node.module is not None else ast_node.level * '.'
+            pkg_or_module_name = ast_node.level * '.' + ast_node.module if ast_node.module is not None else ast_node.level * '.'
             for alias in ast_node.names:
-                attr_name = alias.name if alias.name is not None else ""
+                obj_name = alias.name
                 alias_name = alias.asname if alias.asname is not None else ""
 
-                self.all_imports.append((module_path, attr_name, alias_name))
+                if alias_name:
+                    import_stmt = f"from {pkg_or_module_name} import {obj_name} as {alias_name}"
+                else:
+                    import_stmt = f"from {pkg_or_module_name} import {obj_name}"
+
+                if import_stmt not in self.all_imports:
+                    self.all_imports.append(import_stmt)
 
 
     def _update_with_funcdef(self, ast_node: ast.FunctionDef | ast.AsyncFunctionDef, father_node_id: int) -> None:
